@@ -8,6 +8,7 @@ pub mod color;
 pub mod document;
 pub mod history;
 pub mod layer;
+pub mod paint;
 pub mod pixel;
 pub mod selection;
 pub mod tile;

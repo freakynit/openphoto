@@ -176,6 +176,32 @@ fn shift_m_cycles_marquee_tools() {
 
 #[test]
 #[ignore]
+fn screenshot_painting() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.state_mut().state.foreground = Color::from_rgba8([0x14, 0xa5, 0xdc, 255]);
+    h.key_press(egui::Key::B);
+    for _ in 0..6 {
+        h.key_press(egui::Key::CloseBracket);
+    }
+    h.run_steps(2);
+    let (a, b) = (doc_point(&h, 120.0, 200.0), doc_point(&h, 600.0, 260.0));
+    drag(&mut h, a, b, Modifiers::NONE);
+    // A softer, half-opacity stroke crossing it
+    h.key_press(egui::Key::Num5);
+    let (c, d) = (doc_point(&h, 300.0, 100.0), doc_point(&h, 360.0, 600.0));
+    drag(&mut h, c, d, Modifiers::NONE);
+    h.key_press(egui::Key::E);
+    let (e, f) = (doc_point(&h, 100.0, 500.0), doc_point(&h, 650.0, 520.0));
+    drag(&mut h, e, f, Modifiers::NONE);
+    h.key_press(egui::Key::B);
+    h.hover_at(doc_point(&h, 450.0, 420.0));
+    h.run_steps(3);
+    shot(&mut h, "painting");
+}
+
+#[test]
+#[ignore]
 fn screenshot_selection() {
     let mut h = harness(Vec::new());
     reference_document(&mut h);
@@ -186,6 +212,64 @@ fn screenshot_selection() {
     let (c, d) = (doc_point(&h, 300.0, 300.0), doc_point(&h, 650.0, 700.0));
     drag(&mut h, c, d, Modifiers::SHIFT);
     shot(&mut h, "selection");
+}
+
+fn composite_pixel(h: &mut Harness<'_, OpenPhotoApp>, x: u32, y: u32) -> [u8; 4] {
+    let app = &mut h.state_mut().state;
+    let id = app.active_doc.unwrap();
+    let state = app.docs.get_mut(&id).unwrap();
+    state.sample(x, y).unwrap().to_rgba8()
+}
+
+#[test]
+fn brush_paints_with_the_foreground_color() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.state_mut().state.foreground = Color::from_rgba8([255, 0, 0, 255]);
+    h.key_press(egui::Key::B);
+    h.run_steps(2);
+    assert_eq!(h.state().state.tool, op_tools::Tool::Brush);
+
+    // ] grows the 30 px brush by Photoshop's step (5 px below 50)
+    h.key_press(egui::Key::CloseBracket);
+    h.run_steps(2);
+    assert_eq!(h.state().state.brush.size, 35.0);
+    // 5 sets 50% opacity, 0 back to 100%
+    h.key_press(egui::Key::Num5);
+    h.key_press(egui::Key::Num0);
+    h.run_steps(2);
+    assert_eq!(h.state().state.brush.opacity, 1.0);
+
+    let (a, b) = (doc_point(&h, 100.0, 300.0), doc_point(&h, 500.0, 300.0));
+    drag(&mut h, a, b, Modifiers::NONE);
+    let px = composite_pixel(&mut h, 300, 300);
+    assert!(px[0] > 240 && px[1] < 20 && px[2] < 20, "{px:?}");
+    // Untouched pixels keep the document color
+    assert_eq!(composite_pixel(&mut h, 300, 600), [0x14, 0x14, 0x14, 255]);
+    assert_eq!(
+        active(&h).history.states().last().unwrap().name,
+        "Brush Tool"
+    );
+}
+
+#[test]
+fn painting_a_hidden_layer_shows_photoshops_alert() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    {
+        let app = &mut h.state_mut().state;
+        let id = app.active_doc.unwrap();
+        let doc = &mut app.docs.get_mut(&id).unwrap().doc;
+        doc.layers[0].visible = false;
+    }
+    h.key_press(egui::Key::B);
+    h.run_steps(2);
+    let p = doc_point(&h, 300.0, 300.0);
+    click(&mut h, p);
+    assert_eq!(
+        h.state().state.alert.as_deref(),
+        Some("Could not use the brush tool because the target layer is hidden.")
+    );
 }
 
 #[test]

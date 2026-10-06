@@ -34,6 +34,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
                 | Tool::PolygonalLasso
                 | Tool::MagneticLasso => marquee_options(ui, app),
                 Tool::Move => move_options(ui),
+                Tool::Brush | Tool::Pencil | Tool::Eraser => paint_options(ui, app),
                 Tool::Hand | Tool::Zoom => view_options(ui, app),
                 _ => {}
             }
@@ -132,6 +133,76 @@ fn marquee_options(ui: &mut Ui, app: &mut AppState) {
         .fill(color::BUTTON)
         .min_size(Vec2::new(0.0, 32.0));
     ui.add(button);
+}
+
+/// Brush, Pencil and Eraser: the brush preset picker (a dot with the size
+/// below it; clicking opens Size and Hardness), Mode, Opacity and Flow.
+fn paint_options(ui: &mut Ui, app: &mut AppState) {
+    let tool = app.tool;
+    let Some(opts) = app.paint_options(tool) else {
+        return;
+    };
+    let (rect, response) =
+        ui.allocate_exact_size(Vec2::new(44.0, size::OPTIONS_BAR), Sense::click());
+    let dot = rect.center_top() + Vec2::new(0.0, size::OPTIONS_BAR * 0.36);
+    ui.painter().circle_filled(dot, 9.0, color::TEXT);
+    ui.painter().text(
+        rect.center_bottom() - Vec2::new(0.0, 6.0),
+        egui::Align2::CENTER_BOTTOM,
+        format!("{:.0}", opts.size),
+        theme::small(),
+        color::TEXT,
+    );
+    widgets::icon(ui, icons::CARET_DOWN, 13.0, color::ICON);
+    egui::Popup::from_response(&response)
+        .open_memory(response.clicked().then_some(egui::SetOpenCommand::Toggle))
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.set_min_width(240.0);
+            ui.label("Size:");
+            ui.add(
+                egui::Slider::new(&mut opts.size, 1.0..=crate::state::PaintOptions::MAX_SIZE)
+                    .logarithmic(true)
+                    .max_decimals(0)
+                    .suffix(" px"),
+            );
+            if tool != Tool::Pencil {
+                ui.label("Hardness:");
+                let mut pct = opts.hardness * 100.0;
+                if ui
+                    .add(
+                        egui::Slider::new(&mut pct, 0.0..=100.0)
+                            .max_decimals(0)
+                            .suffix("%"),
+                    )
+                    .changed()
+                {
+                    opts.hardness = pct / 100.0;
+                }
+            }
+        });
+    widgets::vseparator(ui, 34.0);
+
+    ui.label("Mode:");
+    let mode = if tool == Tool::Eraser {
+        "Brush"
+    } else {
+        "Normal"
+    };
+    ui.add_enabled_ui(false, |ui| {
+        egui::ComboBox::from_id_salt("paint-mode")
+            .width(110.0)
+            .selected_text(mode)
+            .show_ui(ui, |_| {});
+    });
+    ui.add_space(8.0);
+    ui.label("Opacity:");
+    widgets::percent_drag(ui, &mut opts.opacity);
+    if tool != Tool::Pencil {
+        ui.add_space(8.0);
+        ui.label("Flow:");
+        widgets::percent_drag(ui, &mut opts.flow);
+    }
 }
 
 fn move_options(ui: &mut Ui) {

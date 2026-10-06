@@ -44,6 +44,10 @@ pub struct DocState {
     pending_edit: bool,
     /// A marquee being dragged on the canvas.
     pub marquee_drag: Option<MarqueeDrag>,
+    /// The paint stroke in progress, and the tool painting it.
+    pub stroke: Option<(op_core::paint::Stroke, Tool)>,
+    /// Where the last stroke ended; Shift-click draws a line from here.
+    pub last_paint_point: Option<(f32, f32)>,
     /// Marching-ants outline of the selection, cached per selection revision.
     outline: Option<(u64, Arc<Vec<[u32; 4]>>)>,
     canvas: Option<Arc<CanvasImage>>,
@@ -67,6 +71,8 @@ impl DocState {
             view: View::default(),
             pending_edit: false,
             marquee_drag: None,
+            stroke: None,
+            last_paint_point: None,
             outline: None,
             canvas: None,
             thumbs: HashMap::new(),
@@ -319,6 +325,53 @@ pub struct PickerSession {
     pub target: PickerTarget,
 }
 
+/// Settings of a painting tool. Photoshop keeps them per tool.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PaintOptions {
+    /// Brush diameter in pixels (1–5000).
+    pub size: f32,
+    /// 0..=1; not used by the Pencil.
+    pub hardness: f32,
+    pub opacity: f32,
+    /// 0..=1; not used by the Pencil.
+    pub flow: f32,
+}
+
+impl PaintOptions {
+    pub const MAX_SIZE: f32 = 5000.0;
+
+    /// Photoshop's default round brush: 30 px, 0% hardness.
+    const fn brush() -> Self {
+        Self {
+            size: 30.0,
+            hardness: 0.0,
+            opacity: 1.0,
+            flow: 1.0,
+        }
+    }
+
+    const fn pencil() -> Self {
+        Self {
+            size: 1.0,
+            hardness: 1.0,
+            opacity: 1.0,
+            flow: 1.0,
+        }
+    }
+
+    /// The `]` step at this size, as in Photoshop.
+    pub fn size_step(size: f32) -> f32 {
+        match size {
+            s if s < 10.0 => 1.0,
+            s if s < 50.0 => 5.0,
+            s if s < 100.0 => 10.0,
+            s if s < 200.0 => 25.0,
+            s if s < 300.0 => 50.0,
+            _ => 100.0,
+        }
+    }
+}
+
 pub struct AppState {
     pub docs: HashMap<DocId, DocState>,
     /// Tab order of the open documents.
@@ -330,6 +383,9 @@ pub struct AppState {
     pub foreground: Color,
     pub background: Color,
     pub marquee: MarqueeOptions,
+    pub brush: PaintOptions,
+    pub pencil: PaintOptions,
+    pub eraser: PaintOptions,
     /// Whether the Color panel edits the background or the foreground color.
     pub editing_background: bool,
     /// Cached HSB so the hue doesn't snap back to 0 for grays.
@@ -360,6 +416,9 @@ impl Default for AppState {
             foreground,
             background: Color::WHITE,
             marquee: MarqueeOptions::default(),
+            brush: PaintOptions::brush(),
+            pencil: PaintOptions::pencil(),
+            eraser: PaintOptions::brush(),
             editing_background: false,
             picker_hsb: Hsb::from_color(foreground),
             untitled_counter: 0,
@@ -379,6 +438,16 @@ impl Default for AppState {
 }
 
 impl AppState {
+    /// Options of the painting tool `tool`, if it is one.
+    pub fn paint_options(&mut self, tool: Tool) -> Option<&mut PaintOptions> {
+        match tool {
+            Tool::Brush => Some(&mut self.brush),
+            Tool::Pencil => Some(&mut self.pencil),
+            Tool::Eraser => Some(&mut self.eraser),
+            _ => None,
+        }
+    }
+
     /// Makes `tool` current and the tool shown in its toolbar slot.
     pub fn select_tool(&mut self, tool: Tool) {
         self.tool = tool;

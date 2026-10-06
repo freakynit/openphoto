@@ -1,0 +1,406 @@
+//! Painting strokes for the Brush, Pencil and Eraser tools.
+//!
+//! Like Photoshop, Flow builds up within a stroke while Opacity caps it: each
+//! stroke keeps a per-pixel coverage (0..1) accumulated from its dabs, and the
+//! layer is recomputed from its pre-stroke pixels and `coverage × opacity`.
+//! Going over the same spot again within one stroke therefore never exceeds
+//! the opacity.
+
+use std::collections::HashMap;
+
+use crate::document::Document;
+use crate::layer::{LayerId, LayerKind};
+use crate::selection::Selection;
+use crate::tile::{TILE_SIZE, TiledImage};
+
+/// Shape of the brush tip.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BrushTip {
+    /// Diameter in pixels.
+    pub diameter: f32,
+    /// 0 = soft (fades from the center), 1 = hard edge.
+    pub hardness: f32,
+    /// Pencil: no anti-aliasing, a pixel is fully in or out.
+    pub aliased: bool,
+}
+
+impl BrushTip {
+    /// Coverage (0..1) at distance `d` from the dab's center.
+    fn alpha(&self, d: f32) -> f32 {
+        let r = self.diameter / 2.0;
+        if self.aliased {
+            return if d <= r.max(0.5) { 1.0 } else { 0.0 };
+        }
+        // A one-pixel anti-aliased edge even for hard tips
+        let inner = (r * self.hardness).min(r - 0.5).max(0.0);
+        if d <= inner {
+            1.0
+        } else if d >= r + 0.5 {
+            0.0
+        } else {
+            let t = (d - inner) / (r + 0.5 - inner);
+            // Smooth falloff between the hard core and the edge
+            let s = 1.0 - t;
+            s * s * (3.0 - 2.0 * s)
+        }
+    }
+}
+
+/// What a stroke does to the pixels it covers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StrokeKind {
+    /// Paint a color (Brush, Pencil).
+    Paint([u8; 3]),
+    /// Remove pixels (Eraser). On the background layer, or with transparent
+    /// pixels locked, the eraser paints `background` instead, as in Photoshop.
+    Erase { background: [u8; 3] },
+}
+
+/// Why a stroke can't start; the messages match Photoshop's alerts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StrokeError {
+    NoLayer,
+    Locked,
+    Hidden,
+}
+
+impl StrokeError {
+    pub fn message(self, tool: &str) -> String {
+        match self {
+            Self::NoLayer => {
+                format!("Could not use the {tool} because there is no layer to paint on.")
+            }
+            Self::Locked => format!("Could not use the {tool} because the layer is locked."),
+            Self::Hidden => format!("Could not use the {tool} because the target layer is hidden."),
+        }
+    }
+}
+
+pub struct Stroke {
+    layer: LayerId,
+    /// The layer's pixels before the stroke.
+    base: TiledImage,
+    coverage: HashMap<(u32, u32), Box<[f32]>>,
+    selection: Option<Selection>,
+    tip: BrushTip,
+    kind: StrokeKind,
+    opacity: f32,
+    flow: f32,
+    /// Paint the background color instead of erasing / keep alpha.
+    preserve_alpha: bool,
+    last: Option<(f32, f32)>,
+    /// Distance travelled since the last dab.
+    since_dab: f32,
+}
+
+impl Stroke {
+    /// Starts a stroke on the document's active layer.
+    pub fn begin(
+        doc: &Document,
+        tip: BrushTip,
+        kind: StrokeKind,
+        opacity: f32,
+        flow: f32,
+    ) -> Result<Self, StrokeError> {
+        let id = doc.active_layer.ok_or(StrokeError::NoLayer)?;
+        let layer = doc.layer(id).ok_or(StrokeError::NoLayer)?;
+        if !layer.visible {
+            return Err(StrokeError::Hidden);
+        }
+        if layer.lock_pixels {
+            return Err(StrokeError::Locked);
+        }
+        let LayerKind::Raster(image) = &layer.kind;
+        Ok(Self {
+            layer: id,
+            base: image.clone(),
+            coverage: HashMap::new(),
+            selection: doc.selection().cloned(),
+            tip,
+            kind,
+            opacity: opacity.clamp(0.0, 1.0),
+            flow: flow.clamp(0.0, 1.0),
+            preserve_alpha: layer.is_background || layer.lock_transparency,
+            last: None,
+            since_dab: 0.0,
+        })
+    }
+
+    /// Distance between dabs: 25% of the diameter, Photoshop's default spacing.
+    fn spacing(&self) -> f32 {
+        (self.tip.diameter * 0.25).max(1.0)
+    }
+
+    /// Continues the stroke to (`x`, `y`) in document pixels, placing dabs
+    /// along the way. The first point places a single dab.
+    pub fn add_point(&mut self, doc: &mut Document, x: f32, y: f32) {
+        let Some((lx, ly)) = self.last else {
+            self.dab(doc, x, y);
+            self.last = Some((x, y));
+            return;
+        };
+        let (dx, dy) = (x - lx, y - ly);
+        let dist = (dx * dx + dy * dy).sqrt();
+        let spacing = self.spacing();
+        let mut t = spacing - self.since_dab;
+        while t <= dist {
+            let f = t / dist;
+            self.dab(doc, lx + dx * f, ly + dy * f);
+            t += spacing;
+        }
+        self.since_dab = dist - (t - spacing);
+        self.last = Some((x, y));
+    }
+
+    fn dab(&mut self, doc: &mut Document, cx: f32, cy: f32) {
+        let (w, h) = (doc.width, doc.height);
+        let r = self.tip.diameter / 2.0 + 1.0;
+        let x0 = (cx - r).floor().max(0.0) as u32;
+        let y0 = (cy - r).floor().max(0.0) as u32;
+        let x1 = ((cx + r).ceil().max(0.0) as u32).min(w);
+        let y1 = ((cy + r).ceil().max(0.0) as u32).min(h);
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        let Some(layer) = doc.layer_mut(self.layer) else {
+            return;
+        };
+        let LayerKind::Raster(image) = &mut layer.kind;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let (px, py) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);
+                let a = self.tip.alpha((px * px + py * py).sqrt());
+                if a <= 0.0 {
+                    continue;
+                }
+                let key = (x / TILE_SIZE, y / TILE_SIZE);
+                let cov = self.coverage.entry(key).or_insert_with(|| {
+                    vec![0.0; (TILE_SIZE * TILE_SIZE) as usize].into_boxed_slice()
+                });
+                let i = ((y % TILE_SIZE) * TILE_SIZE + x % TILE_SIZE) as usize;
+                let c = &mut cov[i];
+                *c += (1.0 - *c) * a * self.flow;
+                let selected = self
+                    .selection
+                    .as_ref()
+                    .map_or(1.0, |s| s.get(x, y) as f32 / 255.0);
+                let amount = *c * self.opacity * selected;
+                let base = self.base.pixel(x, y);
+                image.set_pixel(x, y, apply(base, amount, self.kind, self.preserve_alpha));
+            }
+        }
+        doc.mark_dirty();
+    }
+
+    /// The layer the stroke paints on.
+    pub fn layer(&self) -> LayerId {
+        self.layer
+    }
+
+    /// Where the stroke ended (for Shift-click straight lines).
+    pub fn last_point(&self) -> Option<(f32, f32)> {
+        self.last
+    }
+}
+
+/// One pixel of the stroke: the pre-stroke pixel `base` changed by `amount`
+/// (coverage × opacity × selection).
+fn apply(base: [u8; 4], amount: f32, kind: StrokeKind, preserve_alpha: bool) -> [u8; 4] {
+    let mix = |a: u8, b: u8, t: f32| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
+    match kind {
+        StrokeKind::Erase { background } if preserve_alpha => {
+            let [r, g, b, a] = base;
+            [
+                mix(r, background[0], amount),
+                mix(g, background[1], amount),
+                mix(b, background[2], amount),
+                a,
+            ]
+        }
+        StrokeKind::Erase { .. } => {
+            let [r, g, b, a] = base;
+            [r, g, b, (a as f32 * (1.0 - amount)).round() as u8]
+        }
+        StrokeKind::Paint(color) if preserve_alpha => {
+            let [r, g, b, a] = base;
+            [
+                mix(r, color[0], amount),
+                mix(g, color[1], amount),
+                mix(b, color[2], amount),
+                a,
+            ]
+        }
+        StrokeKind::Paint(color) => {
+            // Source-over of `color` at alpha `amount` onto the straight-alpha base
+            let ba = base[3] as f32 / 255.0;
+            let oa = amount + ba * (1.0 - amount);
+            if oa <= 0.0 {
+                return [0; 4];
+            }
+            let ch = |s: u8, d: u8| {
+                ((s as f32 * amount + d as f32 * ba * (1.0 - amount)) / oa).round() as u8
+            };
+            [
+                ch(color[0], base[0]),
+                ch(color[1], base[1]),
+                ch(color[2], base[2]),
+                (oa * 255.0).round() as u8,
+            ]
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Color, Layer};
+
+    fn doc_with_layer() -> (Document, LayerId) {
+        let mut doc = Document::new_with_background("t", 40, 40, Color::WHITE);
+        let id = doc.new_layer_id();
+        doc.layers
+            .push(Layer::raster(id, "Layer 1", TiledImage::new(40, 40)));
+        doc.active_layer = Some(id);
+        (doc, id)
+    }
+
+    fn pixel(doc: &Document, id: LayerId, x: u32, y: u32) -> [u8; 4] {
+        let LayerKind::Raster(img) = &doc.layer(id).unwrap().kind;
+        img.pixel(x, y)
+    }
+
+    const HARD: BrushTip = BrushTip {
+        diameter: 10.0,
+        hardness: 1.0,
+        aliased: false,
+    };
+
+    #[test]
+    fn hard_brush_paints_full_color_in_its_core() {
+        let (mut doc, id) = doc_with_layer();
+        let mut s = Stroke::begin(&doc, HARD, StrokeKind::Paint([255, 0, 0]), 1.0, 1.0).unwrap();
+        s.add_point(&mut doc, 20.0, 20.0);
+        assert_eq!(pixel(&doc, id, 20, 20), [255, 0, 0, 255]);
+        assert_eq!(pixel(&doc, id, 30, 20)[3], 0);
+    }
+
+    #[test]
+    fn opacity_caps_a_single_stroke() {
+        let (mut doc, id) = doc_with_layer();
+        let mut s = Stroke::begin(&doc, HARD, StrokeKind::Paint([0, 0, 0]), 0.5, 1.0).unwrap();
+        // Scrubbing back and forth within one stroke
+        for i in 0..20 {
+            let x = if i % 2 == 0 { 15.0 } else { 25.0 };
+            s.add_point(&mut doc, x, 20.0);
+        }
+        let a = pixel(&doc, id, 20, 20)[3];
+        assert!((126..=129).contains(&a), "{a}");
+    }
+
+    #[test]
+    fn flow_builds_up() {
+        let (mut doc, id) = doc_with_layer();
+        let mut s = Stroke::begin(&doc, HARD, StrokeKind::Paint([0, 0, 0]), 1.0, 0.2).unwrap();
+        s.add_point(&mut doc, 20.0, 20.0);
+        let first = pixel(&doc, id, 20, 20)[3];
+        s.add_point(&mut doc, 20.5, 20.0);
+        s.add_point(&mut doc, 23.0, 20.0);
+        s.add_point(&mut doc, 20.0, 20.0);
+        assert!(pixel(&doc, id, 20, 20)[3] > first);
+    }
+
+    #[test]
+    fn selection_masks_paint() {
+        let (mut doc, id) = doc_with_layer();
+        doc.set_selection(Some(Selection::rect(
+            40,
+            40,
+            crate::selection::Rect::new(0.0, 0.0, 20.0, 40.0),
+        )));
+        let mut s = Stroke::begin(&doc, HARD, StrokeKind::Paint([0, 0, 255]), 1.0, 1.0).unwrap();
+        s.add_point(&mut doc, 20.0, 20.0);
+        assert_eq!(pixel(&doc, id, 18, 20)[3], 255);
+        assert_eq!(pixel(&doc, id, 21, 20)[3], 0);
+    }
+
+    #[test]
+    fn eraser_removes_alpha_and_paints_background_on_background_layer() {
+        let (mut doc, id) = doc_with_layer();
+        let mut s = Stroke::begin(&doc, HARD, StrokeKind::Paint([0, 0, 0]), 1.0, 1.0).unwrap();
+        s.add_point(&mut doc, 20.0, 20.0);
+        let mut e = Stroke::begin(
+            &doc,
+            HARD,
+            StrokeKind::Erase {
+                background: [9, 9, 9],
+            },
+            1.0,
+            1.0,
+        )
+        .unwrap();
+        e.add_point(&mut doc, 20.0, 20.0);
+        assert_eq!(pixel(&doc, id, 20, 20)[3], 0);
+
+        // On the background layer the eraser paints the background color
+        let bg = doc.layers[0].id;
+        doc.active_layer = Some(bg);
+        let mut e = Stroke::begin(
+            &doc,
+            HARD,
+            StrokeKind::Erase {
+                background: [9, 9, 9],
+            },
+            1.0,
+            1.0,
+        )
+        .unwrap();
+        e.add_point(&mut doc, 5.0, 5.0);
+        assert_eq!(pixel(&doc, bg, 5, 5), [9, 9, 9, 255]);
+    }
+
+    #[test]
+    fn pencil_is_aliased() {
+        let (mut doc, id) = doc_with_layer();
+        let tip = BrushTip {
+            diameter: 7.0,
+            hardness: 1.0,
+            aliased: true,
+        };
+        let mut s = Stroke::begin(&doc, tip, StrokeKind::Paint([0, 0, 0]), 1.0, 1.0).unwrap();
+        s.add_point(&mut doc, 20.0, 20.0);
+        let LayerKind::Raster(img) = &doc.layer(id).unwrap().kind;
+        for y in 10..30 {
+            for x in 10..30 {
+                let a = img.pixel(x, y)[3];
+                assert!(a == 0 || a == 255);
+            }
+        }
+    }
+
+    #[test]
+    fn locked_and_hidden_layers_refuse() {
+        let (mut doc, id) = doc_with_layer();
+        doc.layer_mut(id).unwrap().lock_pixels = true;
+        assert_eq!(
+            Stroke::begin(&doc, HARD, StrokeKind::Paint([0; 3]), 1.0, 1.0).err(),
+            Some(StrokeError::Locked)
+        );
+        doc.layer_mut(id).unwrap().lock_pixels = false;
+        doc.layer_mut(id).unwrap().visible = false;
+        assert_eq!(
+            Stroke::begin(&doc, HARD, StrokeKind::Paint([0; 3]), 1.0, 1.0).err(),
+            Some(StrokeError::Hidden)
+        );
+    }
+
+    #[test]
+    fn spacing_places_dabs_along_a_line() {
+        let (mut doc, id) = doc_with_layer();
+        let mut s = Stroke::begin(&doc, HARD, StrokeKind::Paint([0, 0, 0]), 1.0, 1.0).unwrap();
+        s.add_point(&mut doc, 5.0, 20.0);
+        s.add_point(&mut doc, 35.0, 20.0);
+        for x in 5..35 {
+            assert_eq!(pixel(&doc, id, x, 20)[3], 255, "x={x}");
+        }
+    }
+}

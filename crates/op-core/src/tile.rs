@@ -184,6 +184,20 @@ impl TiledImage {
         out
     }
 
+    /// Writes one pixel (ignored outside the image). Writing a transparent
+    /// pixel into a missing tile allocates nothing.
+    pub fn set_pixel(&mut self, x: u32, y: u32, rgba: [u8; 4]) {
+        if x >= self.width || y >= self.height {
+            return;
+        }
+        let (tx, ty) = (x / TILE_SIZE, y / TILE_SIZE);
+        if rgba[3] == 0 && self.tile(tx, ty).is_none() {
+            return;
+        }
+        let i = (((y % TILE_SIZE) * TILE_SIZE + x % TILE_SIZE) * 4) as usize;
+        self.tile_mut(tx, ty).data[i..i + 4].copy_from_slice(&rgba);
+    }
+
     /// Number of allocated tiles (for debugging and memory stats).
     pub fn allocated_tiles(&self) -> usize {
         self.tiles.len()

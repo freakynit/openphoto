@@ -76,6 +76,9 @@ pub fn actual_pixels(state: &mut DocState, _ppp: f32) {
 
 pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
     let tool = app.tool;
+    let paint = app.paint_options(tool).copied();
+    let (foreground, background) = (app.foreground, app.background);
+    let mut paint_error = None;
     let Some(state) = app.docs.get_mut(&id) else {
         return;
     };
@@ -159,6 +162,19 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
                     }
                 }
             }
+            Tool::Brush | Tool::Pencil | Tool::Eraser => {
+                if let Some(opts) = paint {
+                    paint_error = paint_input(
+                        ui,
+                        &response,
+                        state,
+                        tool,
+                        opts,
+                        (foreground, background),
+                        ppp,
+                    );
+                }
+            }
             Tool::RectangularMarquee
             | Tool::EllipticalMarquee
             | Tool::SingleRowMarquee
@@ -174,6 +190,9 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
         }
     }
 
+    if let Some(message) = paint_error {
+        app.alert = Some(message);
+    }
     let state = app.docs.get_mut(&id).unwrap();
     clamp_offset(state, ppp);
     if response.hovered() {
@@ -187,8 +206,15 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
             match tool {
                 Tool::Zoom if alt => CursorIcon::ZoomOut,
                 Tool::Zoom => CursorIcon::ZoomIn,
+                // Painting tools draw their own brush outline instead
+                Tool::Brush | Tool::Pencil | Tool::Eraser
+                    if paint.is_some_and(|p| p.size * state.view.zoom / ppp >= 4.0) =>
+                {
+                    CursorIcon::None
+                }
                 Tool::Eyedropper
                 | Tool::Brush
+                | Tool::Pencil
                 | Tool::Eraser
                 | Tool::RectangularMarquee
                 | Tool::EllipticalMarquee
@@ -219,6 +245,9 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
         .add(op_render::paint_callback(canvas_rect, image, view));
 
     draw_selection(ui, state, canvas_rect, ppp, tool);
+    if let (Some(opts), Some(p)) = (paint, response.hover_pos()) {
+        brush_cursor(ui, canvas_rect, p, opts.size * state.view.zoom / ppp);
+    }
     status_bar(ui, state, status_rect, ppp);
     vertical_scrollbar(ui, state, vscroll_rect, ppp);
 }
@@ -357,6 +386,109 @@ fn marquee_input(
         state.doc.set_selection(None);
         state.record("Deselect");
     }
+}
+
+/// Brush, Pencil and Eraser: press to start a stroke, drag to continue,
+/// release to finish (one history state). Shift-click strokes a straight
+/// line from where the last stroke ended. Returns Photoshop's alert text when
+/// the layer can't be painted.
+fn paint_input(
+    ui: &Ui,
+    response: &egui::Response,
+    state: &mut DocState,
+    tool: Tool,
+    opts: crate::state::PaintOptions,
+    (foreground, background): (op_core::Color, op_core::Color),
+    ppp: f32,
+) -> Option<String> {
+    use op_core::paint::{BrushTip, Stroke, StrokeKind};
+    let pointer = ui
+        .input(|i| i.pointer.interact_pos())
+        .map(|p| to_doc(state, p, ppp));
+    let pressed = response.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_down());
+
+    if pressed && state.stroke.is_none() {
+        let rgb = |c: op_core::Color| {
+            let [r, g, b, _] = c.to_rgba8();
+            [r, g, b]
+        };
+        let tip = BrushTip {
+            diameter: opts.size,
+            hardness: opts.hardness,
+            aliased: tool == Tool::Pencil,
+        };
+        let kind = if tool == Tool::Eraser {
+            StrokeKind::Erase {
+                background: rgb(background),
+            }
+        } else {
+            StrokeKind::Paint(rgb(foreground))
+        };
+        let flow = if tool == Tool::Pencil { 1.0 } else { opts.flow };
+        let label = match tool {
+            Tool::Pencil => "pencil",
+            Tool::Eraser => "eraser",
+            _ => "brush tool",
+        };
+        match Stroke::begin(&state.doc, tip, kind, opts.opacity, flow) {
+            Ok(mut stroke) => {
+                let start = ui
+                    .input(|i| i.pointer.press_origin())
+                    .map(|p| to_doc(state, p, ppp));
+                let shift = ui.input(|i| i.modifiers.shift);
+                if shift && let Some((x, y)) = state.last_paint_point {
+                    stroke.add_point(&mut state.doc, x, y);
+                }
+                if let Some(p) = start.or(pointer) {
+                    stroke.add_point(&mut state.doc, p.x, p.y);
+                }
+                state.stroke = Some((stroke, tool));
+            }
+            Err(e) => {
+                // Wait for the button to be released before another attempt
+                state.stroke = None;
+                return response
+                    .is_pointer_button_down_on()
+                    .then(|| e.message(label))
+                    .filter(|_| ui.input(|i| i.pointer.primary_pressed()));
+            }
+        }
+    }
+
+    if let Some((stroke, stroke_tool)) = &mut state.stroke {
+        if let Some(p) = pointer {
+            stroke.add_point(&mut state.doc, p.x, p.y);
+        }
+        if !ui.input(|i| i.pointer.primary_down()) {
+            let name = match stroke_tool {
+                Tool::Pencil => "Pencil",
+                Tool::Eraser => "Eraser",
+                _ => "Brush Tool",
+            };
+            state.last_paint_point = stroke.last_point();
+            state.stroke = None;
+            state.record(name);
+        } else {
+            ui.ctx().request_repaint();
+        }
+    }
+    None
+}
+
+/// Photoshop's "normal brush tip" cursor: the brush outline, drawn in white
+/// over black so it shows on any background.
+fn brush_cursor(ui: &Ui, canvas: Rect, center: Pos2, diameter: f32) {
+    if diameter < 4.0 {
+        return;
+    }
+    let painter = ui.painter_at(canvas);
+    let r = diameter / 2.0;
+    painter.circle_stroke(
+        center,
+        r,
+        egui::Stroke::new(1.5, Color32::from_black_alpha(160)),
+    );
+    painter.circle_stroke(center, r, egui::Stroke::new(0.75, Color32::WHITE));
 }
 
 /// Marching ants around the selection and the marquee being dragged.

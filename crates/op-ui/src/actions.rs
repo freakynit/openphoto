@@ -112,6 +112,9 @@ pub fn handle_tool_keys(ctx: &egui::Context, app: &mut AppState) {
             .collect()
     });
     for (key, shift) in keys {
+        if paint_key(app, key, shift) {
+            continue;
+        }
         match key {
             Key::D if !shift => crate::toolbar::reset_colors(app),
             Key::X if !shift => crate::toolbar::swap_colors(app),
@@ -129,4 +132,45 @@ pub fn handle_tool_keys(ctx: &egui::Context, app: &mut AppState) {
             }
         }
     }
+}
+
+/// Painting-tool keys, as in Photoshop: `[`/`]` change the size, Shift+`[`/`]`
+/// the hardness in 25% steps, number keys the opacity (1 = 10% … 0 = 100%)
+/// and Shift+number the flow. Returns whether the key was used.
+fn paint_key(app: &mut AppState, key: Key, shift: bool) -> bool {
+    let tool = app.tool;
+    let Some(opts) = app.paint_options(tool) else {
+        return false;
+    };
+    let digit = match key {
+        Key::Num0 => Some(10),
+        Key::Num1 => Some(1),
+        Key::Num2 => Some(2),
+        Key::Num3 => Some(3),
+        Key::Num4 => Some(4),
+        Key::Num5 => Some(5),
+        Key::Num6 => Some(6),
+        Key::Num7 => Some(7),
+        Key::Num8 => Some(8),
+        Key::Num9 => Some(9),
+        _ => None,
+    };
+    match (key, shift) {
+        (Key::OpenBracket, false) => {
+            let step = crate::state::PaintOptions::size_step(opts.size - 0.5);
+            opts.size = (opts.size - step).max(1.0);
+        }
+        (Key::CloseBracket, false) => {
+            let step = crate::state::PaintOptions::size_step(opts.size);
+            opts.size = (opts.size + step).min(crate::state::PaintOptions::MAX_SIZE);
+        }
+        (Key::OpenBracket, true) => opts.hardness = (opts.hardness - 0.25).max(0.0),
+        (Key::CloseBracket, true) => opts.hardness = (opts.hardness + 0.25).min(1.0),
+        _ => match digit {
+            Some(d) if shift && tool != op_tools::Tool::Pencil => opts.flow = d as f32 / 10.0,
+            Some(d) => opts.opacity = d as f32 / 10.0,
+            None => return false,
+        },
+    }
+    true
 }
