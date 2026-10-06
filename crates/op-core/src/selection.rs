@@ -118,6 +118,66 @@ impl Selection {
         s
     }
 
+    /// The inside of a closed polygon (the Lasso tools), with the even-odd
+    /// rule for self-intersecting outlines. With `anti_alias`, edge pixels
+    /// are partly selected by coverage (4 sample rows per pixel, exact
+    /// horizontal overlap); otherwise a pixel is in when its center is.
+    pub fn polygon(width: u32, height: u32, points: &[(f32, f32)], anti_alias: bool) -> Self {
+        let mut s = Self::empty(width, height);
+        if points.len() < 3 {
+            return s;
+        }
+        let edges: Vec<((f32, f32), (f32, f32))> = points
+            .iter()
+            .zip(points.iter().cycle().skip(1))
+            .map(|(&a, &b)| (a, b))
+            .collect();
+        // Spans [x0, x1) inside the polygon along the horizontal line at y
+        let spans = |y: f32| -> Vec<(f32, f32)> {
+            let mut xs: Vec<f32> = edges
+                .iter()
+                .filter(|((_, ay), (_, by))| (*ay <= y) != (*by <= y))
+                .map(|((ax, ay), (bx, by))| ax + (y - ay) / (by - ay) * (bx - ax))
+                .collect();
+            xs.sort_by(f32::total_cmp);
+            xs.as_chunks::<2>().0.iter().map(|&[a, b]| (a, b)).collect()
+        };
+        let w = width as usize;
+        const N: u32 = 4;
+        let mut coverage = vec![0f32; w];
+        for y in 0..height {
+            coverage.fill(0.0);
+            if anti_alias {
+                for sub in 0..N {
+                    let sy = y as f32 + (sub as f32 + 0.5) / N as f32;
+                    for (a, b) in spans(sy) {
+                        let (a, b) = (a.clamp(0.0, width as f32), b.clamp(0.0, width as f32));
+                        let mut x = a.floor() as usize;
+                        while (x as f32) < b && x < w {
+                            let overlap = b.min(x as f32 + 1.0) - a.max(x as f32);
+                            coverage[x] += overlap.max(0.0) / N as f32;
+                            x += 1;
+                        }
+                    }
+                }
+            } else {
+                for (a, b) in spans(y as f32 + 0.5) {
+                    for (x, c) in coverage.iter_mut().enumerate() {
+                        let cx = x as f32 + 0.5;
+                        if cx >= a && cx < b {
+                            *c = 1.0;
+                        }
+                    }
+                }
+            }
+            let row = &mut s.mask[y as usize * w..(y as usize + 1) * w];
+            for (m, c) in row.iter_mut().zip(&coverage) {
+                *m = (c.min(1.0) * 255.0).round() as u8;
+            }
+        }
+        s
+    }
+
     /// A selection from a 0/255 mask; with `anti_alias`, pixels on the edge
     /// of the region become half selected (smoother fills).
     pub fn from_mask(width: u32, height: u32, mask: Vec<u8>, anti_alias: bool) -> Self {
@@ -431,6 +491,27 @@ mod tests {
             segs,
             vec![[2, 3, 2, 8], [2, 3, 5, 3], [2, 8, 5, 8], [5, 3, 5, 8]]
         );
+    }
+
+    #[test]
+    fn polygons_fill_their_inside() {
+        // A right triangle with legs of 4: 8 pixels' worth of area
+        let tri = [(0.0, 0.0), (4.0, 0.0), (0.0, 4.0)];
+        let s = Selection::polygon(4, 4, &tri, true);
+        let total: u32 = (0..4)
+            .flat_map(|y| (0..4).map(move |x| (x, y)))
+            .map(|(x, y)| s.get(x, y) as u32)
+            .sum();
+        assert!((total as f32 / 255.0 - 8.0).abs() < 0.1, "{total}");
+        assert_eq!(s.get(0, 0), 255);
+        assert_eq!(s.get(3, 3), 0);
+        // Without anti-aliasing every pixel is all in or all out
+        let hard = Selection::polygon(4, 4, &tri, false);
+        assert!((0..4).all(|y| (0..4).all(|x| matches!(hard.get(x, y), 0 | 255))));
+        assert_eq!(hard.get(1, 1), 255);
+        assert_eq!(hard.get(2, 2), 0);
+        // Fewer than three points select nothing
+        assert!(Selection::polygon(4, 4, &[(0.0, 0.0), (3.0, 3.0)], true).is_empty());
     }
 
     #[test]

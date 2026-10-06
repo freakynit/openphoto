@@ -152,16 +152,53 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
                     zoom_at(state, z, p, ppp);
                 }
             }
+            // Alt-click picks the background color
             Tool::Eyedropper if response.is_pointer_button_down_on() => {
                 if let Some(p) = response.interact_pointer_pos() {
-                    let d = (p - origin(state, ppp)) * ppp / state.view.zoom;
+                    let d = to_doc(state, p, ppp);
+                    let o = app.eyedropper;
                     if d.x >= 0.0
                         && d.y >= 0.0
-                        && let Some(c) = state.sample(d.x as u32, d.y as u32)
+                        && let Some(c) =
+                            state.sample_average(d.x as u32, d.y as u32, o.size, o.all_layers)
                     {
-                        app.foreground = c;
+                        if alt {
+                            app.background = c;
+                        } else {
+                            app.foreground = c;
+                        }
                     }
                 }
+            }
+            Tool::MagicWand if response.clicked() => {
+                if let Some(p) = response.interact_pointer_pos() {
+                    let d = to_doc(state, p, ppp);
+                    let mods = ui.input(|i| i.modifiers);
+                    let has_selection = state.doc.selection().is_some();
+                    let (op, _, _) = selection_op(mods, has_selection, app.wand.mode);
+                    if d.x >= 0.0
+                        && d.y >= 0.0
+                        && let Some(shape) = op_core::fill::magic_wand(
+                            &state.doc,
+                            d.x as u32,
+                            d.y as u32,
+                            &app.wand.region,
+                        )
+                    {
+                        let combined =
+                            op_core::Selection::combine(state.doc.selection(), shape, op);
+                        state.doc.set_selection(Some(combined));
+                        state.record("Magic Wand");
+                    }
+                }
+            }
+            Tool::Lasso | Tool::PolygonalLasso => {
+                let options = (
+                    app.marquee.mode,
+                    app.marquee.feather,
+                    app.marquee.anti_alias,
+                );
+                lasso_input(ui, &response, state, tool, options, ppp);
             }
             Tool::Move => {
                 let [r, g, b, _] = background.to_rgba8();
@@ -237,6 +274,9 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
                     CursorIcon::None
                 }
                 Tool::Eyedropper
+                | Tool::MagicWand
+                | Tool::Lasso
+                | Tool::PolygonalLasso
                 | Tool::PaintBucket
                 | Tool::Brush
                 | Tool::Pencil
@@ -321,6 +361,136 @@ fn marquee_rect(
 
 /// Marquee tools: drag to select, click to deselect; single row/column
 /// marquees select a 1-pixel line on click.
+/// The combine mode for a new selection shape: with a selection, Shift adds,
+/// Alt subtracts and both intersect; otherwise the options bar's mode. Also
+/// returns whether Shift and Alt were used for the mode (and so don't
+/// constrain the shape).
+fn selection_op(
+    mods: egui::Modifiers,
+    has_selection: bool,
+    mode: crate::state::SelectionMode,
+) -> (op_core::SelectionOp, bool, bool) {
+    use op_core::SelectionOp;
+    match (mods.shift, mods.alt) {
+        (true, true) if has_selection => (SelectionOp::Intersect, true, true),
+        (true, false) if has_selection => (SelectionOp::Add, true, false),
+        (false, true) if has_selection => (SelectionOp::Subtract, false, true),
+        _ => (mode.op(), false, false),
+    }
+}
+
+/// Lasso (drag a freehand outline) and Polygonal Lasso (click corners;
+/// double-click, Enter or clicking the first point closes; Backspace
+/// removes the last corner; Escape cancels).
+fn lasso_input(
+    ui: &Ui,
+    response: &egui::Response,
+    state: &mut DocState,
+    tool: Tool,
+    (mode, feather, anti_alias): (crate::state::SelectionMode, f32, bool),
+    ppp: f32,
+) {
+    use crate::state::LassoPath;
+    let mods = ui.input(|i| i.modifiers);
+    let has_selection = state.doc.selection().is_some();
+    let pointer = ui
+        .input(|i| i.pointer.interact_pos())
+        .map(|p| to_doc(state, p, ppp));
+    let mut close = false;
+
+    if tool == Tool::Lasso {
+        if response.drag_started_by(PointerButton::Primary)
+            && let Some(p) = ui.input(|i| i.pointer.press_origin())
+        {
+            let (op, _, _) = selection_op(mods, has_selection, mode);
+            state.lasso = Some(LassoPath {
+                points: vec![to_doc(state, p, ppp)],
+                op,
+                polygonal: false,
+            });
+        }
+        if let Some(lasso) = &mut state.lasso {
+            if let Some(p) = pointer
+                && lasso
+                    .points
+                    .last()
+                    .is_none_or(|l| l.distance(p) * state.view.zoom >= ppp)
+            {
+                lasso.points.push(p);
+            }
+            if response.drag_stopped() || !ui.input(|i| i.pointer.primary_down()) {
+                close = true;
+            } else {
+                ui.ctx().request_repaint();
+            }
+        } else if response.clicked() && has_selection && !mods.shift && !mods.alt {
+            state.doc.set_selection(None);
+            state.record("Deselect");
+        }
+    } else {
+        let (enter, escape, backspace) = ui.input_mut(|i| {
+            (
+                i.consume_key(egui::Modifiers::NONE, Key::Enter),
+                i.consume_key(egui::Modifiers::NONE, Key::Escape),
+                i.consume_key(egui::Modifiers::NONE, Key::Backspace)
+                    || i.consume_key(egui::Modifiers::NONE, Key::Delete),
+            )
+        });
+        if escape {
+            state.lasso = None;
+        }
+        if let Some(lasso) = &mut state.lasso {
+            if backspace {
+                lasso.points.pop();
+                if lasso.points.is_empty() {
+                    state.lasso = None;
+                }
+            } else if enter || response.double_clicked() {
+                close = true;
+            } else if response.clicked()
+                && let Some(p) = pointer
+            {
+                // Clicking near the first corner (within 5 screen points) closes
+                let first = lasso.points[0];
+                if lasso.points.len() > 2 && first.distance(p) * state.view.zoom / ppp <= 5.0 {
+                    close = true;
+                } else {
+                    lasso.points.push(p);
+                }
+            }
+            ui.ctx().request_repaint();
+        } else if response.clicked()
+            && let Some(p) = pointer
+        {
+            let (op, _, _) = selection_op(mods, has_selection, mode);
+            state.lasso = Some(LassoPath {
+                points: vec![p],
+                op,
+                polygonal: true,
+            });
+        }
+    }
+
+    if close && let Some(lasso) = state.lasso.take() {
+        let (w, h) = (state.doc.width, state.doc.height);
+        let points: Vec<(f32, f32)> = lasso.points.iter().map(|p| (p.x, p.y)).collect();
+        let mut shape = op_core::Selection::polygon(w, h, &points, anti_alias);
+        if shape.is_empty() {
+            return;
+        }
+        if feather > 0.0 {
+            shape = shape.feather(feather);
+        }
+        let combined = op_core::Selection::combine(state.doc.selection(), shape, lasso.op);
+        state.doc.set_selection(Some(combined));
+        state.record(if lasso.polygonal {
+            "Polygonal Lasso"
+        } else {
+            "Lasso"
+        });
+    }
+}
+
 fn marquee_input(
     ui: &Ui,
     response: &egui::Response,
@@ -329,16 +499,11 @@ fn marquee_input(
     (mode, feather, anti_alias): (crate::state::SelectionMode, f32, bool),
     ppp: f32,
 ) {
-    use op_core::{Selection, SelectionOp};
+    use op_core::Selection;
     let mods = ui.input(|i| i.modifiers);
     let has_selection = state.doc.selection().is_some();
     // With a selection, Shift/Alt at mouse-down pick the combine mode
-    let op_from_mods = || match (mods.shift, mods.alt) {
-        (true, true) if has_selection => (SelectionOp::Intersect, true, true),
-        (true, false) if has_selection => (SelectionOp::Add, true, false),
-        (false, true) if has_selection => (SelectionOp::Subtract, false, true),
-        _ => (mode.op(), false, false),
-    };
+    let op_from_mods = || selection_op(mods, has_selection, mode);
     let (w, h) = (state.doc.width, state.doc.height);
 
     if matches!(tool, Tool::SingleRowMarquee | Tool::SingleColumnMarquee) {
@@ -638,6 +803,22 @@ fn draw_selection(ui: &Ui, state: &mut DocState, canvas: Rect, ppp: f32, tool: T
             ] {
                 ants(a, b);
             }
+        }
+    }
+    if let Some(lasso) = &state.lasso {
+        let mut pts: Vec<Pos2> = lasso
+            .points
+            .iter()
+            .map(|&p| to_screen(state, p, ppp))
+            .collect();
+        // The Polygonal Lasso's next edge follows the pointer
+        if lasso.polygonal
+            && let Some(p) = ui.input(|i| i.pointer.hover_pos())
+        {
+            pts.push(p);
+        }
+        for w in pts.windows(2) {
+            ants(w[0], w[1]);
         }
     }
     if animate {

@@ -36,6 +36,8 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
                 Tool::Move => move_options(ui),
                 Tool::Brush | Tool::Pencil | Tool::Eraser => paint_options(ui, app),
                 Tool::PaintBucket => bucket_options(ui, app),
+                Tool::Eyedropper => eyedropper_options(ui, app),
+                Tool::MagicWand => wand_options(ui, app),
                 Tool::Hand | Tool::Zoom => view_options(ui, app),
                 _ => {}
             }
@@ -62,8 +64,8 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
     );
 }
 
-fn marquee_options(ui: &mut Ui, app: &mut AppState) {
-    let opts = &mut app.marquee;
+/// The four combine-mode buttons of the selection tools.
+fn mode_buttons(ui: &mut Ui, current: &mut SelectionMode) {
     for (mode, icon, tip) in [
         (SelectionMode::New, icons::SQUARE, "New selection"),
         (
@@ -82,14 +84,28 @@ fn marquee_options(ui: &mut Ui, app: &mut AppState) {
             "Intersect with selection",
         ),
     ] {
-        if widgets::icon_button(ui, icon, 34.0, opts.mode == mode)
+        if widgets::icon_button(ui, icon, 34.0, *current == mode)
             .on_hover_text(tip)
             .clicked()
         {
-            opts.mode = mode;
+            *current = mode;
         }
     }
     widgets::vseparator(ui, 34.0);
+}
+
+fn select_and_mask_button(ui: &mut Ui) {
+    let button = egui::Button::new(egui::RichText::new("Select and Mask...").font(theme::body()))
+        .fill(color::BUTTON)
+        .min_size(Vec2::new(0.0, 32.0));
+    ui.add(button);
+}
+
+/// Marquee and Lasso tools: mode, Feather, Anti-alias; the marquees also
+/// have Style with Width and Height.
+fn marquee_options(ui: &mut Ui, app: &mut AppState) {
+    let opts = &mut app.marquee;
+    mode_buttons(ui, &mut opts.mode);
 
     ui.label("Feather:");
     ui.add_sized(
@@ -111,6 +127,13 @@ fn marquee_options(ui: &mut Ui, app: &mut AppState) {
         egui::Checkbox::new(&mut opts.anti_alias, "Anti-alias"),
     );
     ui.add_space(6.0);
+    if matches!(
+        app.tool,
+        Tool::Lasso | Tool::PolygonalLasso | Tool::MagneticLasso
+    ) {
+        select_and_mask_button(ui);
+        return;
+    }
 
     ui.label("Style:");
     egui::ComboBox::from_id_salt("marquee-style")
@@ -130,10 +153,59 @@ fn marquee_options(ui: &mut Ui, app: &mut AppState) {
         widgets::field(ui, "", 58.0, fixed);
     });
     ui.add_space(6.0);
-    let button = egui::Button::new(egui::RichText::new("Select and Mask...").font(theme::body()))
-        .fill(color::BUTTON)
-        .min_size(Vec2::new(0.0, 32.0));
-    ui.add(button);
+    select_and_mask_button(ui);
+}
+
+/// Eyedropper: Sample Size, Sample, Show Sampling Ring.
+fn eyedropper_options(ui: &mut Ui, app: &mut AppState) {
+    use crate::state::EyedropperOptions;
+    let opts = &mut app.eyedropper;
+    ui.label("Sample Size:");
+    let label = EyedropperOptions::SIZES
+        .iter()
+        .find(|(s, _)| *s == opts.size)
+        .map_or("Point Sample", |(_, l)| l);
+    egui::ComboBox::from_id_salt("eyedropper-size")
+        .width(130.0)
+        .selected_text(label)
+        .show_ui(ui, |ui| {
+            for (size, label) in EyedropperOptions::SIZES {
+                ui.selectable_value(&mut opts.size, size, label);
+            }
+        });
+    ui.add_space(6.0);
+    ui.label("Sample:");
+    egui::ComboBox::from_id_salt("eyedropper-sample")
+        .width(110.0)
+        .selected_text(if opts.all_layers {
+            "All Layers"
+        } else {
+            "Current Layer"
+        })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut opts.all_layers, false, "Current Layer");
+            ui.selectable_value(&mut opts.all_layers, true, "All Layers");
+        });
+    ui.add_space(6.0);
+    let mut ring = true;
+    ui.add_enabled(false, egui::Checkbox::new(&mut ring, "Show Sampling Ring"));
+}
+
+/// Magic Wand: mode, Tolerance, Anti-alias, Contiguous, Sample All Layers.
+fn wand_options(ui: &mut Ui, app: &mut AppState) {
+    let opts = &mut app.wand;
+    mode_buttons(ui, &mut opts.mode);
+    ui.label("Tolerance:");
+    ui.add_sized(
+        [48.0, size::FIELD_HEIGHT],
+        egui::DragValue::new(&mut opts.region.tolerance).range(0..=255),
+    );
+    ui.add_space(6.0);
+    ui.checkbox(&mut opts.region.anti_alias, "Anti-alias");
+    ui.checkbox(&mut opts.region.contiguous, "Contiguous");
+    ui.checkbox(&mut opts.region.all_layers, "Sample All Layers");
+    ui.add_space(6.0);
+    select_and_mask_button(ui);
 }
 
 /// Brush, Pencil and Eraser: the brush preset picker (a dot with the size

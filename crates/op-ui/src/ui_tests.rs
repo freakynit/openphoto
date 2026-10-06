@@ -865,3 +865,106 @@ fn screenshot_save_prompt() {
     h.run_steps(3);
     shot(&mut h, "save_prompt");
 }
+
+#[test]
+fn eyedropper_magic_wand_and_lassos() {
+    use op_tools::Tool;
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    // A red square at 100..140
+    h.state_mut().state.foreground = Color::from_rgba8([255, 0, 0, 255]);
+    select_rect(&mut h, 100.0, 100.0, 140.0, 140.0);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::D);
+    h.run_steps(2);
+
+    // Eyedropper: click picks the foreground, Alt-click the background
+    h.state_mut().state.foreground = Color::WHITE;
+    h.state_mut().state.select_tool(Tool::Eyedropper);
+    let inside = doc_point(&h, 120.0, 120.0);
+    click(&mut h, inside);
+    assert_eq!(h.state().state.foreground.to_rgba8(), [255, 0, 0, 255]);
+    let outside = doc_point(&h, 50.0, 50.0);
+    h.hover_at(outside);
+    for pressed in [true, false] {
+        h.event_modifiers(
+            egui::Event::PointerButton {
+                pos: outside,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::ALT,
+            },
+            Modifiers::ALT,
+        );
+        h.step();
+    }
+    h.run_steps(2);
+    assert_eq!(
+        h.state().state.background.to_rgba8(),
+        [0x14, 0x14, 0x14, 255]
+    );
+    // A 5×5 average across the square's corner mixes the two colors
+    h.state_mut().state.eyedropper.size = 5;
+    let corner = doc_point(&h, 100.5, 100.5);
+    click(&mut h, corner);
+    let mixed = h.state().state.foreground.to_rgba8();
+    assert!(mixed[0] > 0x14 && mixed[0] < 255, "{mixed:?}");
+
+    // Magic Wand selects the square (anti-aliased: the ring around it is
+    // partly selected)
+    h.state_mut().state.select_tool(Tool::MagicWand);
+    click(&mut h, inside);
+    let s = active(&h).doc.selection().unwrap();
+    assert_eq!((s.get(100, 100), s.get(139, 139)), (255, 255));
+    assert!(s.get(99, 120) < 255 && s.get(97, 120) == 0);
+    assert_eq!(last_history(&h), "Magic Wand");
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::D);
+    h.run_steps(2);
+
+    // Polygonal Lasso: three corners, then Enter
+    h.state_mut().state.select_tool(Tool::PolygonalLasso);
+    for (x, y) in [(10.0, 10.0), (60.0, 10.0), (10.0, 60.0)] {
+        let p = doc_point(&h, x, y);
+        click(&mut h, p);
+    }
+    assert_eq!(active(&h).lasso.as_ref().map(|l| l.points.len()), Some(3));
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    let s = active(&h).doc.selection().unwrap();
+    assert_eq!(s.get(20, 20), 255);
+    assert_eq!(s.get(50, 50), 0);
+    assert_eq!(last_history(&h), "Polygonal Lasso");
+
+    // Lasso: a freehand drag (right, then down-left) replaces it
+    h.state_mut().state.select_tool(Tool::Lasso);
+    let a = doc_point(&h, 200.0, 200.0);
+    let path = [(260.0, 200.0), (200.0, 260.0)].map(|(x, y)| doc_point(&h, x, y));
+    h.hover_at(a);
+    h.event(egui::Event::PointerButton {
+        pos: a,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: Modifiers::NONE,
+    });
+    h.step();
+    for p in path {
+        for k in 1..=4 {
+            let from = h.ctx.input(|i| i.pointer.latest_pos()).unwrap_or(a);
+            h.event(egui::Event::PointerMoved(
+                from + (p - from) * (k as f32 / 4.0),
+            ));
+            h.step();
+        }
+    }
+    h.event(egui::Event::PointerButton {
+        pos: path[1],
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: Modifiers::NONE,
+    });
+    h.run_steps(3);
+    assert_eq!(last_history(&h), "Lasso");
+    assert!(active(&h).lasso.is_none());
+    let s = active(&h).doc.selection().unwrap();
+    assert_eq!((s.get(210, 210), s.get(20, 20)), (255, 0));
+}

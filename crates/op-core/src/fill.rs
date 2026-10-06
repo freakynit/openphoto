@@ -183,6 +183,24 @@ impl Default for BucketOptions {
     }
 }
 
+/// The Magic Wand: the region a click at (`x`, `y`) selects, by the same
+/// rule as the Paint Bucket (tolerance, contiguous, anti-alias), sampling
+/// the active layer or, with `all_layers`, the merged image. `None` outside
+/// the canvas or without an active layer.
+pub fn magic_wand(doc: &Document, x: u32, y: u32, options: &BucketOptions) -> Option<Selection> {
+    if x >= doc.width || y >= doc.height {
+        return None;
+    }
+    let source = if options.all_layers {
+        TiledImage::from_rgba8(doc.width, doc.height, &doc.composite_rgba8())
+    } else {
+        let layer = doc.active_layer.and_then(|id| doc.layer(id))?;
+        let LayerKind::Raster(image) = &layer.kind;
+        image.clone()
+    };
+    Some(bucket_region(&source, x, y, options))
+}
+
 /// The region a Paint Bucket click at (`x`, `y`) fills: pixels whose
 /// channels all lie within `tolerance` of the clicked pixel, either
 /// connected to it (4-neighborhood) or anywhere.
@@ -261,6 +279,29 @@ mod tests {
     fn px(doc: &Document, x: u32, y: u32) -> [u8; 4] {
         let LayerKind::Raster(img) = &doc.layer(doc.active_layer.unwrap()).unwrap().kind;
         img.pixel(x, y)
+    }
+
+    #[test]
+    fn magic_wand_selects_the_clicked_area() {
+        let mut d = doc();
+        let id = d.active_layer.unwrap();
+        let LayerKind::Raster(image) = &mut d.layer_mut(id).unwrap().kind;
+        for y in 2..5 {
+            for x in 2..5 {
+                image.set_pixel(x, y, [0, 0, 0, 255]);
+            }
+        }
+        let options = BucketOptions {
+            anti_alias: false,
+            ..Default::default()
+        };
+        let s = magic_wand(&d, 3, 3, &options).unwrap();
+        assert_eq!(s.bounds(), Some((2, 2, 5, 5)));
+        // The white around it, everywhere else
+        let s = magic_wand(&d, 0, 0, &options).unwrap();
+        assert_eq!(s.get(3, 3), 0);
+        assert_eq!(s.get(9, 9), 255);
+        assert!(magic_wand(&d, 10, 0, &options).is_none());
     }
 
     #[test]

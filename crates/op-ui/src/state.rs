@@ -55,6 +55,8 @@ pub struct DocState {
     pub stroke: Option<(op_core::paint::Stroke, Tool)>,
     /// Where the last stroke ended; Shift-click draws a line from here.
     pub last_paint_point: Option<(f32, f32)>,
+    /// A lasso outline being drawn.
+    pub lasso: Option<LassoPath>,
     /// A layer name being edited in the Layers panel, and the text so far.
     pub renaming: Option<(LayerId, String)>,
     /// Marching-ants outline of the selection, cached per selection revision.
@@ -87,6 +89,7 @@ impl DocState {
             stroke: None,
             last_paint_point: None,
             renaming: None,
+            lasso: None,
             outline: None,
             canvas: None,
             thumbs: HashMap::new(),
@@ -182,6 +185,54 @@ impl DocState {
     }
 
     /// Color of a composite pixel (for the eyedropper).
+    /// The Eyedropper's color at (`x`, `y`): the average of a `size` ×
+    /// `size` square (clipped to the canvas) of the merged image or, without
+    /// `all_layers`, of the active layer. Averaged with alpha weighting, and
+    /// opaque; `None` outside the canvas or where everything sampled is
+    /// transparent.
+    pub fn sample_average(&mut self, x: u32, y: u32, size: u32, all_layers: bool) -> Option<Color> {
+        let (w, h) = (self.doc.width, self.doc.height);
+        if x >= w || y >= h {
+            return None;
+        }
+        let merged = all_layers.then(|| self.canvas_image());
+        let layer = if all_layers {
+            None
+        } else {
+            let id = self.doc.active_layer?;
+            let op_core::LayerKind::Raster(image) = &self.doc.layer(id)?.kind;
+            Some(image)
+        };
+        let half = (size / 2) as i64;
+        let mut sum = [0u64; 3];
+        let mut alpha = 0u64;
+        for sy in (y as i64 - half).max(0)..=(y as i64 + half).min(h as i64 - 1) {
+            for sx in (x as i64 - half).max(0)..=(x as i64 + half).min(w as i64 - 1) {
+                let (sx, sy) = (sx as u32, sy as u32);
+                let px: [u8; 4] = match (&merged, layer) {
+                    (Some(img), _) => {
+                        let i = ((sy * img.width + sx) * 4) as usize;
+                        img.pixels[i..i + 4].try_into().ok()?
+                    }
+                    (None, Some(image)) => image.pixel(sx, sy),
+                    (None, None) => return None,
+                };
+                for c in 0..3 {
+                    sum[c] += px[c] as u64 * px[3] as u64;
+                }
+                alpha += px[3] as u64;
+            }
+        }
+        if alpha == 0 {
+            return None;
+        }
+        // Picked colors are always opaque
+        let [r, g, b] = sum.map(|v| ((v + alpha / 2) / alpha) as u8);
+        Some(Color::from_rgba8([r, g, b, 255]))
+    }
+
+    /// The merged image's pixel at (`x`, `y`).
+    #[cfg(test)]
     pub fn sample(&mut self, x: u32, y: u32) -> Option<Color> {
         if x >= self.doc.width || y >= self.doc.height {
             return None;
@@ -274,6 +325,53 @@ pub struct MarqueeDrag {
     /// so they chose the combine mode and don't constrain the shape.
     pub shift_for_op: bool,
     pub alt_for_op: bool,
+}
+
+/// A Lasso or Polygonal Lasso outline being drawn, in document pixels.
+#[derive(Clone, Debug)]
+pub struct LassoPath {
+    pub points: Vec<egui::Pos2>,
+    pub op: op_core::SelectionOp,
+    pub polygonal: bool,
+}
+
+/// Eyedropper options.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EyedropperOptions {
+    /// Side of the averaged square in pixels: 1 is "Point Sample".
+    pub size: u32,
+    /// "Sample: All Layers" (the merged image) or "Current Layer".
+    pub all_layers: bool,
+}
+
+impl EyedropperOptions {
+    /// Photoshop's "Sample Size" choices.
+    pub const SIZES: [(u32, &'static str); 7] = [
+        (1, "Point Sample"),
+        (3, "3 by 3 Average"),
+        (5, "5 by 5 Average"),
+        (11, "11 by 11 Average"),
+        (31, "31 by 31 Average"),
+        (51, "51 by 51 Average"),
+        (101, "101 by 101 Average"),
+    ];
+}
+
+impl Default for EyedropperOptions {
+    fn default() -> Self {
+        Self {
+            size: 1,
+            all_layers: true,
+        }
+    }
+}
+
+/// Magic Wand options: combine mode plus the region rule it shares with the
+/// Paint Bucket (tolerance 32, anti-alias and contiguous on by default).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WandOptions {
+    pub mode: SelectionMode,
+    pub region: op_core::fill::BucketOptions,
 }
 
 /// Selection combine mode (the four buttons in the options bar).
@@ -411,6 +509,8 @@ pub struct AppState {
     pub foreground: Color,
     pub background: Color,
     pub marquee: MarqueeOptions,
+    pub eyedropper: EyedropperOptions,
+    pub wand: WandOptions,
     pub brush: PaintOptions,
     pub pencil: PaintOptions,
     pub eraser: PaintOptions,
@@ -469,6 +569,8 @@ impl Default for AppState {
             foreground,
             background: Color::WHITE,
             marquee: MarqueeOptions::default(),
+            eyedropper: EyedropperOptions::default(),
+            wand: WandOptions::default(),
             brush: PaintOptions::brush(),
             pencil: PaintOptions::pencil(),
             eraser: PaintOptions::brush(),
