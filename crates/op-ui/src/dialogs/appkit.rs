@@ -124,6 +124,19 @@ pub fn button(
     default: bool,
     enabled: bool,
 ) -> egui::Response {
+    button_with(ui, rect, label, (default, enabled), 12.0, 1.0)
+}
+
+/// [`button`] with a `size` pt label raised `lift` pt from the center (the
+/// plug-in style filter dialogs label theirs in 13 pt, centered).
+pub fn button_with(
+    ui: &mut Ui,
+    rect: Rect,
+    label: &str,
+    (default, enabled): (bool, bool),
+    size: f32,
+    lift: f32,
+) -> egui::Response {
     let sense = if enabled {
         Sense::click()
     } else {
@@ -147,13 +160,10 @@ pub fn button(
         Stroke::new(pt(1.0), border),
         StrokeKind::Inside,
     );
-    text(
-        ui,
-        rect.center() - vec2(0.0, pt(1.0)),
-        Align2::CENTER_CENTER,
-        label,
-        if enabled { TEXT } else { TEXT_OFF },
-    );
+    let color = if enabled { TEXT } else { TEXT_OFF };
+    let galley = theme::tracked_galley(ui.painter(), label, theme::dialog(pt(size)), color);
+    let at = Align2::CENTER_CENTER.anchor_size(rect.center() - vec2(0.0, pt(lift)), galley.size());
+    ui.painter().galley(at.min, galley, color);
     response
 }
 

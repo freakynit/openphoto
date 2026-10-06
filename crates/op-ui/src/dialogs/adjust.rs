@@ -9,25 +9,16 @@
 //! out after Photoshop's dialogs; sizes are in Photoshop points. With
 //! Preview on, the document shows the result while the dialog is open.
 
-use egui::{Align2, Color32, FontId, Key, Pos2, Rect, Sense, Shape, Stroke, Ui, vec2};
+use egui::{Align2, Color32, Key, Pos2, Rect, Sense, Stroke, Ui, vec2};
 use op_core::adjust::Adjustment;
 use op_core::filter::{Filter, OffsetFill, SpherizeMode};
 
 use super::{
     appkit, black_white, brightness_contrast, channel_mixer, color_balance, common, curves,
-    custom_filter, exposure, filter_layout, gradient_map, hue_saturation, levels, photo_filter,
-    selective_color, threshold, uxp, vibrance,
+    custom_filter, distort, exposure, filter_layout, gradient_map, hue_saturation, levels,
+    photo_filter, selective_color, threshold, uxp, vibrance,
 };
-use crate::theme::{self, color, pt};
-
-const FONT: f32 = pt(12.5);
-const BUTTON: egui::Vec2 = vec2(pt(88.0), pt(24.0));
-const FIELD_H: f32 = pt(22.0);
-const FIELD_W: f32 = pt(56.0);
-const LEFT: f32 = pt(20.0);
-/// Width of the controls column (left of the buttons).
-const COLUMN: f32 = pt(280.0);
-const TRACK_H: f32 = pt(12.0);
+use crate::theme::{self, pt};
 
 /// What a dialog applies: an adjustment or a filter.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -305,18 +296,26 @@ impl Kind {
         })
     }
 
+    /// The Distort filters' plug-in style layout.
+    fn distort(self) -> Option<&'static distort::Layout> {
+        Some(match self {
+            Self::Twirl => &distort::TWIRL,
+            Self::Pinch => &distort::PINCH,
+            Self::Spherize => &distort::SPHERIZE,
+            Self::PolarCoordinates => &distort::POLAR,
+            _ => return None,
+        })
+    }
+
+    /// A filter dialog's size, from its classic or plug-in style layout
+    /// (the adjustments' own dialogs have their own sizes).
     fn size(self) -> egui::Vec2 {
-        if let Some(l) = self.layout() {
-            return vec2(pt(l.size.0), pt(l.size.1));
-        }
-        match self {
-            Self::Threshold => vec2(pt(400.0), pt(232.0)),
-            Self::Posterize => vec2(pt(330.0), pt(132.0)),
-            _ => {
-                let rows: f32 = self.params().iter().map(row_height).sum();
-                vec2(pt(400.0), (pt(36.0) + rows + pt(20.0)).max(pt(150.0)))
-            }
-        }
+        let (w, h) = self
+            .layout()
+            .map(|l| l.size)
+            .or(self.distort().map(|l| l.size))
+            .expect("every filter dialog has a layout");
+        vec2(pt(w), pt(h))
     }
 }
 
@@ -381,17 +380,6 @@ fn zoom_controls(ui: &Ui, y: f32, left: f32) {
     }
 }
 
-/// Height of a parameter's row in the generic layout.
-fn row_height(p: &Param) -> f32 {
-    match p.kind {
-        ParamKind::Number => pt(52.0),
-        // Long lists are a dropdown, short ones radio buttons
-        ParamKind::Choice(options) if options.len() > 4 => pt(36.0),
-        ParamKind::Choice(options) => pt(24.0) * (options.len() + 1) as f32,
-        ParamKind::Check => pt(28.0),
-    }
-}
-
 pub enum Outcome {
     Open,
     Cancel,
@@ -415,6 +403,8 @@ pub struct AdjustDialog {
     /// The classic filter dialogs' preview pane image (the document as
     /// previewed), set by the app.
     pub pane: Option<egui::TextureHandle>,
+    /// The Distort dialogs' diagram and the settings it was drawn for.
+    diagram: Option<(Vec<String>, egui::TextureHandle)>,
 }
 
 /// A dialog with its own layout and settings.
@@ -463,6 +453,7 @@ impl AdjustDialog {
             previewing: None,
             before,
             pane: None,
+            diagram: None,
             custom: match kind {
                 Kind::BrightnessContrast => Some(Custom::BrightnessContrast(Default::default())),
                 Kind::ColorBalance => Some(Custom::ColorBalance(Default::default())),
@@ -521,7 +512,9 @@ impl AdjustDialog {
 
     /// Whether this dialog shows the classic preview pane.
     pub fn wants_pane(&self) -> bool {
-        self.kind == Kind::Custom || self.kind.layout().is_some_and(|l| l.pane)
+        self.kind == Kind::Custom
+            || self.kind.distort().is_some()
+            || self.kind.layout().is_some_and(|l| l.pane)
     }
 
     /// Gradient Map's two colors (the foreground and background colors).
@@ -677,7 +670,11 @@ impl AdjustDialog {
                 } else if let Some(layout) = self.kind.layout() {
                     self.classic_ui(ui, rect, layout)
                 } else {
-                    self.ui(ui, rect)
+                    let layout = self
+                        .kind
+                        .distort()
+                        .expect("every filter dialog has a layout");
+                    self.distort_ui(ui, rect, layout)
                 };
             });
         self.first_frame = false;
@@ -893,6 +890,149 @@ impl AdjustDialog {
         Outcome::Open
     }
 
+    /// A Distort filter's plug-in style dialog (see `distort`).
+    fn distort_ui(&mut self, ui: &mut Ui, frame: Rect, layout: &distort::Layout) -> Outcome {
+        let at = |x: f32, y: f32| frame.min + vec2(pt(x), pt(y));
+        let r = |x0: f32, y0: f32, x1: f32, y1: f32| Rect::from_min_max(at(x0, y0), at(x1, y1));
+        common::frame(ui, frame, self.kind.title(), theme::dialog_bold(pt(13.0)));
+        distort::frame(ui, at);
+        if let Some(texture) = &self.pane {
+            distort::image(ui, at, texture);
+        }
+        distort::zoom_bar(ui, at);
+
+        let params = self.kind.params();
+        match layout.control {
+            distort::Control::Slider {
+                label_y,
+                field_x,
+                track_x1,
+            } => {
+                let p = &params[0];
+                let label = p.label.split(" (").next().unwrap_or(p.label);
+                distort::label(ui, at(23.5, label_y), Align2::LEFT_CENTER, label);
+                let field = r(
+                    field_x,
+                    distort::FIELD_Y.0,
+                    field_x + distort::FIELD_W,
+                    distort::FIELD_Y.1,
+                );
+                appkit::field(
+                    ui,
+                    field,
+                    &mut self.values[0],
+                    "distort-field",
+                    (p.min, p.max),
+                    1.0,
+                    0,
+                    self.first_frame,
+                );
+                let unit = if self.kind == Kind::Twirl { "°" } else { "%" };
+                appkit::text(
+                    ui,
+                    Pos2::new(field.right() + pt(distort::UNIT_GAP), field.center().y),
+                    Align2::LEFT_CENTER,
+                    unit,
+                    appkit::TEXT,
+                );
+                let response = ui.interact(
+                    distort::slider_rect(at, track_x1),
+                    ui.id().with("distort-slider"),
+                    Sense::click_and_drag(),
+                );
+                if (response.dragged() || response.clicked())
+                    && let Some(pointer) = response.interact_pointer_pos()
+                {
+                    let t = distort::slider_place(at, track_x1, pointer.x);
+                    self.set(0, (p.min + (p.max - p.min) * t).round());
+                }
+                let v = self.value(0).unwrap_or(p.default);
+                distort::slider(ui, at, track_x1, (v - p.min) / (p.max - p.min));
+            }
+            distort::Control::Radios => {
+                distort::group(ui, at);
+                if let ParamKind::Choice(options) = params[0].kind {
+                    let chosen = self.value(0).unwrap_or(0.0) as usize;
+                    for (k, (&y, option)) in distort::RADIO_YS.iter().zip(options).enumerate() {
+                        if distort::radio(ui, at(distort::RADIO_X, y), option, chosen == k) {
+                            self.values[0] = k.to_string();
+                        }
+                    }
+                }
+            }
+        }
+        if let (Some(rect), ParamKind::Choice(options)) = (
+            layout.mode,
+            params.get(1).map(|p| p.kind).unwrap_or(ParamKind::Check),
+        ) {
+            distort::label(
+                ui,
+                at(18.0, (rect[1] + rect[3]) / 2.0),
+                Align2::LEFT_CENTER,
+                "Mode",
+            );
+            let mut chosen = self.value(1).unwrap_or(0.0) as usize;
+            appkit::popup(
+                ui,
+                r(rect[0], rect[1], rect[2], rect[3]),
+                "distort-mode",
+                options[chosen.min(options.len() - 1)],
+                |ui| {
+                    for (k, o) in options.iter().enumerate() {
+                        ui.selectable_value(&mut chosen, k, *o);
+                    }
+                },
+            );
+            self.values[1] = chosen.to_string();
+        }
+        if let (Some((x, y)), Some(Effect::Filter(filter))) = (layout.diagram, self.effect()) {
+            if self.diagram.as_ref().is_none_or(|(v, _)| *v != self.values) {
+                let image = distort::diagram(filter, 256);
+                let texture =
+                    ui.ctx()
+                        .load_texture("distort-diagram", image, egui::TextureOptions::NEAREST);
+                self.diagram = Some((self.values.clone(), texture));
+            }
+            if let Some((_, texture)) = &self.diagram {
+                ui.painter().image(
+                    texture.id(),
+                    r(x, y, x + 128.0, y + 128.0),
+                    Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                    Color32::WHITE,
+                );
+            }
+        }
+
+        let x0 = layout.buttons_x;
+        let valid = self.effect().is_some();
+        let ok = appkit::button_with(
+            ui,
+            r(x0, 41.0, x0 + 89.0, 67.0),
+            "OK",
+            (true, valid),
+            13.0,
+            0.0,
+        );
+        let cancel = appkit::button_with(
+            ui,
+            r(x0, 77.0, x0 + 89.0, 103.0),
+            "Cancel",
+            (false, true),
+            13.0,
+            0.0,
+        );
+        if cancel.clicked() {
+            return Outcome::Cancel;
+        }
+        let enter = ui.input(|i| i.key_pressed(Key::Enter));
+        if (ok.clicked() || enter)
+            && let Some(effect) = self.effect()
+        {
+            return Outcome::Apply(effect);
+        }
+        Outcome::Open
+    }
+
     /// The preview pane: the document, as previewed, at 100% (one image
     /// pixel per screen pixel), centered.
     fn pane_ui(&mut self, ui: &mut Ui, rect: Rect) {
@@ -981,187 +1121,6 @@ impl AdjustDialog {
         let from = if both { center - dir } else { center };
         painter.line_segment([from, center + dir], stroke);
         painter.circle_filled(center, pt(1.5), Color32::from_gray(0xc8));
-    }
-
-    fn ui(&mut self, ui: &mut Ui, frame: Rect) -> Outcome {
-        let at = |x: f32, y: f32| frame.min + vec2(x, y);
-        common::frame(ui, frame, self.kind.title(), theme::semibold(pt(13.0)));
-        let mut y = pt(52.0);
-        for (i, p) in self.kind.params().iter().enumerate() {
-            match p.kind {
-                ParamKind::Number => self.slider_row(ui, i, at(LEFT, y), COLUMN - LEFT),
-                ParamKind::Choice(options) => {
-                    self.choice_row(ui, i, options, at(LEFT, y));
-                }
-                ParamKind::Check => self.check_row(ui, i, at(LEFT, y)),
-            }
-            y += row_height(p);
-        }
-        self.buttons(ui, frame)
-    }
-
-    /// A label with radio buttons under it.
-    fn choice_row(&mut self, ui: &mut Ui, i: usize, options: &[&str], left_center: Pos2) {
-        let label = self.label(ui, self.kind.params()[i].label, left_center);
-        let mut chosen = self.value(i).unwrap_or(0.0) as usize;
-        if options.len() > 4 {
-            let rect = Rect::from_min_size(
-                Pos2::new(label.right() + pt(8.0), left_center.y - FIELD_H / 2.0),
-                vec2(pt(200.0), FIELD_H),
-            );
-            common::dropdown(
-                ui,
-                rect,
-                ("adjust-choice", i),
-                options[chosen.min(options.len() - 1)],
-                FONT,
-                true,
-                |ui| {
-                    for (k, option) in options.iter().enumerate() {
-                        ui.selectable_value(&mut chosen, k, *option);
-                    }
-                },
-            );
-            self.values[i] = chosen.to_string();
-            return;
-        }
-        for (k, option) in options.iter().enumerate() {
-            let center = left_center + vec2(pt(12.0), pt(24.0) * (k + 1) as f32);
-            let rect = Rect::from_min_size(center - vec2(0.0, pt(9.0)), vec2(pt(220.0), pt(18.0)));
-            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-            child.radio_value(
-                &mut chosen,
-                k,
-                egui::RichText::new(*option).font(FontId::proportional(FONT)),
-            );
-        }
-        self.values[i] = chosen.to_string();
-    }
-
-    fn check_row(&mut self, ui: &mut Ui, i: usize, left_center: Pos2) {
-        let mut on = self.value(i) == Some(1.0);
-        let rect = Rect::from_min_size(left_center - vec2(0.0, pt(9.0)), vec2(pt(220.0), pt(18.0)));
-        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-        child.checkbox(
-            &mut on,
-            egui::RichText::new(self.kind.params()[i].label).font(FontId::proportional(FONT)),
-        );
-        self.values[i] = (on as u8).to_string();
-    }
-
-    fn label(&self, ui: &Ui, text: &str, left_center: Pos2) -> Rect {
-        ui.painter().text(
-            left_center,
-            Align2::LEFT_CENTER,
-            text,
-            FontId::proportional(FONT),
-            color::TEXT,
-        )
-    }
-
-    fn field(&mut self, ui: &mut Ui, i: usize, rect: Rect) {
-        // The first field takes focus with its text selected when the dialog opens
-        let select = self.first_frame && i == 0;
-        common::number_field(
-            ui,
-            rect,
-            &mut self.values[i],
-            ("adjust-value", i),
-            FONT,
-            select,
-        );
-    }
-
-    /// Label on the left, field on the right, slider underneath.
-    fn slider_row(&mut self, ui: &mut Ui, i: usize, left_center: Pos2, width: f32) {
-        self.label(ui, self.kind.params()[i].label, left_center);
-        let field = Rect::from_min_size(
-            Pos2::new(
-                left_center.x + width - FIELD_W,
-                left_center.y - FIELD_H / 2.0,
-            ),
-            vec2(FIELD_W, FIELD_H),
-        );
-        self.field(ui, i, field);
-        let line = Rect::from_min_size(
-            Pos2::new(left_center.x, left_center.y + pt(14.0)),
-            vec2(width, pt(2.0)),
-        );
-        ui.painter().rect_filled(line, 0, Color32::from_gray(0x3a));
-        self.track(ui, line, i);
-    }
-
-    /// A triangle marker under `above` for parameter `i`; pressing or
-    /// dragging along the track sets its value in proportion.
-    fn track(&mut self, ui: &mut Ui, above: Rect, i: usize) {
-        let track = Rect::from_min_max(
-            Pos2::new(above.left(), above.bottom() + pt(2.0)),
-            Pos2::new(above.right(), above.bottom() + pt(2.0) + TRACK_H),
-        );
-        let response = ui.interact(
-            track,
-            ui.id().with(("adjust-track", i)),
-            Sense::click_and_drag(),
-        );
-        let p = &self.kind.params()[i];
-        if let Some(pointer) = response.interact_pointer_pos()
-            && (response.dragged() || response.clicked())
-        {
-            let t = ((pointer.x - track.left()) / track.width()).clamp(0.0, 1.0);
-            let v = p.min + t * (p.max - p.min);
-            let scale = 10f32.powi(p.decimals as i32);
-            self.set(i, (v * scale).round() / scale);
-        }
-        let p = &self.kind.params()[i];
-        let v = self.value(i).unwrap_or(p.default);
-        let x = track.left() + ((v - p.min) / (p.max - p.min)).clamp(0.0, 1.0) * track.width();
-        ui.painter().add(Shape::convex_polygon(
-            vec![
-                Pos2::new(x, track.top()),
-                Pos2::new(x + pt(6.0), track.bottom()),
-                Pos2::new(x - pt(6.0), track.bottom()),
-            ],
-            color::TEXT,
-            Stroke::new(1.0, Color32::from_gray(0x9a)),
-        ));
-    }
-
-    fn buttons(&mut self, ui: &mut Ui, frame: Rect) -> Outcome {
-        let x = frame.width() - pt(108.0);
-        let at = |y: f32| frame.min + vec2(x, y);
-        let button_font = FontId::proportional(pt(13.0));
-        let valid = self.effect().is_some();
-        let ok = common::pill_button(
-            ui,
-            Rect::from_min_size(at(pt(44.0)), BUTTON),
-            "OK",
-            button_font.clone(),
-            valid,
-        );
-        let cancel = common::pill_button(
-            ui,
-            Rect::from_min_size(at(pt(76.0)), BUTTON),
-            "Cancel",
-            button_font,
-            true,
-        );
-        let check = Rect::from_min_size(at(pt(112.0) - pt(9.0)), vec2(pt(96.0), pt(18.0)));
-        let mut check_ui = ui.new_child(egui::UiBuilder::new().max_rect(check));
-        check_ui.checkbox(
-            &mut self.preview,
-            egui::RichText::new("Preview").font(FontId::proportional(FONT)),
-        );
-
-        if cancel.clicked() {
-            return Outcome::Cancel;
-        }
-        let enter = ui.input(|i| i.key_pressed(Key::Enter));
-        if (ok.clicked() || enter)
-            && let Some(effect) = self.effect()
-        {
-            return Outcome::Apply(effect);
-        }
-        Outcome::Open
     }
 }
 
@@ -1261,6 +1220,8 @@ mod tests {
                 matches!(dialog(kind).effect(), Some(Effect::Filter(_))),
                 "{kind:?}"
             );
+            // Every filter dialog has a classic or plug-in style layout
+            assert!(kind.size().x > 0.0, "{kind:?}");
         }
     }
 

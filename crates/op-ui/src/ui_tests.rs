@@ -891,6 +891,22 @@ fn screenshot_filter_dialogs() {
         h.run_steps(2);
         shot(&mut h, name);
     }
+    // The Distort dialogs, at the values of the Photoshop captures
+    for (command, name, value) in [
+        (Command::Twirl, "twirl_dialog", "120"),
+        (Command::Pinch, "pinch_dialog", "-40"),
+        (Command::Spherize, "spherize_dialog", "70"),
+        (Command::PolarCoordinates, "polar_coordinates_dialog", ""),
+    ] {
+        let mut h = harness(Vec::new());
+        color_document(&mut h, [120, 160, 200]);
+        run_command(&mut h, command);
+        if !value.is_empty() {
+            h.event(egui::Event::Text(value.into()));
+        }
+        h.run_steps(3);
+        shot(&mut h, name);
+    }
 }
 
 #[test]

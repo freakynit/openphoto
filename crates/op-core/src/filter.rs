@@ -474,6 +474,13 @@ impl Buffer {
     }
 }
 
+/// Where Twirl, Pinch, Spherize or Polar Coordinates takes the color of
+/// pixel (`x`, `y`) of a `w` × `h` image from (other filters: the pixel
+/// itself). The filter dialogs draw their diagrams with it.
+pub fn distortion_source(filter: Filter, x: f32, y: f32, w: f32, h: f32) -> (f32, f32) {
+    distort_source(filter, x, y, w / 2.0, h / 2.0, w, h)
+}
+
 /// Where a distortion filter takes pixel (`x`, `y`)'s color from. Twirl,
 /// Pinch and Spherize act inside the ellipse touching the image's edges
 /// (distances measured as fractions of it); Polar Coordinates maps angle

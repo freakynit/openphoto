@@ -12,6 +12,7 @@ mod color_picker;
 mod common;
 mod curves;
 mod custom_filter;
+mod distort;
 mod duplicate_layer;
 mod equalize;
 mod exposure;
