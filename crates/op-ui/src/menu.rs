@@ -36,6 +36,19 @@ const ALL_COMMANDS: &[Command] = &[
     Command::Levels,
     Command::HueSaturation,
     Command::Exposure,
+    Command::LastFilter,
+    Command::Average,
+    Command::Solarize,
+    Command::GaussianBlur,
+    Command::BoxBlur,
+    Command::UnsharpMask,
+    Command::AddNoise,
+    Command::Median,
+    Command::Minimum,
+    Command::Maximum,
+    Command::HighPass,
+    Command::Offset,
+    Command::Mosaic,
     Command::NewLayer,
     Command::DeleteLayer,
     Command::ToggleLayerVisibility,
@@ -425,6 +438,163 @@ impl NativeMenu {
             ],
         );
 
+        let type_menu = Submenu::with_items(
+            "Type",
+            true,
+            &[
+                &todo("More from Adobe Fonts...", None) as &dyn IsMenuItem,
+                &sep(),
+                &todo_sub("Panels"),
+                &sep(),
+                &todo_sub("Anti-Alias"),
+                &sep(),
+                &todo_sub("Orientation"),
+                &todo_sub("OpenType"),
+                &sep(),
+                &todo("Create Work Path", None),
+                &todo("Convert to Shape", None),
+                &sep(),
+                &todo("Rasterize Type Layer", None),
+                &todo("Convert to Paragraph Text", None),
+                &todo_sub("Convert to Dynamic Text"),
+                &todo("Warp Text...", None),
+                &todo("Match Font...", None),
+                &sep(),
+                &todo_sub("Font Preview Size"),
+                &sep(),
+                &todo_sub("Language Options"),
+                &sep(),
+                &todo("Update All Text Layers", None),
+                &todo("Manage Missing Fonts", None),
+                &sep(),
+                &todo("Paste Lorem Ipsum", None),
+                &sep(),
+                &todo("Load Default Type Styles", None),
+                &todo("Save Default Type Styles", None),
+            ],
+        );
+
+        // Items of a Filter submenu: implemented filters by command, the
+        // rest disabled
+        let filter_sub = |label: &str, entries: &[(&str, Option<Command>)]| {
+            let built: Vec<MenuItem> = entries
+                .iter()
+                .map(|&(name, command)| match command {
+                    Some(command) => item(name, command),
+                    None => todo(name, None),
+                })
+                .collect();
+            let refs: Vec<&dyn IsMenuItem> = built.iter().map(|i| i as &dyn IsMenuItem).collect();
+            Submenu::with_items(label, true, &refs).expect("static menu definition is valid")
+        };
+        let filter = Submenu::with_items(
+            "Filter",
+            true,
+            &[
+                &item("Last Filter", Command::LastFilter) as &dyn IsMenuItem,
+                &sep(),
+                &todo("Convert for Smart Filters", None),
+                &sep(),
+                &todo("Neural Filters...", None),
+                &sep(),
+                &todo("Filter Gallery...", None),
+                &todo("Adaptive Wide Angle...", Some("CmdOrCtrl+Shift+Alt+A")),
+                &todo("Camera Raw Filter...", Some("CmdOrCtrl+Shift+A")),
+                &todo("AI Denoise...", None),
+                &todo("AI Sharpen...", None),
+                &todo("Lens Correction...", Some("CmdOrCtrl+Shift+R")),
+                &todo("Liquify...", Some("CmdOrCtrl+Shift+X")),
+                &todo("Vanishing Point...", Some("CmdOrCtrl+Alt+V")),
+                &sep(),
+                &filter_sub(
+                    "Blur",
+                    &[
+                        ("Average", Some(Command::Average)),
+                        ("Blur", None),
+                        ("Blur More", None),
+                        ("Box Blur...", Some(Command::BoxBlur)),
+                        ("Gaussian Blur...", Some(Command::GaussianBlur)),
+                        ("Lens Blur...", None),
+                        ("Motion Blur...", None),
+                        ("Radial Blur...", None),
+                        ("Shape Blur...", None),
+                        ("Smart Blur...", None),
+                        ("Surface Blur...", None),
+                    ],
+                ),
+                &todo_sub("Blur Gallery"),
+                &todo_sub("Distort"),
+                &filter_sub(
+                    "Noise",
+                    &[
+                        ("Add Noise...", Some(Command::AddNoise)),
+                        ("Despeckle", None),
+                        ("Dust & Scratches...", None),
+                        ("Median...", Some(Command::Median)),
+                        ("Reduce Noise...", None),
+                    ],
+                ),
+                &filter_sub(
+                    "Pixelate",
+                    &[
+                        ("Color Halftone...", None),
+                        ("Crystallize...", None),
+                        ("Facet", None),
+                        ("Fragment", None),
+                        ("Mezzotint...", None),
+                        ("Mosaic...", Some(Command::Mosaic)),
+                        ("Pointillize...", None),
+                    ],
+                ),
+                &todo_sub("Render"),
+                &filter_sub(
+                    "Sharpen",
+                    &[
+                        ("Sharpen", None),
+                        ("Sharpen Edges", None),
+                        ("Sharpen More", None),
+                        ("Smart Sharpen...", None),
+                        ("Unsharp Mask...", Some(Command::UnsharpMask)),
+                    ],
+                ),
+                &filter_sub(
+                    "Stylize",
+                    &[
+                        ("Diffuse...", None),
+                        ("Emboss...", None),
+                        ("Extrude...", None),
+                        ("Find Edges", None),
+                        ("Oil Paint...", None),
+                        ("Solarize", Some(Command::Solarize)),
+                        ("Tiles...", None),
+                        ("Trace Contour...", None),
+                        ("Wind...", None),
+                    ],
+                ),
+                &todo_sub("Video"),
+                &filter_sub(
+                    "Other",
+                    &[
+                        ("Custom...", None),
+                        ("High Pass...", Some(Command::HighPass)),
+                        ("HSB/HSL", None),
+                        ("Maximum...", Some(Command::Maximum)),
+                        ("Minimum...", Some(Command::Minimum)),
+                        ("Offset...", Some(Command::Offset)),
+                    ],
+                ),
+            ],
+        );
+
+        let plugins = Submenu::with_items(
+            "Plugins",
+            true,
+            &[
+                &todo("Plugins Panel", None) as &dyn IsMenuItem,
+                &todo("Manage Plugins...", None),
+            ],
+        );
+
         let view = Submenu::with_items(
             "View",
             true,
@@ -442,7 +612,8 @@ impl NativeMenu {
 
         let menu = Menu::new();
         let submenus: Vec<Submenu> = [
-            app_menu, file, edit, image, layer, select, view, window, help,
+            app_menu, file, edit, image, layer, type_menu, select, filter, view, plugins, window,
+            help,
         ]
         .into_iter()
         .map(|m| m.expect("static menu definition is valid"))
@@ -452,7 +623,7 @@ impl NativeMenu {
         }
         menu.init_for_nsapp();
         // "Window" also gets the standard window list from macOS
-        submenus[7].set_as_windows_menu_for_nsapp();
+        submenus[10].set_as_windows_menu_for_nsapp();
 
         // Menu events arrive on the main thread outside egui's frame; queue
         // them and wake egui up.
@@ -494,6 +665,12 @@ impl NativeMenu {
                     Some(name) => format!("Redo {name}"),
                     None => "Redo".into(),
                 }),
+                // Like Photoshop, the item names the last filter used
+                Command::LastFilter => Some(
+                    app.last_filter
+                        .map_or("Last Filter", |f| f.name())
+                        .to_string(),
+                ),
                 Command::ToggleLayerVisibility => {
                     let layer = doc.and_then(|d| d.doc.active_layer.and_then(|id| d.doc.layer(id)));
                     Some(

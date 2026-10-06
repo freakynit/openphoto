@@ -165,13 +165,19 @@ impl OpenPhotoApp {
         }
     }
 
-    /// Threshold / Posterize: previews on the document while open.
+    /// Adjustment and filter dialogs: preview on the document while open.
     fn adjust_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.state.adjust_dialog.take() else {
             return;
         };
         let outcome = dialog.show(ctx);
-        let Some(state) = self.state.active() else {
+        let [r, g, b, _] = self.state.background.to_rgba8();
+        let background = [r, g, b];
+        let Some(state) = self
+            .state
+            .active_doc
+            .and_then(|id| self.state.docs.get_mut(&id))
+        else {
             return;
         };
         let undo_preview = |state: &mut state::DocState, dialog: &mut dialogs::AdjustDialog| {
@@ -181,23 +187,28 @@ impl OpenPhotoApp {
         };
         match outcome {
             dialogs::AdjustOutcome::Open => {
-                let wanted = dialog.adjustment().filter(|_| dialog.preview);
+                let wanted = dialog.effect().filter(|_| dialog.preview);
                 if wanted != dialog.previewing {
                     undo_preview(state, &mut dialog);
-                    if let Some(adjustment) = wanted
-                        && op_core::adjust::apply(&mut state.doc, adjustment).is_ok()
+                    if let Some(effect) = wanted
+                        && effect.apply(&mut state.doc, background).is_ok()
                     {
-                        dialog.previewing = Some(adjustment);
+                        dialog.previewing = Some(effect);
                     }
                 }
                 self.state.adjust_dialog = Some(dialog);
             }
             dialogs::AdjustOutcome::Cancel => undo_preview(state, &mut dialog),
-            dialogs::AdjustOutcome::Apply(adjustment) => {
+            dialogs::AdjustOutcome::Apply(effect) => {
                 undo_preview(state, &mut dialog);
-                match op_core::adjust::apply(&mut state.doc, adjustment) {
-                    Ok(()) => state.record(adjustment.name()),
-                    Err(e) => self.state.alert = Some(e.message(adjustment.name())),
+                match effect.apply(&mut state.doc, background) {
+                    Ok(()) => {
+                        state.record(effect.name());
+                        if let dialogs::Effect::Filter(filter) = effect {
+                            self.state.last_filter = Some(filter);
+                        }
+                    }
+                    Err(e) => self.state.alert = Some(e.message(effect.name())),
                 }
             }
         }

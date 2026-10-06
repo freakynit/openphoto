@@ -746,3 +746,52 @@ fn screenshot_adjustment_dialogs() {
         shot(&mut h, name);
     }
 }
+
+#[test]
+fn filters_apply_and_repeat_with_last_filter() {
+    use crate::commands::Command;
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    // A white square on the dark background
+    h.state_mut().state.foreground = Color::from_rgba8([255, 255, 255, 255]);
+    select_rect(&mut h, 100.0, 100.0, 140.0, 140.0);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::D);
+    h.run_steps(2);
+    assert!(!Command::LastFilter.enabled(&h.state().state));
+
+    run_command(&mut h, Command::GaussianBlur);
+    h.event(egui::Event::Text("4".into()));
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(last_history(&h), "Gaussian Blur");
+    let once = composite_pixel(&mut h, 100, 120);
+    assert!(once[0] > 0x14 && once[0] < 255, "{once:?}");
+
+    // Ctrl+Cmd+F runs it again with the same radius
+    let states = active(&h).history.states().len();
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::CTRL, egui::Key::F);
+    h.run_steps(3);
+    assert_eq!(active(&h).history.states().len(), states + 1);
+    assert_eq!(last_history(&h), "Gaussian Blur");
+    // Blurred further: the edge pixel moves on toward the background
+    let twice = composite_pixel(&mut h, 100, 120);
+    assert!(twice[0] < once[0], "{once:?} {twice:?}");
+}
+
+#[test]
+#[ignore]
+fn screenshot_filter_dialogs() {
+    use crate::commands::Command;
+    for (command, name) in [
+        (Command::GaussianBlur, "gaussian_blur_dialog"),
+        (Command::AddNoise, "add_noise_dialog"),
+        (Command::Offset, "offset_dialog"),
+    ] {
+        let mut h = harness(Vec::new());
+        reference_document(&mut h);
+        run_command(&mut h, command);
+        shot(&mut h, name);
+    }
+}

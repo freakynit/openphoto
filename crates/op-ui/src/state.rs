@@ -408,7 +408,9 @@ pub struct AppState {
     pub canvas_size_dialog: Option<crate::dialogs::CanvasSizeDialog>,
     /// Edit > Fill, while open.
     pub fill_dialog: Option<crate::dialogs::FillDialog>,
-    /// Threshold or Posterize, while open.
+    /// The last filter applied, for Filter > Last Filter.
+    pub last_filter: Option<op_core::filter::Filter>,
+    /// An adjustment or filter dialog, while open.
     pub adjust_dialog: Option<crate::dialogs::AdjustDialog>,
     /// Image > Trim, while open.
     pub trim_dialog: Option<crate::dialogs::TrimDialog>,
@@ -451,6 +453,7 @@ impl Default for AppState {
             fill_dialog: None,
             trim_dialog: None,
             adjust_dialog: None,
+            last_filter: None,
             bucket: Default::default(),
             color_picker: None,
             swatches: crate::panels::DEFAULT_SWATCHES

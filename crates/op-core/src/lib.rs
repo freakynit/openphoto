@@ -9,6 +9,7 @@ pub mod clipboard;
 pub mod color;
 pub mod document;
 pub mod fill;
+pub mod filter;
 pub mod history;
 pub mod image_ops;
 pub mod layer;

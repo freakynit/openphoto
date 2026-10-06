@@ -1,12 +1,17 @@
-//! Dialogs for Image > Adjustments with numeric settings: Threshold...,
-//! Posterize..., Levels..., Hue/Saturation... and Exposure....
+//! Dialogs for adjustments and filters with settings: Image > Adjustments >
+//! Threshold..., Posterize..., Levels..., Hue/Saturation..., Exposure...,
+//! and the Filter menu's Gaussian Blur..., Box Blur..., Unsharp Mask...,
+//! Add Noise..., Median..., Minimum..., Maximum..., High Pass..., Offset...
+//! and Mosaic....
 //!
-//! Each setting is a parameter with a range, a text field and (mostly) a
-//! slider. Laid out after Photoshop's dialogs; sizes are in Photoshop points.
-//! With Preview on, the document shows the result while the dialog is open.
+//! Each setting is a parameter: a number with a range, a text field and
+//! (mostly) a slider; a choice shown as radio buttons; or a checkbox. Laid
+//! out after Photoshop's dialogs; sizes are in Photoshop points. With
+//! Preview on, the document shows the result while the dialog is open.
 
 use egui::{Align2, Color32, FontId, Key, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, vec2};
 use op_core::adjust::Adjustment;
+use op_core::filter::{Filter, OffsetFill};
 
 use super::common;
 use crate::theme::{self, color, pt};
@@ -21,13 +26,52 @@ const COLUMN: f32 = pt(280.0);
 const HISTOGRAM_H: f32 = pt(100.0);
 const TRACK_H: f32 = pt(12.0);
 
-/// One numeric setting.
+/// What a dialog applies: an adjustment or a filter.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Effect {
+    Adjustment(Adjustment),
+    Filter(Filter),
+}
+
+impl Effect {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Adjustment(a) => a.name(),
+            Self::Filter(f) => f.name(),
+        }
+    }
+
+    /// Applies to the active layer; `background` is the background color
+    /// (used by Offset on the background layer).
+    pub fn apply(
+        self,
+        doc: &mut op_core::Document,
+        background: [u8; 3],
+    ) -> Result<(), op_core::fill::FillError> {
+        match self {
+            Self::Adjustment(a) => op_core::adjust::apply(doc, a),
+            Self::Filter(f) => op_core::filter::apply(doc, f, background),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ParamKind {
+    Number,
+    /// Radio buttons; the value is the chosen index.
+    Choice(&'static [&'static str]),
+    /// A checkbox; the value is 0 or 1.
+    Check,
+}
+
+/// One setting.
 struct Param {
     label: &'static str,
     min: f32,
     max: f32,
     default: f32,
     decimals: usize,
+    kind: ParamKind,
 }
 
 const fn param(label: &'static str, min: f32, max: f32, default: f32, decimals: usize) -> Param {
@@ -37,6 +81,29 @@ const fn param(label: &'static str, min: f32, max: f32, default: f32, decimals: 
         max,
         default,
         decimals,
+        kind: ParamKind::Number,
+    }
+}
+
+const fn choice(label: &'static str, options: &'static [&'static str], default: usize) -> Param {
+    Param {
+        label,
+        min: 0.0,
+        max: (options.len() - 1) as f32,
+        default: default as f32,
+        decimals: 0,
+        kind: ParamKind::Choice(options),
+    }
+}
+
+const fn check(label: &'static str, default: bool) -> Param {
+    Param {
+        label,
+        min: 0.0,
+        max: 1.0,
+        default: default as u8 as f32,
+        decimals: 0,
+        kind: ParamKind::Check,
     }
 }
 
@@ -60,6 +127,30 @@ const EXPOSURE: &[Param] = &[
     param("Offset:", -0.5, 0.5, 0.0, 4),
     param("Gamma Correction:", 0.01, 9.99, 1.0, 2),
 ];
+const GAUSSIAN_BLUR: &[Param] = &[param("Radius (pixels):", 0.1, 1000.0, 1.0, 1)];
+const BOX_BLUR: &[Param] = &[param("Radius (pixels):", 1.0, 2000.0, 1.0, 0)];
+const UNSHARP_MASK: &[Param] = &[
+    param("Amount (%):", 1.0, 500.0, 50.0, 0),
+    param("Radius (pixels):", 0.1, 1000.0, 1.0, 1),
+    param("Threshold (levels):", 0.0, 255.0, 0.0, 0),
+];
+const ADD_NOISE: &[Param] = &[
+    param("Amount (%):", 0.1, 400.0, 12.5, 2),
+    choice("Distribution", &["Uniform", "Gaussian"], 0),
+    check("Monochromatic", false),
+];
+const RADIUS: &[Param] = &[param("Radius (pixels):", 1.0, 500.0, 1.0, 0)];
+const HIGH_PASS: &[Param] = &[param("Radius (pixels):", 0.1, 1000.0, 10.0, 1)];
+const OFFSET: &[Param] = &[
+    param("Horizontal (pixels right):", -30000.0, 30000.0, 0.0, 0),
+    param("Vertical (pixels down):", -30000.0, 30000.0, 0.0, 0),
+    choice(
+        "Undefined Areas",
+        &["Set to Transparent", "Repeat Edge Pixels", "Wrap Around"],
+        0,
+    ),
+];
+const MOSAIC: &[Param] = &[param("Cell Size (square):", 2.0, 200.0, 10.0, 0)];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
@@ -68,6 +159,16 @@ pub enum Kind {
     Levels,
     HueSaturation,
     Exposure,
+    GaussianBlur,
+    BoxBlur,
+    UnsharpMask,
+    AddNoise,
+    Median,
+    Minimum,
+    Maximum,
+    HighPass,
+    Offset,
+    Mosaic,
 }
 
 impl Kind {
@@ -78,6 +179,16 @@ impl Kind {
             Self::Levels => "Levels",
             Self::HueSaturation => "Hue/Saturation",
             Self::Exposure => "Exposure",
+            Self::GaussianBlur => "Gaussian Blur",
+            Self::BoxBlur => "Box Blur",
+            Self::UnsharpMask => "Unsharp Mask",
+            Self::AddNoise => "Add Noise",
+            Self::Median => "Median",
+            Self::Minimum => "Minimum",
+            Self::Maximum => "Maximum",
+            Self::HighPass => "High Pass",
+            Self::Offset => "Offset",
+            Self::Mosaic => "Mosaic",
         }
     }
 
@@ -88,6 +199,14 @@ impl Kind {
             Self::Levels => LEVELS,
             Self::HueSaturation => HUE_SATURATION,
             Self::Exposure => EXPOSURE,
+            Self::GaussianBlur => GAUSSIAN_BLUR,
+            Self::BoxBlur => BOX_BLUR,
+            Self::UnsharpMask => UNSHARP_MASK,
+            Self::AddNoise => ADD_NOISE,
+            Self::Median | Self::Minimum | Self::Maximum => RADIUS,
+            Self::HighPass => HIGH_PASS,
+            Self::Offset => OFFSET,
+            Self::Mosaic => MOSAIC,
         }
     }
 
@@ -96,15 +215,27 @@ impl Kind {
             Self::Threshold => vec2(pt(400.0), pt(232.0)),
             Self::Posterize => vec2(pt(330.0), pt(132.0)),
             Self::Levels => vec2(pt(400.0), pt(330.0)),
-            Self::HueSaturation | Self::Exposure => vec2(pt(400.0), pt(220.0)),
+            _ => {
+                let rows: f32 = self.params().iter().map(row_height).sum();
+                vec2(pt(400.0), (pt(36.0) + rows + pt(20.0)).max(pt(150.0)))
+            }
         }
+    }
+}
+
+/// Height of a parameter's row in the generic layout.
+fn row_height(p: &Param) -> f32 {
+    match p.kind {
+        ParamKind::Number => pt(52.0),
+        ParamKind::Choice(options) => pt(24.0) * (options.len() + 1) as f32,
+        ParamKind::Check => pt(28.0),
     }
 }
 
 pub enum Outcome {
     Open,
     Cancel,
-    Apply(Adjustment),
+    Apply(Effect),
 }
 
 pub struct AdjustDialog {
@@ -114,8 +245,8 @@ pub struct AdjustDialog {
     /// Histogram of the pixels being adjusted (Threshold and Levels).
     histogram: [u64; 256],
     first_frame: bool,
-    /// The adjustment the document currently previews, if any.
-    pub previewing: Option<Adjustment>,
+    /// The effect the document currently previews, if any.
+    pub previewing: Option<Effect>,
     /// The document before any preview, restored on Cancel.
     pub before: op_core::Snapshot,
 }
@@ -152,11 +283,52 @@ impl AdjustDialog {
         self.values[i] = format(v.clamp(p.min, p.max), p.decimals);
     }
 
-    /// The adjustment as currently set, if every value is valid.
-    pub fn adjustment(&self) -> Option<Adjustment> {
+    /// The effect as currently set, if every value is valid.
+    pub fn effect(&self) -> Option<Effect> {
         let v: Vec<f32> = (0..self.values.len())
             .map(|i| self.value(i))
             .collect::<Option<_>>()?;
+        let filter = match self.kind {
+            Kind::GaussianBlur => Filter::GaussianBlur { radius: v[0] },
+            Kind::BoxBlur => Filter::BoxBlur {
+                radius: v[0] as u32,
+            },
+            Kind::UnsharpMask => Filter::UnsharpMask {
+                amount: v[0],
+                radius: v[1],
+                threshold: v[2] as u8,
+            },
+            Kind::AddNoise => Filter::AddNoise {
+                amount: v[0],
+                gaussian: v[1] == 1.0,
+                monochromatic: v[2] == 1.0,
+            },
+            Kind::Median => Filter::Median {
+                radius: v[0] as u32,
+            },
+            Kind::Minimum => Filter::Minimum {
+                radius: v[0] as u32,
+            },
+            Kind::Maximum => Filter::Maximum {
+                radius: v[0] as u32,
+            },
+            Kind::HighPass => Filter::HighPass { radius: v[0] },
+            Kind::Offset => Filter::Offset {
+                dx: v[0] as i32,
+                dy: v[1] as i32,
+                fill: [
+                    OffsetFill::Background,
+                    OffsetFill::RepeatEdges,
+                    OffsetFill::Wrap,
+                ][v[2] as usize],
+            },
+            Kind::Mosaic => Filter::Mosaic { cell: v[0] as u32 },
+            _ => return self.adjustment(&v).map(Effect::Adjustment),
+        };
+        Some(Effect::Filter(filter))
+    }
+
+    fn adjustment(&self, v: &[f32]) -> Option<Adjustment> {
         Some(match self.kind {
             Kind::Threshold => Adjustment::Threshold(v[0] as u8),
             Kind::Posterize => Adjustment::Posterize(v[0] as u8),
@@ -183,6 +355,7 @@ impl AdjustDialog {
                 offset: v[1],
                 gamma: v[2],
             },
+            _ => return None,
         })
     }
 
@@ -214,14 +387,49 @@ impl AdjustDialog {
             }
             Kind::Posterize => self.labeled_field(ui, 0, at(LEFT, pt(58.0))),
             Kind::Levels => self.levels_ui(ui, frame),
-            Kind::HueSaturation | Kind::Exposure => {
-                for i in 0..self.values.len() {
-                    let y = pt(52.0) + pt(52.0) * i as f32;
-                    self.slider_row(ui, i, at(LEFT, y), COLUMN - LEFT);
+            _ => {
+                let mut y = pt(52.0);
+                for (i, p) in self.kind.params().iter().enumerate() {
+                    match p.kind {
+                        ParamKind::Number => self.slider_row(ui, i, at(LEFT, y), COLUMN - LEFT),
+                        ParamKind::Choice(options) => {
+                            self.choice_row(ui, i, options, at(LEFT, y));
+                        }
+                        ParamKind::Check => self.check_row(ui, i, at(LEFT, y)),
+                    }
+                    y += row_height(p);
                 }
             }
         }
         self.buttons(ui, frame)
+    }
+
+    /// A label with radio buttons under it.
+    fn choice_row(&mut self, ui: &mut Ui, i: usize, options: &[&str], left_center: Pos2) {
+        self.label(ui, self.kind.params()[i].label, left_center);
+        let mut chosen = self.value(i).unwrap_or(0.0) as usize;
+        for (k, option) in options.iter().enumerate() {
+            let center = left_center + vec2(pt(12.0), pt(24.0) * (k + 1) as f32);
+            let rect = Rect::from_min_size(center - vec2(0.0, pt(9.0)), vec2(pt(220.0), pt(18.0)));
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+            child.radio_value(
+                &mut chosen,
+                k,
+                egui::RichText::new(*option).font(FontId::proportional(FONT)),
+            );
+        }
+        self.values[i] = chosen.to_string();
+    }
+
+    fn check_row(&mut self, ui: &mut Ui, i: usize, left_center: Pos2) {
+        let mut on = self.value(i) == Some(1.0);
+        let rect = Rect::from_min_size(left_center - vec2(0.0, pt(9.0)), vec2(pt(220.0), pt(18.0)));
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+        child.checkbox(
+            &mut on,
+            egui::RichText::new(self.kind.params()[i].label).font(FontId::proportional(FONT)),
+        );
+        self.values[i] = (on as u8).to_string();
     }
 
     fn label(&self, ui: &Ui, text: &str, left_center: Pos2) -> Rect {
@@ -433,7 +641,7 @@ impl AdjustDialog {
         let x = frame.width() - pt(108.0);
         let at = |y: f32| frame.min + vec2(x, y);
         let button_font = FontId::proportional(pt(13.0));
-        let valid = self.adjustment().is_some();
+        let valid = self.effect().is_some();
         let ok = common::pill_button(
             ui,
             Rect::from_min_size(at(pt(44.0)), BUTTON),
@@ -460,9 +668,9 @@ impl AdjustDialog {
         }
         let enter = ui.input(|i| i.key_pressed(Key::Enter));
         if (ok.clicked() || enter)
-            && let Some(adjustment) = self.adjustment()
+            && let Some(effect) = self.effect()
         {
-            return Outcome::Apply(adjustment);
+            return Outcome::Apply(effect);
         }
         Outcome::Open
     }
@@ -480,23 +688,48 @@ mod tests {
     #[test]
     fn defaults_match_photoshop() {
         assert_eq!(
-            dialog(Kind::Levels).adjustment(),
-            Some(Adjustment::Levels {
+            dialog(Kind::Levels).effect(),
+            Some(Effect::Adjustment(Adjustment::Levels {
                 input_black: 0,
                 input_white: 255,
                 gamma: 1.0,
                 output_black: 0,
                 output_white: 255,
-            })
+            }))
         );
         assert_eq!(dialog(Kind::Exposure).values, ["0.00", "0.0000", "1.00"]);
         assert_eq!(
-            dialog(Kind::HueSaturation).adjustment(),
-            Some(Adjustment::HueSaturation {
+            dialog(Kind::HueSaturation).effect(),
+            Some(Effect::Adjustment(Adjustment::HueSaturation {
                 hue: 0,
                 saturation: 0,
                 lightness: 0
-            })
+            }))
+        );
+    }
+
+    #[test]
+    fn filters_read_choices_and_checkboxes() {
+        let mut d = dialog(Kind::AddNoise);
+        d.values[1] = "1".into();
+        d.values[2] = "1".into();
+        assert_eq!(
+            d.effect(),
+            Some(Effect::Filter(Filter::AddNoise {
+                amount: 12.5,
+                gaussian: true,
+                monochromatic: true
+            }))
+        );
+        let mut d = dialog(Kind::Offset);
+        d.values[2] = "2".into();
+        assert_eq!(
+            d.effect(),
+            Some(Effect::Filter(Filter::Offset {
+                dx: 0,
+                dy: 0,
+                fill: OffsetFill::Wrap
+            }))
         );
     }
 
@@ -505,9 +738,9 @@ mod tests {
         let mut d = dialog(Kind::Levels);
         d.values[0] = "250".into();
         d.values[2] = "251".into();
-        assert_eq!(d.adjustment(), None);
+        assert_eq!(d.effect(), None);
         let mut d = dialog(Kind::HueSaturation);
         d.values[0] = "181".into();
-        assert_eq!(d.adjustment(), None);
+        assert_eq!(d.effect(), None);
     }
 }

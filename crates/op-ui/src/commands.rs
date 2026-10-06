@@ -4,6 +4,7 @@
 use egui::{Key, Modifiers};
 
 use op_core::adjust::{self, Adjustment};
+use op_core::filter::Filter;
 use op_core::image_ops::{self, Orientation};
 use op_core::layer_ops::{self, Arrange};
 
@@ -43,6 +44,20 @@ pub enum Command {
     Levels,
     HueSaturation,
     Exposure,
+    /// Filter > Last Filter: the last filter again, with its settings.
+    LastFilter,
+    Average,
+    Solarize,
+    GaussianBlur,
+    BoxBlur,
+    UnsharpMask,
+    AddNoise,
+    Median,
+    Minimum,
+    Maximum,
+    HighPass,
+    Offset,
+    Mosaic,
     NewLayer,
     DeleteLayer,
     /// Layer > Hide Layers / Show Layers for the active layer.
@@ -90,6 +105,8 @@ pub struct Shortcut {
     pub cmd: bool,
     pub shift: bool,
     pub alt: bool,
+    /// The Control key on macOS (where `cmd` is Command).
+    pub ctrl: bool,
     pub key: Key,
 }
 
@@ -98,6 +115,7 @@ const fn cmd(key: Key) -> Shortcut {
         cmd: true,
         shift: false,
         alt: false,
+        ctrl: false,
         key,
     }
 }
@@ -122,6 +140,7 @@ impl Shortcut {
         m.command = self.cmd;
         m.shift = self.shift;
         m.alt = self.alt;
+        m.ctrl = self.ctrl;
         m
     }
 
@@ -136,6 +155,9 @@ impl Shortcut {
         }
         if self.alt {
             s.push_str("Alt+");
+        }
+        if self.ctrl {
+            s.push_str("Ctrl+");
         }
         // muda knows the bracket keys by their symbols
         s.push_str(match self.key {
@@ -178,12 +200,14 @@ impl Command {
                 cmd: false,
                 shift: true,
                 alt: false,
+                ctrl: false,
                 key: Key::F5,
             },
             Self::FillForeground => Shortcut {
                 cmd: false,
                 shift: false,
                 alt: true,
+                ctrl: false,
                 key: Key::Backspace,
             },
             Self::FillBackground => cmd(Key::Backspace),
@@ -191,6 +215,7 @@ impl Command {
                 cmd: false,
                 shift: false,
                 alt: false,
+                ctrl: false,
                 key: Key::Backspace,
             },
             Self::Cut => cmd(Key::X),
@@ -217,10 +242,29 @@ impl Command {
             | Self::Equalize
             | Self::Threshold
             | Self::Posterize
-            | Self::Exposure => return None,
+            | Self::Exposure
+            | Self::Average
+            | Self::Solarize
+            | Self::GaussianBlur
+            | Self::BoxBlur
+            | Self::UnsharpMask
+            | Self::AddNoise
+            | Self::Median
+            | Self::Minimum
+            | Self::Maximum
+            | Self::HighPass
+            | Self::Offset
+            | Self::Mosaic => return None,
             Self::Invert => cmd(Key::I),
             Self::Levels => cmd(Key::L),
             Self::HueSaturation => cmd(Key::U),
+            Self::LastFilter => Shortcut {
+                cmd: true,
+                shift: false,
+                alt: false,
+                ctrl: true,
+                key: Key::F,
+            },
             Self::Desaturate => shift_cmd(Key::U),
             Self::DeleteLayer
             | Self::ToggleHistory
@@ -289,6 +333,7 @@ impl Command {
                 doc.is_some_and(|d| d.doc.selection().is_some() && d.doc.active_layer.is_some())
             }
             Self::Crop => doc.is_some_and(|d| d.doc.selection().is_some()),
+            Self::LastFilter => doc.is_some() && app.last_filter.is_some(),
             Self::LayerFromBackground => doc.is_some_and(|d| d.doc.has_background()),
             Self::DeleteHiddenLayers => doc.is_some_and(|d| {
                 let layers = &d.doc.layers;
@@ -333,6 +378,18 @@ impl Command {
             | Self::Levels
             | Self::HueSaturation
             | Self::Exposure
+            | Self::Average
+            | Self::Solarize
+            | Self::GaussianBlur
+            | Self::BoxBlur
+            | Self::UnsharpMask
+            | Self::AddNoise
+            | Self::Median
+            | Self::Minimum
+            | Self::Maximum
+            | Self::HighPass
+            | Self::Offset
+            | Self::Mosaic
             | Self::NewLayer
             | Self::ZoomIn
             | Self::ZoomOut
@@ -346,6 +403,7 @@ impl Command {
 /// extra Shift/Alt when matching, so Shift+Cmd+Z must be checked before Cmd+Z.
 const SHORTCUT_ORDER: &[Command] = &[
     Command::ExportAs,
+    Command::LastFilter,
     Command::CopyMerged,
     Command::PasteInPlace,
     Command::LayerViaCut,
@@ -531,17 +589,56 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 }
             }
         }
+        Command::Average | Command::Solarize | Command::LastFilter => {
+            let filter = match command {
+                Command::Average => Some(Filter::Average),
+                Command::Solarize => Some(Filter::Solarize),
+                _ => app.last_filter,
+            };
+            let [r, g, b, _] = app.background.to_rgba8();
+            if let Some(filter) = filter
+                && let Some(state) = app.active_doc.and_then(|id| app.docs.get_mut(&id))
+            {
+                match op_core::filter::apply(&mut state.doc, filter, [r, g, b]) {
+                    Ok(()) => {
+                        state.record(filter.name());
+                        app.last_filter = Some(filter);
+                    }
+                    Err(e) => app.alert = Some(e.message(filter.name())),
+                }
+            }
+        }
         Command::Threshold
         | Command::Posterize
         | Command::Levels
         | Command::HueSaturation
-        | Command::Exposure => {
+        | Command::Exposure
+        | Command::GaussianBlur
+        | Command::BoxBlur
+        | Command::UnsharpMask
+        | Command::AddNoise
+        | Command::Median
+        | Command::Minimum
+        | Command::Maximum
+        | Command::HighPass
+        | Command::Offset
+        | Command::Mosaic => {
             let (kind, name) = match command {
                 Command::Threshold => (AdjustKind::Threshold, "Threshold"),
                 Command::Posterize => (AdjustKind::Posterize, "Posterize"),
                 Command::Levels => (AdjustKind::Levels, "Levels"),
                 Command::HueSaturation => (AdjustKind::HueSaturation, "Hue/Saturation"),
-                _ => (AdjustKind::Exposure, "Exposure"),
+                Command::Exposure => (AdjustKind::Exposure, "Exposure"),
+                Command::GaussianBlur => (AdjustKind::GaussianBlur, "Gaussian Blur"),
+                Command::BoxBlur => (AdjustKind::BoxBlur, "Box Blur"),
+                Command::UnsharpMask => (AdjustKind::UnsharpMask, "Unsharp Mask"),
+                Command::AddNoise => (AdjustKind::AddNoise, "Add Noise"),
+                Command::Median => (AdjustKind::Median, "Median"),
+                Command::Minimum => (AdjustKind::Minimum, "Minimum"),
+                Command::Maximum => (AdjustKind::Maximum, "Maximum"),
+                Command::HighPass => (AdjustKind::HighPass, "High Pass"),
+                Command::Offset => (AdjustKind::Offset, "Offset"),
+                _ => (AdjustKind::Mosaic, "Mosaic"),
             };
             if let Some(state) = app.active_doc.and_then(|id| app.docs.get_mut(&id)) {
                 match adjust::check(&state.doc) {
