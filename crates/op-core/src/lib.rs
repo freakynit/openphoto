@@ -16,6 +16,7 @@ pub mod history;
 pub mod image_ops;
 pub mod layer;
 pub mod layer_ops;
+pub mod link;
 pub mod move_tool;
 pub mod paint;
 pub mod pixel;

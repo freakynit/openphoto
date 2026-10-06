@@ -2136,6 +2136,123 @@ fn screenshot_layer_groups() {
     shot(&mut h, "layer_groups");
 }
 
+/// A 200 × 200 document with A, B and C over the background, A and C
+/// linked and selected: the panel Photoshop 2026 was captured with.
+fn linked_document(h: &mut Harness<'_, OpenPhotoApp>) {
+    let app = &mut h.state_mut().state;
+    crate::actions::close_all(app);
+    let mut doc = op_core::Document::new_with_background("link-tmp", 200, 200, Color::WHITE);
+    let mut ids = Vec::new();
+    for name in ["A", "B", "C"] {
+        let id = doc.new_layer_id();
+        doc.layers.push(op_core::Layer::raster(
+            id,
+            name,
+            op_core::TiledImage::new(200, 200),
+        ));
+        ids.push(id);
+    }
+    doc.set_selected_layers(vec![ids[0], ids[2]]);
+    op_core::link::link_selected(&mut doc);
+    app.add_document(doc, "New");
+    h.run_steps(6);
+}
+
+#[test]
+#[ignore]
+fn screenshot_linked_layers() {
+    let mut h = harness(Vec::new());
+    linked_document(&mut h);
+    shot(&mut h, "linked_layers");
+}
+
+/// Row lines, highlights, thumbnail frames, link icons' column and the
+/// scrollbar thumb, at the device pixels (2x) of Photoshop 2026's capture.
+#[test]
+fn layers_rows_and_scrollbar_match_photoshop() {
+    let mut h = harness(Vec::new());
+    linked_document(&mut h);
+    let image = h.render().expect("render frame");
+    let gray = |x: u32, y: u32| image.get_pixel(x, y).0[0];
+    let mut wrong = Vec::new();
+    let mut check = |what: &str, x: u32, y: u32, want: u8| {
+        let got = gray(x, y);
+        if got.abs_diff(want) > 3 {
+            wrong.push(format!("{what} at ({x}, {y}): {got}, Photoshop {want}"));
+        }
+    };
+    // Rows: C (selected) 81 px, then 80 px rows under 2 px lines
+    for (y, want) in [
+        (1264, 107),
+        (1344, 107),
+        (1345, 69),
+        (1346, 69),
+        (1347, 83),
+        (1426, 83),
+        (1427, 69),
+        (1429, 107),
+        (1508, 107),
+        (1509, 69),
+        (1511, 83),
+    ] {
+        check("row", 2400, y, want);
+    }
+    // The thumbnails' frames start 9 px into each 82 px row
+    for (y, want) in [(1271, 107), (1272, 46), (1353, 83), (1354, 46)] {
+        check("thumbnail frame", 2124, y, want);
+    }
+    // Track and thumb
+    for (x, y, want) in [
+        (2670, 1300, 74),
+        (2683, 1266, 74),
+        (2683, 1270, 105),
+        (2683, 1508, 105),
+        (2683, 1511, 74),
+        (2696, 1300, 74),
+    ] {
+        check("scrollbar", x, y, want);
+    }
+    assert!(
+        wrong.is_empty(),
+        "differs from Photoshop:\n{}",
+        wrong.join("\n")
+    );
+}
+
+#[test]
+fn link_layers_from_the_panel_and_the_menu() {
+    use crate::commands::Command;
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    for _ in 0..3 {
+        crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    }
+    h.run_steps(2);
+    let id = |h: &Harness<'_, OpenPhotoApp>, k: usize| active(h).doc.layers[k].id;
+    let (l1, l3) = (id(&h, 1), id(&h, 3));
+    // One layer: the link button and the menu item are off
+    assert!(!Command::LinkLayers.enabled(&h.state().state));
+    // Layer 1 and Layer 3, linked with the footer's link button
+    let doc = &mut h.state_mut().state.active().unwrap().doc;
+    doc.set_selected_layers(vec![l1, l3]);
+    let link_button = at_pt(1350.0 - 196.5, 787.5);
+    click(&mut h, link_button);
+    assert_eq!(last_history(&h), "Link Layers");
+    assert_eq!(op_core::link::linked_with(&active(&h).doc, l1), [l3]);
+    assert!(op_core::link::can_unlink(&active(&h).doc));
+    // Select Linked Layers from Layer 1 alone selects Layer 3 too
+    h.state_mut().state.active().unwrap().doc.select_layer(l1);
+    assert!(Command::SelectLinkedLayers.enabled(&h.state().state));
+    run_command(&mut h, Command::SelectLinkedLayers);
+    assert_eq!(active(&h).doc.selected_layers().len(), 2);
+    assert_eq!(active(&h).doc.active_layer, Some(l1));
+    // Unlinking Layer 1 leaves Layer 3 linked to nothing
+    h.state_mut().state.active().unwrap().doc.select_layer(l1);
+    run_command(&mut h, Command::LinkLayers);
+    assert_eq!(last_history(&h), "Unlink Layers");
+    assert!(!op_core::link::is_linked(&active(&h).doc, l3));
+}
+
 #[test]
 fn deleting_a_group_asks_what_to_delete() {
     use crate::commands::Command;

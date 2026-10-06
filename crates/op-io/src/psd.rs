@@ -151,6 +151,26 @@ impl Writer {
 
 /// What the layer records list, bottom to top: layers, and the divider
 /// that opens each group (below its layers).
+/// Resource 1026's numbers in record order: 1, 2, ... per link set (in
+/// order of first appearance), 0 for unlinked layers and dividers.
+fn link_numbers(doc: &Document) -> Vec<u16> {
+    let mut sets: Vec<u32> = Vec::new();
+    records(doc)
+        .iter()
+        .map(|record| match record {
+            Record::Layer(l) if op_core::link::is_linked(doc, l.id) => {
+                let link = l.link.expect("linked layers have a number");
+                let k = sets.iter().position(|&s| s == link).unwrap_or_else(|| {
+                    sets.push(link);
+                    sets.len() - 1
+                });
+                k as u16 + 1
+            }
+            _ => 0,
+        })
+        .collect()
+}
+
 enum Record<'a> {
     Layer(&'a op_core::Layer),
     Divider,
@@ -256,6 +276,16 @@ pub fn write(doc: &Document) -> Vec<u8> {
         out.u32(fixed);
         out.u16(1); // pixels per inch
         out.u16(1); // display unit: inches
+    }
+    // Linked layers (Layer Group Information, 1026): a u16 per layer record
+    // (dividers too), bottom to top; layers sharing a number are linked
+    let links = link_numbers(doc);
+    if links.iter().any(|&n| n != 0) {
+        out.bytes(b"8BIM");
+        out.u16(1026);
+        out.bytes(&[0, 0]);
+        out.u32(links.len() as u32 * 2);
+        links.iter().for_each(|&n| out.u16(n));
     }
     out.close(resources, 2);
 
@@ -581,6 +611,7 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
     let resources_len = r.u32()? as u64;
     let resources_end = r.pos() + resources_len;
     let mut resolution = 72.0;
+    let mut links: Vec<u16> = Vec::new();
     while r.pos() + 12 <= resources_end {
         if &r.take::<4>()? != b"8BIM" {
             break;
@@ -593,6 +624,9 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
         let start = r.pos();
         if id == 1005 && size >= 4 {
             resolution = r.u32()? as f32 / 65536.0;
+        }
+        if id == 1026 {
+            links = (0..size / 2).map(|_| r.u16()).collect::<Result<_, _>>()?;
         }
         r.seek(start + size.next_multiple_of(2));
     }
@@ -758,6 +792,7 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                 layer.opacity = rec.opacity as f32 / 255.0;
                 layer.fill = rec.fill as f32 / 255.0;
                 layer.color = op_core::LayerColor::from_psd_index(rec.label);
+                layer.link = links.get(i).copied().filter(|&n| n != 0).map(u32::from);
                 layer.blend_mode = BLEND_KEYS
                     .iter()
                     .find(|(_, k)| **k == rec.blend)
@@ -1039,6 +1074,43 @@ mod photoshop_check {
         assert_eq!(locks("nest"), (false, false, false, true, false));
         assert_eq!(locks("all"), (false, false, false, false, true));
         assert!(doc.layers[0].is_background);
+    }
+
+    /// Saved by Photoshop 2026: A and B linked, C and the background
+    /// linked, D not linked.
+    #[test]
+    fn reads_photoshop_links() {
+        let bytes = include_bytes!("../fixtures/photoshop_links.psd");
+        let doc = read(bytes, "links.psd".into()).unwrap();
+        let id = |name: &str| doc.layers.iter().find(|l| l.name == name).unwrap().id;
+        let linked = |name: &str| {
+            let mut names: Vec<String> = op_core::link::linked_with(&doc, id(name))
+                .into_iter()
+                .map(|i| doc.layer(i).unwrap().name.clone())
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(linked("A"), ["B"]);
+        assert_eq!(linked("C"), ["Background"]);
+        assert!(linked("D").is_empty());
+        // Written back with the same layers linked (numbered afresh)
+        let again = read(&write(&doc), "t.psd".into()).unwrap();
+        let sets = |d: &Document| {
+            let index = |id| d.layers.iter().position(|l| l.id == id);
+            d.layers
+                .iter()
+                .map(|l| {
+                    let mut v: Vec<usize> = op_core::link::linked_with(d, l.id)
+                        .into_iter()
+                        .filter_map(index)
+                        .collect();
+                    v.sort();
+                    v
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(sets(&again), sets(&doc));
     }
 
     #[test]

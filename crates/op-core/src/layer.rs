@@ -255,6 +255,9 @@ pub struct Layer {
     pub color: LayerColor,
     /// The group the layer is in, if any.
     pub parent: Option<LayerId>,
+    /// Layer > Link Layers: layers with the same number are linked (a
+    /// number no other layer has links nothing; see `link`).
+    pub link: Option<u32>,
 }
 
 impl Layer {
@@ -276,6 +279,7 @@ impl Layer {
             mask: None,
             color: LayerColor::None,
             parent: None,
+            link: None,
         }
     }
 

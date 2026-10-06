@@ -59,10 +59,11 @@ impl Move {
         if selection.is_some() && layer.is_group() {
             return Err(MoveError::Group);
         }
-        // Without a pixel selection, the other selected layers (and the
-        // layers in selected groups) that can move go along, as in Photoshop
+        // Without a pixel selection, the other selected layers, the layers
+        // linked to them and the layers in selected groups that can move go
+        // along, as in Photoshop
         let mut moving: Vec<(LayerId, TiledImage)> = if selection.is_none() {
-            doc.pixel_layers(&doc.selected_layers())
+            doc.pixel_layers(&crate::link::with_linked(doc))
                 .into_iter()
                 .filter_map(|other| doc.layer(other))
                 .filter(|l| {
@@ -266,6 +267,31 @@ mod tests {
         let bg = doc.layers[0].id;
         assert_eq!(px(&doc, bg, 0, 0), [9, 9, 9, 255]);
         assert_eq!(px(&doc, bg, 5, 5), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn linked_layers_move_along() {
+        let (mut doc, id) = doc_with_dot();
+        let other = doc.new_layer_id();
+        let mut img = TiledImage::new(10, 10);
+        img.set_pixel(5, 5, [0, 255, 0, 255]);
+        doc.layers.push(Layer::raster(other, "M", img));
+        doc.set_selected_layers(vec![other, id]);
+        crate::link::link_selected(&mut doc);
+        // Only the dot's layer selected: M is linked and moves too
+        doc.select_layer(id);
+        let m = Move::begin(&doc, [0; 3]).unwrap();
+        m.apply(&mut doc, 1, 0);
+        assert_eq!(px(&doc, other, 6, 5), [0, 255, 0, 255]);
+        // Selected pixels move on the active layer only
+        doc.set_selection(Some(Selection::rect(
+            10,
+            10,
+            Rect::new(0.0, 0.0, 10.0, 10.0),
+        )));
+        let m = Move::begin(&doc, [0; 3]).unwrap();
+        m.apply(&mut doc, 1, 0);
+        assert_eq!(px(&doc, other, 6, 5), [0, 255, 0, 255]);
     }
 
     #[test]

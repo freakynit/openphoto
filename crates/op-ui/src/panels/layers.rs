@@ -14,24 +14,33 @@ use crate::widgets;
 /// at y 90, and a 25 pt footer.
 const LIST_TOP: f32 = pt(90.0);
 const FOOTER: f32 = pt(25.0);
-/// The list keeps a scrollbar gutter on its right.
+/// The list keeps a scrollbar gutter on its right: a `#4a4a4a` track,
+/// always there, with a 10 pt `#696969` pill thumb 3 pt from its sides and
+/// 2 pt from its ends when the rows overflow (Photoshop 2026).
 const GUTTER: f32 = pt(16.0);
-/// Thumbnails fit in a box this wide and tall (Photoshop 2026), 4 pt below
-/// the row's top; a row is the thumbnail's height plus 8 pt, and a 1 pt
-/// `#454545` line under it.
-const THUMB_W: f32 = pt(32.5);
+const SCROLL_TRACK: egui::Color32 = egui::Color32::from_gray(0x4a);
+const SCROLL_THUMB: egui::Color32 = egui::Color32::from_gray(0x69);
+/// The largest thumbnail side drawn, for the texture's resolution.
 const THUMB_H: f32 = pt(33.5);
 
-/// The size of the document's thumbnails as drawn.
+/// The thumbnail's box as drawn, frame included. Photoshop 2026 scales the
+/// document so its long side is 30 pt, rounds each side up to whole points
+/// and adds 2.5 pt of frame: 32.5 × 32.5 for a square, 17.5 × 32.5 for 1:2.
+/// The rounding is done on `(30 / long) * side` in doubles, so a long side
+/// like 811 comes out at 31 (33.5 with the frame), as Photoshop's does
+/// (measured on 39 document sizes).
 fn thumb_size(doc: &op_core::Document) -> Vec2 {
-    let (w, h) = (doc.width.max(1) as f32, doc.height.max(1) as f32);
-    let scale = (THUMB_W / w).min(THUMB_H / h);
-    Vec2::new(w * scale, h * scale)
+    let (w, h) = (doc.width.max(1) as f64, doc.height.max(1) as f64);
+    let s = 30.0 / w.max(h);
+    let side = |d: f64| pt((d * s).ceil() as f32 + 2.5);
+    Vec2::new(side(w), side(h))
 }
 
-/// A row's height without its bottom line.
+/// A layer row's height without its line: the thumbnail plus 7.5 pt. The
+/// first row is 0.5 pt taller (the extra on top), and the last row's line
+/// sits 1 pt lower (Photoshop 2026).
 fn row_height(doc: &op_core::Document) -> f32 {
-    thumb_size(doc).y + pt(8.0)
+    thumb_size(doc).y + pt(7.5)
 }
 
 /// Space between the layer and mask thumbnails (the link icon sits in it).
@@ -80,11 +89,26 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
         egui::Color32::from_gray(0x4a),
     );
 
-    let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list_rect));
-    let from_background = egui::ScrollArea::vertical()
+    let track = Rect::from_min_max(
+        Pos2::new(list_rect.right() - GUTTER, list_rect.top()),
+        list_rect.max,
+    );
+    painter.rect_filled(track, 0, SCROLL_TRACK);
+
+    // egui's own bar can't be inset from the track's ends, so the thumb is
+    // drawn here; a drag sets the next frame's offset
+    let drag_id = ui.id().with("layers-scroll-to");
+    let mut area = egui::ScrollArea::vertical()
+        .id_salt("layers-list")
         .auto_shrink(false)
-        .show(&mut list_ui, |ui| layer_list(ui, state))
-        .inner;
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+    if let Some(offset) = ui.data_mut(|d| d.remove_temp::<f32>(drag_id)) {
+        area = area.vertical_scroll_offset(offset);
+    }
+    let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list_rect));
+    let out = area.show(&mut list_ui, |ui| layer_list(ui, state));
+    scroll_thumb(ui, track, &out, drag_id);
+    let from_background = out.inner;
     if from_background {
         app.new_layer_dialog = Some(crate::dialogs::NewLayerDialog::from_background());
         return;
@@ -444,6 +468,36 @@ fn lock_row(ui: &mut Ui, state: &mut DocState, full: Rect) {
     edits.apply(state);
 }
 
+/// The list's scrollbar thumb, when the rows overflow; dragging it scrolls.
+fn scroll_thumb<R>(
+    ui: &mut Ui,
+    track: Rect,
+    out: &egui::scroll_area::ScrollAreaOutput<R>,
+    drag_id: egui::Id,
+) {
+    // Photoshop sizes the thumb without the last row's extra point
+    let content = out.content_size.y - pt(1.0);
+    let view = out.inner_rect.height();
+    if content <= view + 0.5 {
+        return;
+    }
+    let inner = track.shrink2(Vec2::new(pt(3.0), pt(2.0)));
+    let len = (inner.height() * view / content).max(pt(20.0));
+    let max_offset = out.content_size.y - view;
+    let travel = inner.height() - len;
+    let offset = out.state.offset.y.clamp(0.0, max_offset);
+    let top = inner.top() + travel * offset / max_offset;
+    let thumb = Rect::from_min_size(Pos2::new(inner.left(), top), Vec2::new(inner.width(), len));
+    ui.painter()
+        .rect_filled(thumb, inner.width() / 2.0, SCROLL_THUMB);
+    let response = ui.interact(thumb, drag_id.with("thumb"), Sense::drag());
+    if response.dragged() && travel > 0.0 {
+        let moved = offset + response.drag_delta().y * max_offset / travel;
+        ui.data_mut(|d| d.insert_temp(drag_id, moved.clamp(0.0, max_offset)));
+        ui.ctx().request_repaint();
+    }
+}
+
 /// The rows. Returns true when double-clicking the background asks for
 /// the Layer from Background dialog.
 fn layer_list(ui: &mut Ui, state: &mut DocState) -> bool {
@@ -456,20 +510,42 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) -> bool {
     // The row being dragged (its position in the list) and where it is
     let mut dragged: Option<(usize, Pos2, bool)> = None;
     let ts = thumb_size(&state.doc);
+    let single = state.doc.selected_layers().len() == 1;
+    let linked: Vec<LayerId> = op_core::link::with_linked(&state.doc)
+        .into_iter()
+        .filter(|&id| op_core::link::is_linked(&state.doc, id))
+        .collect();
     for (row, &(id, depth)) in rows.iter().enumerate() {
         let is_group = state.doc.layer(id).is_some_and(|l| l.is_group());
         // Group rows are 24 pt (Photoshop 2026), layers fit their thumbnail
-        let row_h = if is_group {
+        let first = row == 0;
+        let last = row + 1 == rows.len();
+        // The highlighted height, then the line (1 pt lower on the last row)
+        let lit_h = if is_group {
             GROUP_ROW
         } else {
             row_height(&state.doc)
-        };
+        } + if first { pt(0.5) } else { 0.0 };
+        let line_gap = if last { pt(1.0) } else { 0.0 };
         let indent = INDENT * depth as f32;
-        let (rect, response) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width(), row_h + pt(1.0)),
+        let (alloc, response) = ui.allocate_exact_size(
+            Vec2::new(ui.available_width(), lit_h + line_gap + pt(1.0)),
             Sense::click_and_drag(),
         );
-        spans.push((rect.top(), rect.bottom()));
+        spans.push((alloc.top(), alloc.bottom()));
+        // Contents are laid out in a row as tall as a layer row is when
+        // first (its extra half point on top) or a group row is otherwise,
+        // so they sit the same in every row
+        let (row_h, top) = match (is_group, first) {
+            (true, true) => (GROUP_ROW, alloc.top() + pt(0.5)),
+            (true, false) => (GROUP_ROW, alloc.top()),
+            (false, true) => (row_height(&state.doc) + pt(0.5), alloc.top()),
+            (false, false) => (row_height(&state.doc) + pt(0.5), alloc.top() - pt(0.5)),
+        };
+        let rect = Rect::from_min_size(
+            Pos2::new(alloc.left(), top),
+            Vec2::new(alloc.width(), row_h + pt(1.0)),
+        );
         // The row proper, left of the scrollbar gutter
         let row_rect = Rect::from_min_max(
             rect.min,
@@ -584,10 +660,15 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) -> bool {
             .layer(id)
             .and_then(|l| layer_color(l.color))
             .unwrap_or(color::PANEL);
-        painter.rect_filled(eye_rect, 0, label);
+        let lit = Rect::from_min_size(alloc.min, Vec2::new(alloc.width(), lit_h));
+        painter.rect_filled(
+            Rect::from_min_max(lit.min, Pos2::new(eye_rect.right(), lit.bottom())),
+            0,
+            label,
+        );
         let body = Rect::from_min_max(
-            Pos2::new(eye_rect.right() + pt(1.0), rect.top()),
-            row_rect.max,
+            Pos2::new(eye_rect.right() + pt(1.0), lit.top()),
+            Pos2::new(row_rect.right(), lit.bottom()),
         );
         if selected {
             painter.rect_filled(body, 0, color::ROW_SELECTED);
@@ -598,16 +679,17 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) -> bool {
         }
         painter.rect_filled(
             Rect::from_min_size(
-                Pos2::new(eye_rect.right(), rect.top()),
-                Vec2::new(pt(1.0), row_h),
+                Pos2::new(eye_rect.right(), lit.top()),
+                Vec2::new(pt(1.0), lit_h),
             ),
             0,
             LINE,
         );
+        // The line stops at the scrollbar's track
         painter.rect_filled(
             Rect::from_min_size(
-                Pos2::new(rect.left(), rect.top() + row_h),
-                Vec2::new(rect.width(), pt(1.0)),
+                Pos2::new(alloc.left(), lit.bottom() + line_gap),
+                Vec2::new(alloc.width() - GUTTER, pt(1.0)),
             ),
             0,
             LINE,
@@ -673,9 +755,10 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) -> bool {
             }
         }
         // The edit target (pixels or mask) of the selected layer gets a
-        // 1.5 pt white frame 0.5 pt outside its thumbnail (Photoshop 2026
-        // leaves it off the background layer)
-        if active && !layer.is_background {
+        // 1.5 pt white frame 0.5 pt outside its thumbnail; Photoshop 2026
+        // leaves it off the background layer and draws none while several
+        // layers are selected
+        if active && !layer.is_background && single {
             let target = match mask_box {
                 Some(mbox) if state.doc.mask_target => mbox,
                 _ => thumb_box,
@@ -726,13 +809,16 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) -> bool {
             font,
             color::TEXT_BRIGHT,
         );
+        let bg = if selected {
+            color::ROW_SELECTED
+        } else {
+            color::PANEL
+        };
         if layer.is_background {
-            let bg = if selected {
-                color::ROW_SELECTED
-            } else {
-                color::PANEL
-            };
             icon(painter, lock_center, Icon::LayerLock, true, bg);
+        } else if linked.contains(&layer.id) {
+            // The layers linked to a selected one show the link icon
+            icon(painter, lock_center, Icon::LinkLayers, true, bg);
         }
     }
     if let Some((from_row, pointer, released)) = dragged {
@@ -877,11 +963,23 @@ fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) -> (bool, bool, boo
     let selected = state.doc.selected_layers().len();
     let can_delete = selected > 0 && selected < state.doc.layers.len();
     let can_mask = op_core::layer_ops::can_add_mask(&state.doc);
+    let can_link = op_core::link::can_link(&state.doc) || op_core::link::can_unlink(&state.doc);
     let buttons = [
         (222.5, Icon::FooterBrush, "", false),
-        (196.5, Icon::LinkLayers, "Link layers", false),
-        (169.5, Icon::LayerStyle, "Add a layer style", !is_background),
-        (139.75, Icon::LayerMask, "Add a mask", can_mask),
+        (196.5, Icon::LinkLayers, "Link layers", can_link),
+        // A style or a mask goes on one layer at a time
+        (
+            169.5,
+            Icon::LayerStyle,
+            "Add a layer style",
+            !is_background && selected == 1,
+        ),
+        (
+            139.75,
+            Icon::LayerMask,
+            "Add a mask",
+            can_mask && selected == 1,
+        ),
         (
             113.5,
             Icon::NewAdjustment,
@@ -915,6 +1013,11 @@ fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) -> (bool, bool, boo
                 state.record("New Group");
             }
             Icon::NewLayer => new_layer(state),
+            Icon::LinkLayers => {
+                if let Some(name) = op_core::link::toggle(&mut state.doc) {
+                    state.record(name);
+                }
+            }
             Icon::LayerMask => {
                 // From the selection when there is one, as in Photoshop
                 let kind = if state.doc.selection().is_some() {
@@ -1035,5 +1138,38 @@ pub fn new_layer(state: &mut DocState) {
 pub fn delete_active_layer(state: &mut DocState) {
     if op_core::layer_ops::delete_selected(&mut state.doc) {
         state.record("Delete Layer");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Thumbnail boxes (frame included, in points) Photoshop 2026 drew for
+    /// these document sizes.
+    #[test]
+    fn thumbnails_are_sized_like_photoshop() {
+        for (w, h, box_w, box_h) in [
+            (200, 200, 32.5, 32.5),
+            (200, 400, 17.5, 32.5),
+            (400, 200, 32.5, 17.5),
+            (734, 811, 30.5, 33.5),
+            (811, 734, 33.5, 30.5),
+            (734, 820, 29.5, 32.5),
+            (300, 810, 14.5, 32.5),
+            (300, 812, 14.5, 33.5),
+            (300, 1622, 8.5, 33.5),
+            (300, 1600, 8.5, 32.5),
+            (300, 720, 15.5, 32.5),
+            (200, 350, 20.5, 32.5),
+        ] {
+            let doc = op_core::Document::new_with_background("t", w, h, op_core::Color::WHITE);
+            let size = thumb_size(&doc) / pt(1.0);
+            let near = |a: f32, b: f32| (a - b).abs() < 0.001;
+            assert!(
+                near(size.x, box_w) && near(size.y, box_h),
+                "{w} × {h}: {size:?}"
+            );
+        }
     }
 }

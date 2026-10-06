@@ -59,6 +59,11 @@ fn cloned_block(
         layer.id = new_id(layer.id).expect("in the block");
         layer.parent = layer.parent.map(|p| new_id(p).unwrap_or(p));
         layer.is_background = false;
+        // A copy stays linked to the original's links, as in Photoshop;
+        // link numbers mean nothing in another document
+        if !std::ptr::eq(source, target) {
+            layer.link = None;
+        }
     }
     block.last_mut().expect("not empty").name = name.to_string();
     Some(block)

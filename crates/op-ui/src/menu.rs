@@ -110,6 +110,8 @@ const ALL_COMMANDS: &[Command] = &[
     Command::MaskToggle,
     Command::SelectAll,
     Command::DeselectLayers,
+    Command::LinkLayers,
+    Command::SelectLinkedLayers,
     Command::SelectAllLayers,
     Command::RenameLayer,
     Command::LockLayers,
@@ -604,8 +606,8 @@ impl NativeMenu {
                 &sep(),
                 &item("Lock Layers...", Command::LockLayers),
                 &sep(),
-                &todo("Link Layers", None),
-                &todo("Select Linked Layers", None),
+                &item("Link Layers", Command::LinkLayers),
+                &item("Select Linked Layers", Command::SelectLinkedLayers),
                 &sep(),
                 &item("Merge Down", Command::MergeDown),
                 &item("Merge Visible", Command::MergeVisible),
@@ -1057,6 +1059,15 @@ impl NativeMenu {
                         "Merge Group"
                     } else {
                         "Merge Down"
+                    }
+                    .into(),
+                ),
+                // Unlink Layers when every selected layer is linked
+                Command::LinkLayers => Some(
+                    if doc.is_some_and(|d| op_core::link::can_unlink(&d.doc)) {
+                        "Unlink Layers"
+                    } else {
+                        "Link Layers"
                     }
                     .into(),
                 ),

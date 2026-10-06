@@ -245,6 +245,8 @@ pub fn apply_style(ctx: &egui::Context) {
         style.spacing.button_padding = egui::vec2(10.0, 4.0);
         style.spacing.interact_size.y = size::FIELD_HEIGHT;
         style.spacing.combo_height = 400.0;
+        // Photoshop's lists don't fade out at their edges
+        style.spacing.scroll.fade.strength = 0.0;
 
         let v = &mut style.visuals;
         v.dark_mode = true;

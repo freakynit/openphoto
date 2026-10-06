@@ -101,6 +101,11 @@ pub enum Command {
     Distribute(op_core::align::Distribute),
     /// Select > Deselect Layers.
     DeselectLayers,
+    /// Layer > Link Layers, or Unlink Layers when every selected layer is
+    /// linked (also the Layers panel's link button).
+    LinkLayers,
+    /// Layer > Select Linked Layers.
+    SelectLinkedLayers,
     /// Layer > Rename Layer...: starts renaming the active layer in the
     /// Layers panel.
     RenameLayer,
@@ -404,6 +409,8 @@ impl Command {
             | Self::TransformFlipVertical
             | Self::RenameLayer
             | Self::DeselectLayers
+            | Self::LinkLayers
+            | Self::SelectLinkedLayers
             | Self::Align(_)
             | Self::Distribute(_)
             | Self::NewGroup
@@ -570,6 +577,12 @@ impl Command {
                 doc.is_some_and(|d| d.doc.layers.iter().any(|l| !l.is_background))
             }
             Self::DeselectLayers => doc.is_some_and(|d| d.doc.active_layer.is_some()),
+            Self::LinkLayers => doc.is_some_and(|d| {
+                op_core::link::can_link(&d.doc) || op_core::link::can_unlink(&d.doc)
+            }),
+            Self::SelectLinkedLayers => {
+                doc.is_some_and(|d| op_core::link::can_select_linked(&d.doc))
+            }
             Self::Align(_) => doc.is_some_and(|d| op_core::align::can_align(&d.doc)),
             Self::GroupLayers | Self::NewGroupFromLayers => {
                 doc.is_some_and(|d| layer_ops::can_group(&d.doc))
@@ -1369,6 +1382,14 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                     state.doc.select_all_layers();
                 }
                 Command::DeselectLayers => state.doc.deselect_layers(),
+                Command::LinkLayers => {
+                    if let Some(name) = op_core::link::toggle(&mut state.doc) {
+                        state.record(name);
+                    }
+                }
+                Command::SelectLinkedLayers => {
+                    op_core::link::select_linked(&mut state.doc);
+                }
                 Command::GroupLayers => {
                     if layer_ops::group_selected(&mut state.doc).is_some() {
                         state.record("Group Layers");

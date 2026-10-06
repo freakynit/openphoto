@@ -210,6 +210,7 @@ fn history_list(ui: &mut Ui, list: Rect, app: &mut AppState) {
             bar_outer_margin: margin,
             ..egui::style::ScrollStyle::solid()
         };
+        style.spacing.scroll.fade.strength = 0.0;
         style.visuals.extreme_bg_color = SCROLL_TRACK;
         for w in [
             &mut style.visuals.widgets.inactive,
