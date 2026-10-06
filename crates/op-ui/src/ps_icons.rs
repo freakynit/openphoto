@@ -37,6 +37,28 @@ pub enum Icon {
     History,
     /// The Comments panel's icon: a filled speech bubble.
     Comments,
+    // The Layers panel: filter buttons, lock buttons, the visibility eye,
+    // the background's lock badge and the footer buttons
+    FilterPixel,
+    FilterAdjustment,
+    FilterType,
+    FilterShape,
+    FilterSmartObject,
+    LockTransparent,
+    LockPixels,
+    LockPosition,
+    LockArtboards,
+    LockAll,
+    Eye,
+    LayerLock,
+    FooterBrush,
+    LinkLayers,
+    LayerStyle,
+    LayerMask,
+    NewAdjustment,
+    NewGroup,
+    NewLayer,
+    DeleteLayer,
 }
 
 struct Pen<'a> {
@@ -287,6 +309,241 @@ pub fn paint(painter: &Painter, center: Pos2, icon: Icon, color: Color32, backgr
                 pen.color,
             );
             pen.poly(&[(-10.0, 5.0), (0.0, 5.0), (-9.5, 14.5)]);
+        }
+        Icon::FilterPixel => {
+            pen.painter.rect_stroke(
+                Rect::from_min_max(pen.p(-12.0, -10.0), pen.p(12.0, 10.0)),
+                0,
+                Stroke::new(Pen::w(2.0), color),
+                egui::StrokeKind::Inside,
+            );
+            pen.poly(&[(-6.5, 6.0), (-3.5, -3.5), (3.0, 6.0)]);
+            pen.poly(&[(-1.0, 6.0), (6.0, -2.5), (10.5, 6.0)]);
+        }
+        Icon::FilterAdjustment | Icon::NewAdjustment => {
+            pen.ring(0.0, 0.0, 9.0, 2.0);
+            let half: Vec<(f32, f32)> = (0..=12)
+                .map(|k| {
+                    let a = (-45.0 + 180.0 * k as f32 / 12.0f32).to_radians();
+                    (9.0 * a.cos(), 9.0 * a.sin())
+                })
+                .collect();
+            pen.poly(&half);
+            if icon == Icon::NewAdjustment {
+                pen.poly(&[(-1.0, 13.5), (7.0, 13.5), (3.0, 17.0)]);
+            }
+        }
+        Icon::FilterType => {
+            pen.rect(-9.0, -9.5, 9.0, -6.5);
+            pen.rect(-9.0, -6.5, -6.0, -3.5);
+            pen.rect(6.0, -6.5, 9.0, -3.5);
+            pen.rect(-1.5, -6.5, 1.5, 7.5);
+            pen.rect(-5.5, 7.5, 5.5, 10.0);
+        }
+        Icon::FilterShape => {
+            pen.rect(-5.0, -9.0, 5.0, -7.0);
+            pen.rect(-5.0, 7.0, 5.0, 9.0);
+            pen.rect(-9.0, -5.0, -7.0, 5.0);
+            pen.rect(7.0, -5.0, 9.0, 5.0);
+            for (x, y) in [(-8.0, -8.0), (8.0, -8.0), (-8.0, 8.0), (8.0, 8.0)] {
+                pen.painter.rect_stroke(
+                    Rect::from_center_size(pen.p(x, y), Vec2::splat(Pen::w(6.0))),
+                    0,
+                    Stroke::new(Pen::w(2.0), color),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
+        Icon::FilterSmartObject => {
+            pen.line(
+                &[
+                    (-6.0, 0.0),
+                    (-6.0, -9.0),
+                    (4.5, -9.0),
+                    (8.0, -5.5),
+                    (8.0, 9.0),
+                    (1.0, 9.0),
+                ],
+                2.0,
+            );
+            pen.line(&[(1.0, -9.0), (1.0, -4.0), (8.0, -4.0)], 2.0);
+            pen.rect(-11.0, 0.0, 1.0, 12.0);
+        }
+        Icon::LockTransparent => {
+            pen.painter.rect_stroke(
+                Rect::from_min_max(pen.p(-11.0, -11.0), pen.p(11.0, 11.0)),
+                0,
+                Stroke::new(Pen::w(2.0), color),
+                egui::StrokeKind::Inside,
+            );
+            pen.rect(-3.0, -9.0, 3.0, -3.0);
+            pen.rect(-9.0, -3.0, -3.0, 3.0);
+            pen.rect(3.0, -3.0, 9.0, 3.0);
+            pen.rect(-3.0, 3.0, 3.0, 9.0);
+        }
+        Icon::LockPixels | Icon::FooterBrush => {
+            pen.round_line((12.0, -11.0), (4.0, 0.0), 5.0);
+            pen.poly(&[
+                (-12.0, 13.0),
+                (-10.0, 5.0),
+                (-5.0, 2.0),
+                (1.0, 4.0),
+                (1.0, 8.0),
+                (-4.0, 12.0),
+            ]);
+        }
+        Icon::LockPosition => {
+            pen.rect(-1.0, -7.5, 1.0, 7.5);
+            pen.rect(-8.0, -1.0, 8.0, 1.0);
+            pen.poly(&[(0.0, -12.5), (5.0, -7.5), (-5.0, -7.5)]);
+            pen.poly(&[(0.0, 12.5), (-5.0, 7.5), (5.0, 7.5)]);
+            pen.poly(&[(-15.0, 0.0), (-8.0, -5.0), (-8.0, 5.0)]);
+            pen.poly(&[(15.0, 0.0), (8.0, 5.0), (8.0, -5.0)]);
+        }
+        Icon::LockArtboards => {
+            pen.line(
+                &[
+                    (6.0, -7.0),
+                    (-11.0, -7.0),
+                    (-11.0, 7.0),
+                    (9.0, 7.0),
+                    (9.0, 0.0),
+                ],
+                2.0,
+            );
+            pen.poly(&[
+                (2.0, -8.0),
+                (6.0, -8.0),
+                (10.0, -4.0),
+                (10.0, 0.0),
+                (2.0, 0.0),
+            ]);
+            for (x0, y0, x1, y1) in [
+                (-16.0, -8.0, -13.0, -6.0),
+                (11.0, -8.0, 14.0, -6.0),
+                (-16.0, 6.0, -13.0, 8.0),
+                (11.0, 6.0, 14.0, 8.0),
+                (-10.0, -12.0, -8.0, -9.0),
+                (8.0, -12.0, 10.0, -9.0),
+                (-10.0, 10.0, -8.0, 13.0),
+                (8.0, 10.0, 10.0, 13.0),
+            ] {
+                pen.rect(x0, y0, x1, y1);
+            }
+        }
+        Icon::LockAll => {
+            let arc: Vec<(f32, f32)> = (0..=12)
+                .map(|k| {
+                    let a = (180.0 + 180.0 * k as f32 / 12.0f32).to_radians();
+                    (5.5 * a.cos(), -6.0 + 5.5 * a.sin())
+                })
+                .collect();
+            pen.line(&arc, 2.5);
+            pen.rect(-6.75, -6.0, -4.25, -4.0);
+            pen.rect(4.25, -6.0, 6.75, -4.0);
+            pen.rect(-10.0, -4.0, 10.0, 12.0);
+            Pen {
+                color: background,
+                ..pen
+            }
+            .rect(-2.0, 1.0, 2.0, 5.0);
+        }
+        Icon::Eye => {
+            // Two arcs meeting at pointed corners, and a small pupil
+            let arc = |sign: f32| -> Vec<(f32, f32)> {
+                (0..=12)
+                    .map(|k| {
+                        let a = (-53.13 + 106.26 * k as f32 / 12.0f32).to_radians();
+                        (12.5 * a.sin(), sign * (7.5 - 12.5 * a.cos()))
+                    })
+                    .collect()
+            };
+            pen.line(&arc(1.0), 4.0);
+            pen.line(&arc(-1.0), 4.0);
+            pen.dot(1.5, -1.5, 1.5);
+        }
+        Icon::LayerLock => {
+            let arc: Vec<(f32, f32)> = (0..=12)
+                .map(|k| {
+                    let a = (180.0 + 180.0 * k as f32 / 12.0f32).to_radians();
+                    (5.0 * a.cos(), -6.5 + 5.0 * a.sin())
+                })
+                .collect();
+            pen.line(&arc, 2.5);
+            pen.rect(-6.25, -6.5, -3.75, -4.0);
+            pen.rect(3.75, -6.5, 6.25, -4.0);
+            pen.painter.rect_stroke(
+                Rect::from_min_max(pen.p(-10.0, -4.0), pen.p(10.0, 12.0)),
+                0,
+                Stroke::new(Pen::w(2.0), color),
+                egui::StrokeKind::Inside,
+            );
+            pen.rect(-3.0, 2.0, 3.0, 7.0);
+        }
+        Icon::LinkLayers => {
+            for (cx, from) in [(-7.0f32, 40.0f32), (7.0, -140.0)] {
+                let arc: Vec<(f32, f32)> = (0..=14)
+                    .map(|k| {
+                        let a = (from + 280.0 * k as f32 / 14.0).to_radians();
+                        (cx + 6.0 * a.cos(), 6.0 * a.sin())
+                    })
+                    .collect();
+                pen.line(&arc, 2.0);
+            }
+            pen.rect(-4.0, -1.0, 4.0, 1.0);
+        }
+        Icon::LayerStyle => {
+            pen.line(
+                &[(7.0, -11.0), (3.5, -11.0), (1.0, -8.0), (-4.0, 12.0)],
+                2.0,
+            );
+            pen.line(&[(-6.0, -4.0), (2.0, -4.0)], 2.0);
+            pen.line(&[(2.0, -4.0), (10.0, 8.0)], 2.0);
+            pen.line(&[(10.0, -4.0), (2.0, 8.0)], 2.0);
+            pen.poly(&[(20.0, 13.0), (27.0, 13.0), (23.5, 16.5)]);
+        }
+        Icon::LayerMask => {
+            pen.painter.rect_filled(
+                Rect::from_min_max(pen.p(-12.5, -9.5), pen.p(12.5, 9.5)),
+                pt(0.5),
+                color,
+            );
+            Pen {
+                color: background,
+                ..pen
+            }
+            .dot(0.0, 0.0, 7.0);
+        }
+        Icon::NewGroup => {
+            pen.painter.rect_filled(
+                Rect::from_min_max(pen.p(-11.0, -10.5), pen.p(0.0, -7.0)),
+                pt(0.5),
+                color,
+            );
+            pen.painter.rect_filled(
+                Rect::from_min_max(pen.p(-12.0, -5.5), pen.p(12.0, 10.0)),
+                pt(0.5),
+                color,
+            );
+        }
+        Icon::NewLayer => {
+            pen.painter.rect_stroke(
+                Rect::from_min_max(pen.p(-11.5, -11.5), pen.p(11.5, 11.5)),
+                0,
+                Stroke::new(Pen::w(2.0), color),
+                egui::StrokeKind::Inside,
+            );
+            pen.rect(-6.0, -1.0, 6.0, 1.0);
+            pen.rect(-1.0, -6.0, 1.0, 6.0);
+        }
+        Icon::DeleteLayer => {
+            pen.rect(-5.0, -12.0, 5.0, -10.0);
+            pen.rect(-11.0, -8.0, 11.0, -6.0);
+            pen.rect(-8.0, -6.0, -6.0, 12.0);
+            pen.rect(6.0, -6.0, 8.0, 12.0);
+            pen.rect(-8.0, 10.0, 8.0, 12.0);
+            pen.rect(-3.0, -3.0, -1.0, 8.0);
+            pen.rect(1.0, -3.0, 3.0, 8.0);
         }
         Icon::Gear => {
             pen.dot(0.0, 0.0, 10.0);

@@ -82,7 +82,8 @@ pub mod size {
     /// Panel tab bar: 27 pt of tabs and a 1 pt line under them.
     pub const PANEL_TAB_BAR: f32 = super::pt(28.0);
     pub const FIELD_HEIGHT: f32 = 26.0;
-    pub const LAYER_ROW: f32 = 60.0;
+    /// Layer rows, 43.5 pt apart (Photoshop 2026).
+    pub const LAYER_ROW: f32 = super::pt(43.5);
 }
 
 pub mod font {

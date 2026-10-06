@@ -1,41 +1,66 @@
 //! Layers panel.
 
-use egui::{Align, Align2, Layout, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
+use egui::{Align2, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
 use op_core::{BlendMode, Layer, LayerId, TiledImage};
 
 use crate::icons;
+use crate::ps_icons::Icon;
 use crate::state::{AppState, DocState};
-use crate::theme::{self, color, size};
+use crate::theme::{self, color, pt, size};
 use crate::widgets;
 
-const BOTTOM_BAR: f32 = 38.0;
-const THUMB: f32 = 44.0;
+/// Photoshop 2026's Layers panel, measured (points from the panel body's
+/// top-left corner): three rows of controls above the list, which starts
+/// at y 90, and a 25 pt footer.
+const LIST_TOP: f32 = pt(90.0);
+const FOOTER: f32 = pt(25.0);
+/// The list keeps a scrollbar gutter on its right.
+const GUTTER: f32 = pt(16.0);
+/// A row's own height; under it come 1 pt of the list's color and a 1 pt
+/// `#454545` line, so rows are `size::LAYER_ROW` (43.5 pt) apart.
+const ROW_H: f32 = pt(41.5);
+/// Thumbnails fit in this height, 4 pt below the row's top.
+const THUMB: f32 = pt(33.5);
 /// Space between the layer and mask thumbnails (the link icon sits in it).
-const MASK_GAP: f32 = 16.0;
+const MASK_GAP: f32 = pt(10.0);
+/// The eye column, and the 1 pt line right of it.
+const EYE_W: f32 = pt(29.5);
+const LINE: egui::Color32 = egui::Color32::from_gray(0x45);
+/// Disabled text and field colors (Photoshop greys the background
+/// layer's blend mode, opacity and fill).
+const TEXT_OFF: egui::Color32 = egui::Color32::from_gray(0x87);
 
 pub fn show(ui: &mut Ui, app: &mut AppState) {
     let full = ui.max_rect();
     let Some(state) = app.active() else {
         return;
     };
-
-    ui.add_space(10.0);
-    filter_row(ui);
-    ui.add_space(6.0);
-    blend_row(ui, state);
-    ui.add_space(6.0);
-    lock_row(ui, state);
-    ui.add_space(6.0);
+    let at = |x: f32, y: f32| full.min + Vec2::new(pt(x), pt(y));
+    let painter = ui.painter().clone();
+    for y in [31.0, 59.0] {
+        painter.rect_filled(
+            Rect::from_min_size(at(0.0, y), Vec2::new(full.width(), pt(1.0))),
+            0,
+            color::OPTIONS_SEPARATOR,
+        );
+    }
+    filter_row(ui, full);
+    blend_row(ui, state, full);
+    lock_row(ui, state, full);
 
     let list_rect = Rect::from_min_max(
-        Pos2::new(full.left(), ui.cursor().top()),
-        Pos2::new(full.right(), full.bottom() - BOTTOM_BAR),
+        Pos2::new(full.left(), full.top() + LIST_TOP),
+        Pos2::new(full.right(), full.bottom() - FOOTER),
     );
     let bar_rect = Rect::from_min_max(Pos2::new(full.left(), list_rect.bottom()), full.max);
-    ui.painter().rect_filled(list_rect, 0, color::LIST_BG);
-    ui.painter().line_segment(
-        [list_rect.left_top(), list_rect.right_top()],
-        Stroke::new(1.0, color::SEPARATOR),
+    painter.rect_filled(list_rect, 0, color::LIST_BG);
+    painter.rect_filled(
+        Rect::from_min_size(
+            list_rect.min - Vec2::new(0.0, pt(0.5)),
+            Vec2::new(full.width(), pt(0.5)),
+        ),
+        0,
+        egui::Color32::from_gray(0x4a),
     );
 
     let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list_rect));
@@ -46,46 +71,101 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
     bottom_bar(ui, state, bar_rect);
 }
 
-fn filter_row(ui: &mut Ui) {
-    ui.horizontal(|ui| {
-        ui.add_space(14.0);
-        let (r, _) = ui.allocate_exact_size(Vec2::new(124.0, size::FIELD_HEIGHT), Sense::click());
-        let painter = ui.painter();
-        painter.rect(
-            r,
-            2,
-            color::FIELD,
-            Stroke::new(1.0, color::FIELD_BORDER),
-            StrokeKind::Inside,
-        );
-        painter.text(
-            r.left_center() + Vec2::new(8.0, 0.0),
-            Align2::LEFT_CENTER,
-            format!("{}  Kind", icons::MAGNIFYING_GLASS),
-            theme::body(),
-            color::TEXT_DIM,
-        );
-        painter.text(
-            r.right_center() - Vec2::new(8.0, 0.0),
-            Align2::RIGHT_CENTER,
-            icons::CARET_DOWN,
-            theme::icon(12.0),
-            color::TEXT_DIM,
-        );
-        ui.add_space(8.0);
-        for (icon, tip) in [
-            (icons::IMAGE, "Filter for pixel layers"),
-            (icons::CIRCLE_HALF, "Filter for adjustment layers"),
-            (icons::TEXT_T, "Filter for type layers"),
-            (icons::BOUNDING_BOX, "Filter for shape layers"),
-            (icons::FILE_IMAGE, "Filter for smart objects"),
-        ] {
-            widgets::icon_button(ui, icon, 30.0, false).on_hover_text(tip);
-        }
-        widgets::icon(ui, icons::TOGGLE_LEFT, 18.0, color::TEXT_DIM);
-    });
+/// Paints one of the traced icons centered at `center`.
+fn icon(
+    painter: &egui::Painter,
+    center: Pos2,
+    icon: Icon,
+    enabled: bool,
+    background: egui::Color32,
+) {
+    let tint = if enabled {
+        color::OPTIONS_ICON
+    } else {
+        color::OPTIONS_ICON_DISABLED
+    };
+    crate::ps_icons::paint(painter, center, icon, tint, background);
 }
 
+/// A Photoshop field box: enabled `#454545` with a `#666666` border, or
+/// the disabled `#4d4d4d` with `#5e5e5e`.
+fn field_box(painter: &egui::Painter, rect: Rect, enabled: bool) {
+    let (fill, border) = if enabled {
+        (color::FIELD, color::DROPDOWN_BORDER)
+    } else {
+        (color::LIST_BG, egui::Color32::from_gray(0x5e))
+    };
+    painter.rect(
+        rect,
+        0,
+        fill,
+        Stroke::new(pt(1.0), border),
+        StrokeKind::Inside,
+    );
+}
+
+fn text_color(enabled: bool) -> egui::Color32 {
+    if enabled {
+        color::TEXT_BRIGHT
+    } else {
+        TEXT_OFF
+    }
+}
+
+/// Filter by kind: off, so dimmed as in Photoshop. Nothing filters yet.
+fn filter_row(ui: &mut Ui, full: Rect) {
+    let at = |x: f32, y: f32| full.min + Vec2::new(pt(x), pt(y));
+    let painter = ui.painter();
+    let kind = Rect::from_min_max(at(3.0, 8.5), at(92.0, 27.5));
+    field_box(painter, kind, false);
+    let search = at(17.0, 18.0);
+    let p = |x: f32, y: f32| search + Vec2::new(pt(x / 2.0), pt(y / 2.0));
+    painter.circle_stroke(p(-1.5, -1.5), pt(3.25), Stroke::new(pt(1.25), TEXT_OFF));
+    painter.line_segment([p(3.5, 3.5), p(9.0, 9.0)], Stroke::new(pt(1.5), TEXT_OFF));
+    painter.text(
+        at(25.5, 18.0),
+        Align2::LEFT_CENTER,
+        "Kind",
+        theme::body(),
+        TEXT_OFF,
+    );
+    crate::ps_icons::paint(
+        painter,
+        at(84.75, 18.25),
+        Icon::Caret,
+        egui::Color32::from_gray(0x66),
+        color::LIST_BG,
+    );
+    for (x, i, tip) in [
+        (110.0, Icon::FilterPixel, "Filter for pixel layers"),
+        (
+            133.5,
+            Icon::FilterAdjustment,
+            "Filter for adjustment layers",
+        ),
+        (157.75, Icon::FilterType, "Filter for type layers"),
+        (182.0, Icon::FilterShape, "Filter for shape layers"),
+        (207.0, Icon::FilterSmartObject, "Filter for smart objects"),
+    ] {
+        icon(painter, at(x, 18.0), i, false, color::PANEL);
+        ui.interact(
+            Rect::from_center_size(at(x, 18.0), Vec2::splat(pt(20.0))),
+            ui.id().with(tip),
+            Sense::hover(),
+        )
+        .on_hover_text(tip);
+    }
+    // The filtering on/off switch (off)
+    let switch = Rect::from_center_size(at(232.0, 18.0), Vec2::new(pt(10.0), pt(18.0)));
+    painter.rect(
+        switch,
+        pt(5.0),
+        color::LIST_BG,
+        Stroke::new(pt(0.5), egui::Color32::from_gray(0x6a)),
+        StrokeKind::Inside,
+    );
+    painter.circle_filled(at(232.0, 13.5), pt(4.0), egui::Color32::from_gray(0x99));
+}
 /// What a row of controls did this frame, and how it goes into the history.
 #[derive(Default)]
 struct Edits {
@@ -133,94 +213,188 @@ fn active_layer(state: &mut DocState) -> Option<&mut Layer> {
     state.doc.layer_mut(id)
 }
 
-fn blend_row(ui: &mut Ui, state: &mut DocState) {
+/// A percentage field with Photoshop's look and a chevron box; dragging
+/// or typing changes the value. Returns the drag value's response.
+fn percent_field(
+    ui: &mut Ui,
+    full: Rect,
+    y: f32,
+    value: &mut f32,
+    enabled: bool,
+) -> egui::Response {
+    let at = |x: f32, y: f32| full.min + Vec2::new(pt(x), pt(y));
+    let h = if y < 60.0 { 19.0 } else { 18.0 };
+    let field = Rect::from_min_max(at(180.0, y), at(217.5, y + h));
+    let chevron = Rect::from_min_max(at(216.5, y), at(232.0, y + h));
+    field_box(ui.painter(), chevron, enabled);
+    field_box(ui.painter(), field, enabled);
+    crate::ps_icons::paint(
+        ui.painter(),
+        chevron.center() + Vec2::new(0.0, pt(0.25)),
+        Icon::Caret,
+        if enabled {
+            color::OPTIONS_ICON
+        } else {
+            egui::Color32::from_gray(0x6a)
+        },
+        color::FIELD,
+    );
+    let mut pct = (*value * 100.0).round();
+    // The value sits on the left like Photoshop's; the field's own colors
+    // replace egui's (and its fading of disabled widgets)
+    let r = ui
+        .scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(field.shrink(pt(1.0)))
+                .layout(egui::Layout::left_to_right(egui::Align::Center)),
+            |ui| {
+                let style = ui.style_mut();
+                style.spacing.button_padding = Vec2::new(pt(5.5), 0.0);
+                style.spacing.interact_size = Vec2::new(pt(10.0), field.height() - pt(2.0));
+                let v = &mut style.visuals;
+                v.override_text_color = Some(text_color(enabled));
+                for w in [
+                    &mut v.widgets.noninteractive,
+                    &mut v.widgets.inactive,
+                    &mut v.widgets.hovered,
+                    &mut v.widgets.active,
+                ] {
+                    w.weak_bg_fill = egui::Color32::TRANSPARENT;
+                    w.bg_fill = egui::Color32::TRANSPARENT;
+                    w.bg_stroke = Stroke::NONE;
+                    w.fg_stroke.color = text_color(enabled);
+                }
+                ui.add_enabled(
+                    enabled,
+                    egui::DragValue::new(&mut pct)
+                        .range(0.0..=100.0)
+                        .speed(0.5)
+                        .max_decimals(0)
+                        .suffix("%"),
+                )
+            },
+        )
+        .inner;
+    if r.changed() {
+        *value = pct / 100.0;
+    }
+    r
+}
+
+fn blend_row(ui: &mut Ui, state: &mut DocState, full: Rect) {
+    let at = |x: f32, y: f32| full.min + Vec2::new(pt(x), pt(y));
     let mut edits = Edits::default();
-    ui.horizontal(|ui| {
-        ui.add_space(14.0);
-        let Some(layer) = active_layer(state) else {
-            return;
-        };
-        // The background layer's blend mode and opacity can't be changed
-        let editable = !layer.is_background;
-        ui.add_enabled_ui(editable, |ui| {
-            egui::ComboBox::from_id_salt("blend-mode")
-                .width(184.0)
-                .selected_text(layer.blend_mode.label())
-                .show_ui(ui, |ui| {
-                    for (gi, group) in BlendMode::GROUPS.iter().enumerate() {
-                        if gi > 0 {
-                            ui.separator();
-                        }
-                        for &mode in *group {
-                            if ui
-                                .selectable_value(&mut layer.blend_mode, mode, mode.label())
-                                .changed()
-                            {
-                                edits.changed = true;
-                                edits.record = Some("Blending Change");
-                            }
-                        }
+    let Some(layer) = active_layer(state) else {
+        return;
+    };
+    // The background layer's blend mode and opacity can't be changed
+    let editable = !layer.is_background;
+    let mode = Rect::from_min_max(at(3.0, 36.5), at(134.5, 55.5));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(mode), |ui| {
+        let label = layer.blend_mode.label();
+        widgets::dropdown_with(ui, "blend-mode", mode.width(), label, editable, |ui| {
+            for (gi, group) in BlendMode::GROUPS.iter().enumerate() {
+                if gi > 0 {
+                    ui.separator();
+                }
+                for &m in *group {
+                    if ui
+                        .selectable_value(&mut layer.blend_mode, m, m.label())
+                        .changed()
+                    {
+                        edits.changed = true;
+                        edits.record = Some("Blending Change");
                     }
-                });
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.add_space(14.0);
-                let r = widgets::percent_drag(ui, &mut layer.opacity);
-                edits.track(&r, "Opacity Change");
-                ui.label("Opacity:");
-            });
+                }
+            }
         });
     });
+    ui.painter().text(
+        at(177.0, 46.0),
+        Align2::RIGHT_CENTER,
+        "Opacity:",
+        theme::body(),
+        text_color(editable),
+    );
+    let r = percent_field(ui, full, 36.5, &mut layer.opacity, editable);
+    edits.track(&r, "Opacity Change");
     edits.apply(state);
 }
 
-fn lock_row(ui: &mut Ui, state: &mut DocState) {
+fn lock_row(ui: &mut Ui, state: &mut DocState, full: Rect) {
+    let at = |x: f32, y: f32| full.min + Vec2::new(pt(x), pt(y));
     let mut edits = Edits::default();
-    ui.horizontal(|ui| {
-        ui.add_space(14.0);
-        let Some(layer) = active_layer(state) else {
-            return;
-        };
-        ui.label("Lock:");
-        let editable = !layer.is_background;
-        ui.add_enabled_ui(editable, |ui| {
-            let flags: [(&str, &str, &mut bool); 3] = [
-                (
-                    icons::CHECKERBOARD,
-                    "Lock transparent pixels",
-                    &mut layer.lock_transparency,
-                ),
-                (
-                    icons::PAINT_BRUSH,
-                    "Lock image pixels",
-                    &mut layer.lock_pixels,
-                ),
-                (
-                    icons::ARROWS_OUT_CARDINAL,
-                    "Lock position",
-                    &mut layer.lock_position,
-                ),
-            ];
-            for (icon, tip, flag) in flags {
-                if widgets::icon_button(ui, icon, 28.0, *flag)
-                    .on_hover_text(tip)
-                    .clicked()
-                {
-                    *flag = !*flag;
-                    edits.record = Some("Lock Change");
-                }
-            }
-            widgets::icon_button(ui, icons::FRAME_CORNERS, 28.0, false)
-                .on_hover_text("Prevent auto-nesting into and out of Artboards and Frames");
-            widgets::icon_button(ui, icons::LOCK_SIMPLE, 28.0, layer.is_locked())
-                .on_hover_text("Lock all");
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.add_space(14.0);
-                let r = widgets::percent_drag(ui, &mut layer.fill);
-                edits.track(&r, "Fill Opacity Change");
-                ui.label("Fill:");
-            });
-        });
-    });
+    let Some(layer) = active_layer(state) else {
+        return;
+    };
+    let editable = !layer.is_background;
+    ui.painter().text(
+        at(6.0, 73.5),
+        Align2::LEFT_CENTER,
+        "Lock:",
+        theme::body(),
+        text_color(editable),
+    );
+    let all = layer.is_locked();
+    let flags: [(f32, Icon, &str, Option<&mut bool>); 5] = [
+        (
+            43.5,
+            Icon::LockTransparent,
+            "Lock transparent pixels",
+            Some(&mut layer.lock_transparency),
+        ),
+        (
+            67.0,
+            Icon::LockPixels,
+            "Lock image pixels",
+            Some(&mut layer.lock_pixels),
+        ),
+        (
+            88.0,
+            Icon::LockPosition,
+            "Lock position",
+            Some(&mut layer.lock_position),
+        ),
+        (
+            110.5,
+            Icon::LockArtboards,
+            "Prevent auto-nesting into and out of Artboards and Frames",
+            None,
+        ),
+        (129.0, Icon::LockAll, "Lock all", None),
+    ];
+    for (x, i, tip, flag) in flags {
+        let center = at(x, 73.75);
+        let rect = Rect::from_center_size(center, Vec2::splat(pt(20.0)));
+        let response = ui.interact(rect, ui.id().with(tip), Sense::click());
+        let on = flag
+            .as_deref()
+            .copied()
+            .unwrap_or(i == Icon::LockAll && all && editable);
+        if on {
+            ui.painter().rect_filled(rect, pt(2.0), color::TOOL_ACTIVE);
+        } else if editable && response.hovered() {
+            ui.painter().rect_filled(rect, pt(2.0), color::HOVER);
+        }
+        icon(ui.painter(), center, i, editable, color::PANEL);
+        let response = response.on_hover_text(tip);
+        if editable
+            && response.clicked()
+            && let Some(flag) = flag
+        {
+            *flag = !*flag;
+            edits.record = Some("Lock Change");
+        }
+    }
+    ui.painter().text(
+        at(177.0, 73.5),
+        Align2::RIGHT_CENTER,
+        "Fill:",
+        theme::body(),
+        text_color(editable),
+    );
+    let r = percent_field(ui, full, 64.5, &mut layer.fill, editable);
+    edits.track(&r, "Fill Opacity Change");
     edits.apply(state);
 }
 
@@ -237,21 +411,24 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
             Sense::click_and_drag(),
         );
         list_top.get_or_insert(rect.top());
-        let eye_rect = Rect::from_min_size(rect.min, Vec2::new(44.0, rect.height()));
-        let eye = ui.interact(eye_rect, ui.id().with(("eye", id.0)), Sense::click());
-        let lock_rect = Rect::from_center_size(
-            rect.right_center() - Vec2::new(30.0, 0.0),
-            Vec2::splat(24.0),
+        // The row proper, left of the scrollbar gutter
+        let row_rect = Rect::from_min_max(
+            rect.min,
+            Pos2::new(rect.right() - GUTTER, rect.top() + ROW_H),
         );
+        let eye_rect = Rect::from_min_size(rect.min, Vec2::new(EYE_W, ROW_H));
+        let eye = ui.interact(eye_rect, ui.id().with(("eye", id.0)), Sense::click());
+        let lock_center = Pos2::new(row_rect.right() - pt(21.5), rect.top() + pt(20.5));
+        let lock_rect = Rect::from_center_size(lock_center, Vec2::splat(pt(16.0)));
         let is_background = state.doc.layer(id).is_some_and(|l| l.is_background);
         let has_mask = state.doc.layer(id).is_some_and(|l| l.mask.is_some());
         // The layer thumbnail, then the mask's (with a link icon between)
-        let thumb_box = Rect::from_center_size(
-            Pos2::new(eye_rect.right() + 10.0 + THUMB / 2.0, rect.center().y),
+        let thumb_box = Rect::from_min_size(
+            Pos2::new(rect.left() + pt(34.0), rect.top() + pt(4.0)),
             Vec2::splat(THUMB),
         );
         let mask_box = has_mask.then(|| thumb_box.translate(Vec2::new(THUMB + MASK_GAP, 0.0)));
-        let name_x = mask_box.unwrap_or(thumb_box).right() + 16.0;
+        let name_x = mask_box.unwrap_or(thumb_box).right() + pt(4.5);
         // Clicking the background's lock turns it into a regular layer
         let lock = is_background
             .then(|| ui.interact(lock_rect, ui.id().with(("lock", id.0)), Sense::click()));
@@ -305,32 +482,49 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
             dragged = Some((row, p, response.drag_stopped()));
         }
 
-        let thumb = state.layer_thumbnail(ui.ctx(), id, (THUMB * 2.0) as u32);
+        let thumb = state.layer_thumbnail(ui.ctx(), id, (THUMB * 3.0) as u32);
         let selected = state.doc.active_layer == Some(id);
         let Some(layer) = state.doc.layer(id) else {
             continue;
         };
         let painter = ui.painter();
-        if selected {
-            painter.rect_filled(rect, 0, color::ROW_SELECTED);
-        } else if response.hovered() {
-            painter.rect_filled(rect, 0, color::HOVER);
-        }
-        painter.line_segment(
-            [rect.left_bottom(), rect.right_bottom()],
-            Stroke::new(1.0, color::SEPARATOR_LIGHT),
+        // The eye column keeps the panel's color; the rest of the row is
+        // highlighted when selected (Photoshop 2026)
+        painter.rect_filled(eye_rect, 0, color::PANEL);
+        let body = Rect::from_min_max(
+            Pos2::new(eye_rect.right() + pt(1.0), rect.top()),
+            row_rect.max,
         );
-        painter.line_segment(
-            [eye_rect.right_top(), eye_rect.right_bottom()],
-            Stroke::new(1.0, color::SEPARATOR_LIGHT),
+        if selected {
+            painter.rect_filled(body, 0, color::ROW_SELECTED);
+        } else if response.hovered() {
+            painter.rect_filled(body, 0, color::HOVER);
+        } else {
+            painter.rect_filled(body, 0, color::PANEL);
+        }
+        painter.rect_filled(
+            Rect::from_min_size(
+                Pos2::new(eye_rect.right(), rect.top()),
+                Vec2::new(pt(1.0), ROW_H),
+            ),
+            0,
+            LINE,
+        );
+        painter.rect_filled(
+            Rect::from_min_size(
+                Pos2::new(rect.left(), rect.top() + ROW_H + pt(1.0)),
+                Vec2::new(rect.width(), pt(1.0)),
+            ),
+            0,
+            LINE,
         );
         if layer.visible {
-            painter.text(
-                eye_rect.center(),
-                Align2::CENTER_CENTER,
-                icons::EYE,
-                theme::icon(18.0),
-                color::ICON,
+            icon(
+                painter,
+                Pos2::new(rect.left() + pt(15.0), rect.top() + pt(21.0)),
+                Icon::Eye,
+                true,
+                color::PANEL,
             );
         }
 
@@ -342,8 +536,15 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
         if let Some(tex) = thumb {
             let size = tex.size_vec2();
             let scale = (THUMB / size.x).min(THUMB / size.y);
-            let r = Rect::from_center_size(thumb_box.center(), size * scale);
-            widgets::checkerboard(painter, r, 4.0);
+            // Left-aligned in its box, with a 1 pt dark frame inside
+            let r = Rect::from_min_size(
+                Pos2::new(
+                    thumb_box.left(),
+                    thumb_box.center().y - size.y * scale / 2.0,
+                ),
+                size * scale,
+            );
+            widgets::checkerboard(painter, r, pt(3.0));
             painter.image(
                 tex.id(),
                 r,
@@ -353,8 +554,8 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
             painter.rect_stroke(
                 r,
                 0,
-                Stroke::new(1.0, color::SEPARATOR),
-                StrokeKind::Outside,
+                Stroke::new(pt(1.0), egui::Color32::from_gray(0x2e)),
+                StrokeKind::Inside,
             );
         }
         if let (Some(mbox), Some(tex)) = (mask_box, mask_thumb) {
@@ -408,7 +609,7 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
         } else {
             theme::body()
         };
-        let name_pos = Pos2::new(name_x, rect.center().y);
+        let name_pos = Pos2::new(name_x, rect.top() + pt(21.75));
         if state.renaming.as_ref().is_some_and(|(r, _)| *r == id) {
             rename_field(ui, state, id, name_pos, rect);
             continue;
@@ -418,16 +619,15 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
             Align2::LEFT_CENTER,
             &layer.name,
             font,
-            color::TEXT,
+            color::TEXT_BRIGHT,
         );
         if layer.is_background {
-            painter.text(
-                rect.right_center() - Vec2::new(30.0, 0.0),
-                Align2::CENTER_CENTER,
-                icons::LOCK_SIMPLE,
-                theme::icon(16.0),
-                color::ICON,
-            );
+            let bg = if selected {
+                color::ROW_SELECTED
+            } else {
+                color::PANEL
+            };
+            icon(painter, lock_center, Icon::LayerLock, true, bg);
         }
     }
     if let (Some((from_row, pointer, released)), Some(top)) = (dragged, list_top) {
@@ -511,54 +711,69 @@ fn drop_layer(
     }
 }
 
+/// The footer: eight buttons at Photoshop 2026's positions (centers
+/// measured from the panel's right edge).
 fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) {
-    ui.painter().rect_filled(rect, 0, color::PANEL);
-    ui.painter().line_segment(
-        [rect.left_top(), rect.right_top()],
-        Stroke::new(1.0, color::SEPARATOR),
+    let painter = ui.painter().clone();
+    painter.rect_filled(rect, 0, color::PANEL);
+    painter.rect_filled(
+        Rect::from_min_size(rect.min, Vec2::new(rect.width(), pt(1.0))),
+        0,
+        color::OPTIONS_SEPARATOR,
     );
-    let mut bar = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect.shrink2(Vec2::new(14.0, 0.0)))
-            .layout(Layout::right_to_left(Align::Center)),
-    );
-    bar.spacing_mut().item_spacing.x = 4.0;
-
+    let is_background = state
+        .doc
+        .active_layer
+        .and_then(|id| state.doc.layer(id))
+        .is_some_and(|l| l.is_background);
     let can_delete = state.doc.layers.len() > 1 && state.doc.active_layer.is_some();
-    let delete = bar.add_enabled_ui(can_delete, |ui| {
-        widgets::icon_button(ui, icons::TRASH, 30.0, false).on_hover_text("Delete layer")
-    });
-    if delete.inner.clicked() {
-        delete_active_layer(state);
-    }
-    if widgets::icon_button(&mut bar, icons::PLUS_SQUARE, 30.0, false)
-        .on_hover_text("Create a new layer")
-        .clicked()
-    {
-        new_layer(state);
-    }
-    widgets::icon_button(&mut bar, icons::FOLDER_SIMPLE, 30.0, false)
-        .on_hover_text("Create a new group");
-    widgets::icon_button(&mut bar, icons::CIRCLE_HALF, 30.0, false)
-        .on_hover_text("Create new fill or adjustment layer");
-    // Add a mask: from the selection when there is one, as in Photoshop
     let can_mask = op_core::layer_ops::can_add_mask(&state.doc);
-    let mask = bar.add_enabled_ui(can_mask, |ui| {
-        widgets::icon_button(ui, icons::SELECTION_BACKGROUND, 30.0, false)
-            .on_hover_text("Add a mask")
-    });
-    if mask.inner.clicked() {
-        let kind = if state.doc.selection().is_some() {
-            op_core::layer_ops::NewMask::RevealSelection
-        } else {
-            op_core::layer_ops::NewMask::RevealAll
-        };
-        if op_core::layer_ops::add_mask(&mut state.doc, kind) {
-            state.record("Add Layer Mask");
+    let buttons = [
+        (222.5, Icon::FooterBrush, "", false),
+        (196.5, Icon::LinkLayers, "Link layers", false),
+        (169.5, Icon::LayerStyle, "Add a layer style", !is_background),
+        (139.75, Icon::LayerMask, "Add a mask", can_mask),
+        (
+            113.5,
+            Icon::NewAdjustment,
+            "Create new fill or adjustment layer",
+            true,
+        ),
+        (86.5, Icon::NewGroup, "Create a new group", true),
+        (58.25, Icon::NewLayer, "Create a new layer", true),
+        (30.25, Icon::DeleteLayer, "Delete layer", can_delete),
+    ];
+    for (x, i, tip, enabled) in buttons {
+        let center = Pos2::new(rect.right() - pt(x), rect.top() + pt(12.5));
+        let hit = Rect::from_center_size(center, Vec2::new(pt(24.0), pt(22.0)));
+        let mut response = ui.interact(hit, ui.id().with(("footer", x.to_bits())), Sense::click());
+        if enabled && response.hovered() {
+            painter.rect_filled(hit, pt(3.0), color::HOVER);
+        }
+        icon(&painter, center, i, enabled, color::PANEL);
+        if !tip.is_empty() {
+            response = response.on_hover_text(tip);
+        }
+        if !enabled || !response.clicked() {
+            continue;
+        }
+        match i {
+            Icon::DeleteLayer => delete_active_layer(state),
+            Icon::NewLayer => new_layer(state),
+            Icon::LayerMask => {
+                // From the selection when there is one, as in Photoshop
+                let kind = if state.doc.selection().is_some() {
+                    op_core::layer_ops::NewMask::RevealSelection
+                } else {
+                    op_core::layer_ops::NewMask::RevealAll
+                };
+                if op_core::layer_ops::add_mask(&mut state.doc, kind) {
+                    state.record("Add Layer Mask");
+                }
+            }
+            _ => {}
         }
     }
-    widgets::icon_button(&mut bar, icons::SPARKLE, 30.0, false).on_hover_text("Add a layer style");
-    widgets::icon_button(&mut bar, icons::LINK_SIMPLE, 30.0, false).on_hover_text("Link layers");
 }
 
 /// Layer > Hide Layers / Show Layers. Like Photoshop's default, visibility

@@ -609,8 +609,9 @@ fn layers_panel_drag_and_rename() {
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::J);
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::J);
     h.run_steps(3);
-    // Rows (top to bottom): "Layer 1 copy", "Layer 1", "Background", each
-    // 40.5 pt tall starting at 634 pt. Drag the top row below "Layer 1".
+    // Rows (top to bottom): "Layer 1 copy", "Layer 1", "Background", 43.5
+    // pt apart starting at 632 pt (Photoshop 2026). Drag the top row below
+    // "Layer 1".
     drag(
         &mut h,
         at_pt(1130.0, 654.0),
@@ -640,7 +641,7 @@ fn layers_panel_drag_and_rename() {
     assert_eq!(last_history(&h), "Rename Layer");
 
     // Clicking the background's lock makes it "Layer 0"
-    click(&mut h, at_pt(1329.0, 734.0));
+    click(&mut h, at_pt(1312.5, 739.5));
     assert_eq!(layer_names(&h), ["Layer 0", "Sky", "Layer 1"]);
     assert!(!active(&h).doc.layers[0].is_background);
 }
@@ -1635,6 +1636,22 @@ const PHOTOSHOP_PIXELS: &[(&str, f32, f32, u8)] = &[
     ("strip grip", 997.5, 80.0, 69),
     ("menu line", 1340.0, 85.5, 168),
     ("menu gap", 1340.0, 86.5, 66),
+    ("layers sep 1", 1300.0, 573.5, 62),
+    ("layers sep 2", 1300.0, 601.5, 62),
+    ("kind border", 1031.5, 560.0, 94),
+    ("blend fill", 1100.0, 590.0, 77),
+    ("opacity border", 1208.5, 590.0, 94),
+    ("fill field border", 1208.5, 615.0, 94),
+    ("eye column", 1031.0, 645.0, 83),
+    ("eye divider", 1058.0, 645.0, 69),
+    ("row selected", 1200.0, 640.0, 107),
+    ("row gap", 1200.0, 674.0, 77),
+    ("row line", 1200.0, 675.0, 69),
+    ("list bg", 1200.0, 700.0, 77),
+    ("footer line", 1200.0, 775.5, 62),
+    ("new layer outline", 1286.5, 787.5, 221),
+    ("eye stroke", 1037.5, 653.0, 221),
+    ("thumb frame", 1062.25, 650.0, 46),
 ];
 
 #[test]
@@ -1665,4 +1682,29 @@ fn layout_matches_photoshop_2026() {
 "
         )
     );
+}
+
+#[test]
+fn layers_panel_footer_and_lock_buttons() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    // Footer: Create a new layer (58.25 pt from the right edge)
+    click(&mut h, at_pt(1350.0 - 58.25, 787.5));
+    assert_eq!(layer_names(&h), ["Background", "Layer 1"]);
+    assert_eq!(last_history(&h), "New Layer");
+    // Lock transparent pixels, then Lock position
+    click(&mut h, at_pt(1028.0 + 43.5, 542.0 + 73.75));
+    click(&mut h, at_pt(1028.0 + 88.0, 542.0 + 73.75));
+    let layer = &active(&h).doc.layers[1];
+    assert!(layer.lock_transparency && layer.lock_position && !layer.lock_pixels);
+    assert_eq!(last_history(&h), "Lock Change");
+    // The background's locks can't be changed
+    click(&mut h, at_pt(1100.0, 632.0 + 43.5 + 21.0));
+    click(&mut h, at_pt(1028.0 + 43.5, 542.0 + 73.75));
+    assert!(!active(&h).doc.layers[0].lock_transparency);
+    // Footer: Delete layer removes Layer 1 again
+    click(&mut h, at_pt(1100.0, 652.0));
+    click(&mut h, at_pt(1350.0 - 30.25, 787.5));
+    assert_eq!(layer_names(&h), ["Background"]);
+    assert_eq!(last_history(&h), "Delete Layer");
 }

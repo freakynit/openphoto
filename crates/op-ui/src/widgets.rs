@@ -178,30 +178,56 @@ pub fn dropdown(
     text: &str,
     menu: impl FnOnce(&mut Ui),
 ) -> Response {
+    let enabled = ui.is_enabled();
+    dropdown_with(ui, id, width, text, enabled, menu)
+}
+
+/// [`dropdown`] that is drawn disabled (Photoshop's `#4d4d4d` field,
+/// `#5e5e5e` border, `#878787` value) when `enabled` is false, without
+/// egui's fading of disabled widgets; it then doesn't open.
+pub fn dropdown_with(
+    ui: &mut Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    width: f32,
+    text: &str,
+    enabled: bool,
+    menu: impl FnOnce(&mut Ui),
+) -> Response {
     use theme::pt;
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, pt(18.5)), Sense::click());
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, pt(18.5)), sense);
     if ui.is_rect_visible(rect) {
-        let enabled = ui.is_enabled();
         let painter = ui.painter();
-        painter.rect(
-            rect,
-            CornerRadius::same(pt(2.5) as u8),
-            color::FIELD,
-            Stroke::new(
-                pt(1.0),
-                if response.hovered() && enabled {
+        let (fill, border, tint, chevron) = if enabled {
+            (
+                color::FIELD,
+                if response.hovered() {
                     color::DROPDOWN_BORDER_HOVER
                 } else {
                     color::DROPDOWN_BORDER
                 },
-            ),
+                color::TEXT_BRIGHT,
+                color::OPTIONS_ICON,
+            )
+        } else {
+            (
+                color::LIST_BG,
+                Color32::from_gray(0x5e),
+                Color32::from_gray(0x87),
+                Color32::from_gray(0x6a),
+            )
+        };
+        painter.rect(
+            rect,
+            CornerRadius::same(pt(2.5) as u8),
+            fill,
+            Stroke::new(pt(1.0), border),
             StrokeKind::Inside,
         );
-        let tint = if enabled {
-            color::TEXT_BRIGHT
-        } else {
-            color::TEXT_DISABLED
-        };
         painter.text(
             rect.left_center() + Vec2::new(pt(7.0), 0.0),
             Align2::LEFT_CENTER,
@@ -213,17 +239,15 @@ pub fn dropdown(
             painter,
             egui::pos2(rect.right() - pt(7.75), rect.center().y + pt(0.25)),
             crate::ps_icons::Icon::Caret,
-            if enabled {
-                color::OPTIONS_ICON
-            } else {
-                color::TEXT_DISABLED
-            },
-            color::FIELD,
+            chevron,
+            fill,
         );
     }
-    egui::Popup::menu(&response)
-        .id(egui::Id::new(id))
-        .show(menu);
+    if enabled {
+        egui::Popup::menu(&response)
+            .id(egui::Id::new(id))
+            .show(menu);
+    }
     response
 }
 
