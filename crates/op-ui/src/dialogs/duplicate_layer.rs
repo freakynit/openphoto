@@ -3,11 +3,11 @@
 //! measured on Photoshop 2026's dialog (447 × 208 pt). Sizes are in
 //! Photoshop points from the dialog's top-left corner.
 
-use egui::{Align2, Color32, CornerRadius, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, vec2};
+use egui::{Align2, Color32, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, vec2};
 use op_core::DocId;
 
 use super::common;
-use crate::theme::{self, color, pt};
+use crate::theme::{self, pt};
 
 const SIZE: egui::Vec2 = vec2(pt(447.0), pt(208.0));
 const FONT: f32 = pt(12.0);
@@ -142,7 +142,7 @@ impl DuplicateLayerDialog {
             .chain(std::iter::once("New".to_string()))
             .collect();
         let mut target = self.target;
-        field_dropdown(
+        common::field_dropdown(
             ui,
             r(86.0, 111.0, 351.5, 132.0),
             "duplicate-document",
@@ -157,7 +157,7 @@ impl DuplicateLayerDialog {
         self.target = target;
 
         label(150.5, "Artboard:", OFF);
-        field_dropdown(
+        common::field_dropdown(
             ui,
             r(86.0, 140.0, 351.5, 161.0),
             "duplicate-artboard",
@@ -214,78 +214,6 @@ impl DuplicateLayerDialog {
         }
         Outcome::Open
     }
-}
-
-/// A dropdown drawn like a field (`#454545` with a `#666666` border, or
-/// the disabled `#4d4d4d` / `#5e5e5e`), as in this dialog.
-fn field_dropdown(
-    ui: &mut Ui,
-    rect: Rect,
-    id: &str,
-    text: &str,
-    enabled: bool,
-    menu: impl FnOnce(&mut Ui),
-) {
-    let sense = if enabled {
-        Sense::click()
-    } else {
-        Sense::hover()
-    };
-    let response = ui.interact(rect, ui.id().with(id), sense);
-    let (fill, border, tint) = if enabled {
-        (color::FIELD, Color32::from_gray(0x66), VALUE)
-    } else {
-        (Color32::from_gray(0x4e), Color32::from_gray(0x5e), OFF)
-    };
-    ui.painter().rect(
-        rect,
-        CornerRadius::same(pt(2.0) as u8),
-        fill,
-        Stroke::new(pt(1.0), border),
-        StrokeKind::Inside,
-    );
-    // Too long a value is cut short with "..." before the chevron
-    let room = rect.width() - pt(8.5) - pt(18.5);
-    let shown = elide(ui, text, room);
-    ui.painter().text(
-        rect.left_center() + vec2(pt(8.5), 0.0),
-        Align2::LEFT_CENTER,
-        shown,
-        theme::dialog(FONT),
-        tint,
-    );
-    crate::ps_icons::paint(
-        ui.painter(),
-        Pos2::new(rect.right() - pt(7.5), rect.center().y + pt(0.25)),
-        crate::ps_icons::Icon::Caret,
-        tint,
-        fill,
-    );
-    if enabled {
-        egui::Popup::menu(&response)
-            .id(ui.id().with((id, "menu")))
-            .show(menu);
-    }
-}
-
-/// `text`, or as much of it as fits in `width` followed by "...".
-fn elide(ui: &Ui, text: &str, width: f32) -> String {
-    let fits = |t: &str| {
-        ui.painter()
-            .layout_no_wrap(t.to_string(), theme::dialog(FONT), VALUE)
-            .size()
-            .x
-            <= width
-    };
-    if fits(text) {
-        return text.to_string();
-    }
-    let chars: Vec<char> = text.chars().collect();
-    (0..chars.len())
-        .rev()
-        .map(|n| format!("{}...", chars[..n].iter().collect::<String>()))
-        .find(|t| fits(t))
-        .unwrap_or_else(|| "...".into())
 }
 
 #[cfg(test)]

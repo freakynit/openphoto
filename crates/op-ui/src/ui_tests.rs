@@ -1160,15 +1160,16 @@ fn image_size_resamples_proportionally() {
     h.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, egui::Key::I);
     h.run_steps(3);
     assert!(h.state().state.image_size_dialog.is_some());
-    // Width has focus with its text selected; the chain updates Height
-    h.event(egui::Event::Text("367".into()));
+    // Width (in inches, as Photoshop opens it) has focus with its text
+    // selected; the chain updates Height. 5.097 in at 72 ppi is 367 px
+    h.event(egui::Event::Text("5.097".into()));
     h.run_steps(3);
     shot(&mut h, "image_size");
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
     assert!(h.state().state.image_size_dialog.is_none());
     let d = &active(&h).doc;
-    assert_eq!((d.width, d.height), (367, 406));
+    assert_eq!((d.width, d.height), (367, 405));
     assert_eq!(last_history(&h), "Image Size");
     assert_eq!(composite_pixel(&mut h, 100, 100), [0x14, 0x14, 0x14, 255]);
 }
@@ -1825,6 +1826,60 @@ fn cmd_slash_toggles_lock_all() {
     h.run_steps(2);
     assert_eq!(active(&h).doc.layers[1].locks(), op_core::Locks::default());
     assert_eq!(last_history(&h), "Unlock Layer");
+}
+
+#[test]
+fn image_size_dialog_controls() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, egui::Key::I);
+    h.run_steps(3);
+    // The dialog is centered: its corner at (342.5, 221) pt
+    let at = |x: f32, y: f32| at_pt(342.5 + x, 221.0 + y);
+    let model = |h: &Harness<'_, OpenPhotoApp>| {
+        h.state()
+            .state
+            .image_size_dialog
+            .as_ref()
+            .unwrap()
+            .model
+            .clone()
+    };
+    // Alt+5 picks Bicubic Sharper
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Num5);
+    h.run_steps(2);
+    assert_eq!(
+        model(&h).method,
+        op_core::image_ops::Resample::BicubicSharper
+    );
+    // The chain button unlinks the proportions
+    click(&mut h, at(357.0, 151.0));
+    assert!(!model(&h).constrain);
+    // Resample off: the pixels are the document's and the chain comes back
+    click(&mut h, at(340.5, 223.5));
+    let m = model(&h);
+    assert!(!m.resample && m.constrain);
+    assert_eq!(m.result(), Some((734, 811, 72.0)));
+    // ...and Alt+number does nothing
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Num1);
+    h.run_steps(2);
+    assert_eq!(
+        model(&h).method,
+        op_core::image_ops::Resample::BicubicSharper
+    );
+    // Cancel
+    click(&mut h, at(400.0, 324.5));
+    assert!(h.state().state.image_size_dialog.is_none());
+}
+
+#[test]
+#[ignore]
+fn screenshot_image_size_dialog() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, egui::Key::I);
+    h.run_steps(3);
+    shot(&mut h, "image_size_open");
 }
 
 #[test]

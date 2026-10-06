@@ -397,3 +397,84 @@ pub fn ps_focused_button(ui: &mut Ui, rect: Rect, label: &str, font: FontId) -> 
     painter.text(rect.center(), Align2::CENTER_CENTER, label, font, PS_TEXT);
     response
 }
+
+/// Values and disabled text in AppKit-drawn dialogs (Duplicate Layer,
+/// Image Size).
+const FIELD_VALUE: Color32 = Color32::from_gray(0xf1);
+const FIELD_OFF: Color32 = Color32::from_gray(0x88);
+
+/// A dropdown drawn like a field (`#454545` with a `#666666` border, or
+/// the disabled `#4d4d4d` / `#5e5e5e`), as in this dialog.
+pub fn field_dropdown(
+    ui: &mut Ui,
+    rect: Rect,
+    id: &str,
+    text: &str,
+    enabled: bool,
+    menu: impl FnOnce(&mut Ui),
+) {
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let response = ui.interact(rect, ui.id().with(id), sense);
+    let (fill, border, tint) = if enabled {
+        (color::FIELD, Color32::from_gray(0x66), FIELD_VALUE)
+    } else {
+        (
+            Color32::from_gray(0x4e),
+            Color32::from_gray(0x5e),
+            FIELD_OFF,
+        )
+    };
+    ui.painter().rect(
+        rect,
+        CornerRadius::same(pt(2.0) as u8),
+        fill,
+        Stroke::new(pt(1.0), border),
+        StrokeKind::Inside,
+    );
+    // Too long a value is cut short with "..." before the chevron
+    let room = rect.width() - pt(8.5) - pt(18.5);
+    let shown = elide(ui, text, room);
+    ui.painter().text(
+        rect.left_center() + vec2(pt(8.5), 0.0),
+        Align2::LEFT_CENTER,
+        shown,
+        theme::dialog(pt(12.0)),
+        tint,
+    );
+    crate::ps_icons::paint(
+        ui.painter(),
+        Pos2::new(rect.right() - pt(7.5), rect.center().y + pt(0.25)),
+        crate::ps_icons::Icon::Caret,
+        tint,
+        fill,
+    );
+    if enabled {
+        egui::Popup::menu(&response)
+            .id(ui.id().with((id, "menu")))
+            .show(menu);
+    }
+}
+
+/// `text`, or as much of it as fits in `width` followed by "...".
+pub fn elide(ui: &Ui, text: &str, width: f32) -> String {
+    let fits = |t: &str| {
+        ui.painter()
+            .layout_no_wrap(t.to_string(), theme::dialog(pt(12.0)), FIELD_VALUE)
+            .size()
+            .x
+            <= width
+    };
+    if fits(text) {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    (0..chars.len())
+        .rev()
+        .map(|n| format!("{}...", chars[..n].iter().collect::<String>()))
+        .find(|t| fits(t))
+        .unwrap_or_else(|| "...".into())
+}

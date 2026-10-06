@@ -1141,7 +1141,13 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
         Command::ImageSize => {
             if let Some(state) = app.active() {
                 let d = &state.doc;
-                let dialog = crate::dialogs::ImageSizeDialog::new(d.width, d.height, d.resolution);
+                let preview = crate::dialogs::ImageSizePreview {
+                    rgba: std::sync::Arc::new(d.composite_rgba8()),
+                    width: d.width,
+                    height: d.height,
+                };
+                let dialog = crate::dialogs::ImageSizeDialog::new(d.width, d.height, d.resolution)
+                    .with_preview(preview);
                 app.image_size_dialog = Some(dialog);
             }
         }

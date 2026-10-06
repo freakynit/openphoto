@@ -21,7 +21,7 @@ pub use canvas_size::{CanvasSizeDialog, Outcome};
 pub use color_picker::{ColorPicker, Outcome as ColorPickerOutcome};
 pub use duplicate_layer::{Destination, DuplicateLayerDialog, Outcome as DuplicateOutcome};
 pub use fill::{FillDialog, Outcome as FillOutcome};
-pub use image_size::{ImageSizeDialog, Outcome as ImageSizeOutcome};
+pub use image_size::{ImageSizeDialog, Outcome as ImageSizeOutcome, Preview as ImageSizePreview};
 pub use lock_layers::{LockLayersDialog, Outcome as LockOutcome};
 pub use modify_selection::{ModifyDialog, ModifyKind, Outcome as ModifyOutcome};
 pub use new_document::{Contents as NewContents, NewDocumentDialog, Outcome as NewDocumentOutcome};

@@ -155,52 +155,121 @@ pub fn crop_to_selection(doc: &mut Document) -> bool {
     true
 }
 
-/// Image > Image Size's resampling methods.
+/// Image > Image Size's resampling methods, in Photoshop 2026's menu order
+/// (with Alt+1 ... Alt+8 as their shortcuts in the dialog).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Resample {
-    /// Bicubic (smooth gradients): Photoshop's general-purpose default.
+    /// Photoshop's default: Bicubic Sharper when reducing, Bicubic Smoother
+    /// when enlarging.
     #[default]
+    Automatic,
+    PreserveDetails,
+    PreserveDetails2,
+    BicubicSmoother,
+    BicubicSharper,
     Bicubic,
-    Bilinear,
     NearestNeighbor,
+    Bilinear,
 }
 
 impl Resample {
-    pub const ALL: [Self; 3] = [Self::Bicubic, Self::Bilinear, Self::NearestNeighbor];
+    pub const ALL: [Self; 8] = [
+        Self::Automatic,
+        Self::PreserveDetails,
+        Self::PreserveDetails2,
+        Self::BicubicSmoother,
+        Self::BicubicSharper,
+        Self::Bicubic,
+        Self::NearestNeighbor,
+        Self::Bilinear,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
+            Self::Automatic => "Automatic",
+            Self::PreserveDetails => "Preserve Details (enlargement)",
+            Self::PreserveDetails2 => "Preserve Details 2.0",
+            Self::BicubicSmoother => "Bicubic Smoother (enlargement)",
+            Self::BicubicSharper => "Bicubic Sharper (reduction)",
             Self::Bicubic => "Bicubic (smooth gradients)",
-            Self::Bilinear => "Bilinear",
             Self::NearestNeighbor => "Nearest Neighbor (hard edges)",
+            Self::Bilinear => "Bilinear",
         }
     }
 
-    /// Filter weight at distance `x` (in source pixels) and its radius.
+    /// Whether the menu has a separator after this item (Photoshop 2026).
+    pub fn separator_after(self) -> bool {
+        matches!(
+            self,
+            Self::Automatic | Self::BicubicSmoother | Self::BicubicSharper
+        )
+    }
+
+    /// The method actually used: Automatic depends on the direction.
+    fn resolve(self, enlarging: bool) -> Self {
+        match self {
+            Self::Automatic if enlarging => Self::BicubicSmoother,
+            Self::Automatic => Self::BicubicSharper,
+            m => m,
+        }
+    }
+
+    /// Filter weight at distance `x` (in source pixels).
     fn weight(self, x: f32) -> f32 {
         let x = x.abs();
+        // Keys' cubic convolution with parameter `a`
+        let keys = |a: f32| {
+            if x < 1.0 {
+                (a + 2.0) * x * x * x - (a + 3.0) * x * x + 1.0
+            } else if x < 2.0 {
+                a * x * x * x - 5.0 * a * x * x + 8.0 * a * x - 4.0 * a
+            } else {
+                0.0
+            }
+        };
         match self {
-            // Catmull-Rom-like cubic (a = -0.5)
-            Self::Bicubic => {
-                let a = -0.5;
-                if x < 1.0 {
-                    (a + 2.0) * x * x * x - (a + 3.0) * x * x + 1.0
+            Self::Bicubic => keys(-0.5),
+            // Stronger negative lobes: crisper reductions
+            Self::BicubicSharper => keys(-0.75),
+            // Mitchell–Netravali (B = C = 1/3): softer enlargements
+            Self::BicubicSmoother => {
+                let (b, c) = (1.0 / 3.0, 1.0 / 3.0);
+                let v = if x < 1.0 {
+                    (12.0 - 9.0 * b - 6.0 * c) * x * x * x
+                        + (-18.0 + 12.0 * b + 6.0 * c) * x * x
+                        + (6.0 - 2.0 * b)
                 } else if x < 2.0 {
-                    a * x * x * x - 5.0 * a * x * x + 8.0 * a * x - 4.0 * a
+                    (-b - 6.0 * c) * x * x * x
+                        + (6.0 * b + 30.0 * c) * x * x
+                        + (-12.0 * b - 48.0 * c) * x
+                        + (8.0 * b + 24.0 * c)
+                } else {
+                    0.0
+                };
+                v / 6.0
+            }
+            // Lanczos 3: keeps edges and texture when enlarging
+            Self::PreserveDetails | Self::PreserveDetails2 => {
+                if x < 1e-6 {
+                    1.0
+                } else if x < 3.0 {
+                    let px = std::f32::consts::PI * x;
+                    3.0 * px.sin() * (px / 3.0).sin() / (px * px)
                 } else {
                     0.0
                 }
             }
             Self::Bilinear => (1.0 - x).max(0.0),
-            Self::NearestNeighbor => unreachable!("sampled directly"),
+            Self::NearestNeighbor | Self::Automatic => unreachable!("resolved or sampled directly"),
         }
     }
 
     fn radius(self) -> f32 {
         match self {
-            Self::Bicubic => 2.0,
+            Self::PreserveDetails | Self::PreserveDetails2 => 3.0,
             Self::Bilinear => 1.0,
             Self::NearestNeighbor => 0.5,
+            _ => 2.0,
         }
     }
 }
@@ -217,6 +286,7 @@ fn resample_buffer(
     ch: usize,
     method: Resample,
 ) -> Vec<f32> {
+    let method = method.resolve(dw * dh > sw * sh);
     let pass = |src: &[f32], sw: usize, sh: usize, dw: usize, horizontal: bool| -> Vec<f32> {
         // `n` = length along the resampled axis, `m` = the other axis
         let (n_src, n_dst, m) = if horizontal {
@@ -510,6 +580,32 @@ mod tests {
         assert_eq!(bounds(&doc), Some((5, -10, 30, 30)));
         // The background never keeps anything outside
         assert!(!doc.layers[0].image().unwrap().has_pixels_outside());
+    }
+
+    /// Every method keeps a flat color flat; Automatic sharpens when
+    /// reducing and smooths when enlarging; the sharper kernel overshoots
+    /// more at an edge than the smoother one.
+    #[test]
+    fn resample_methods() {
+        assert_eq!(Resample::Automatic.resolve(false), Resample::BicubicSharper);
+        assert_eq!(Resample::Automatic.resolve(true), Resample::BicubicSmoother);
+        let flat = vec![100.0f32; 8 * 8];
+        for m in Resample::ALL {
+            for (dw, dh) in [(3, 3), (20, 20)] {
+                let out = resample_buffer(&flat, 8, 8, dw, dh, 1, m);
+                assert!(out.iter().all(|v| (v - 100.0).abs() < 0.01), "{m:?}");
+            }
+        }
+        // A step from 0 to 200, enlarged 4×: the peak right of the edge
+        let step: Vec<f32> = (0..8).map(|x| if x < 4 { 0.0 } else { 200.0 }).collect();
+        let peak = |m| {
+            resample_buffer(&step, 8, 1, 32, 1, 1, m)
+                .into_iter()
+                .fold(f32::MIN, f32::max)
+        };
+        assert!(peak(Resample::BicubicSharper) > peak(Resample::Bicubic));
+        assert!(peak(Resample::Bicubic) > peak(Resample::BicubicSmoother));
+        assert!(peak(Resample::Bilinear) <= 200.0 + 1e-3);
     }
 
     /// 3×2 white background with red at (0, 0) and blue at (2, 1).
