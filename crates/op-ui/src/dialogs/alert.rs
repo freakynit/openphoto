@@ -38,6 +38,9 @@ pub struct Alert {
     pub cancel: bool,
     /// A "Don't show again" checkbox, and whether it is ticked.
     pub dont_show_again: Option<bool>,
+    /// Buttons stacked full width instead of OK/Cancel, the first one the
+    /// default (blue), the last one taken by Escape.
+    pub choices: Vec<String>,
 }
 
 impl Alert {
@@ -48,6 +51,7 @@ impl Alert {
             icon: Icon::App,
             cancel: false,
             dont_show_again: None,
+            choices: Vec::new(),
         }
     }
 
@@ -58,6 +62,19 @@ impl Alert {
             icon: Icon::Caution,
             cancel: true,
             dont_show_again: Some(false),
+            choices: Vec::new(),
+        }
+    }
+
+    /// A question with its own answers, stacked (e.g. deleting a group:
+    /// "Group and Contents", "Group Only", "Cancel").
+    pub fn choose(message: impl Into<String>, choices: &[&str]) -> Self {
+        Self {
+            message: message.into(),
+            icon: Icon::Caution,
+            cancel: true,
+            dont_show_again: None,
+            choices: choices.iter().map(|c| c.to_string()).collect(),
         }
     }
 }
@@ -69,6 +86,8 @@ pub enum Answer {
         dont_show_again: bool,
     },
     Cancel,
+    /// One of the stacked choices, by position.
+    Choice(usize),
 }
 
 /// Shows `alert`; returns the answer once given. Enter means OK, Escape
@@ -83,7 +102,13 @@ pub fn show(ctx: &egui::Context, alert: &mut Alert) -> Option<Answer> {
         Some(_) => content_end + pt(13.0) + pt(16.0) + pt(16.0),
         None => content_end + pt(13.0),
     };
-    let height = buttons_top + pt(28.0) + pt(16.0);
+    // Stacked choices are 28 pt tall, 34 pt apart
+    let buttons_h = if alert.choices.is_empty() {
+        pt(28.0)
+    } else {
+        pt(34.0) * alert.choices.len() as f32 - pt(6.0)
+    };
+    let height = buttons_top + buttons_h + pt(16.0);
 
     let mut answer = None;
     egui::Modal::new(egui::Id::new("alert"))
@@ -96,11 +121,18 @@ pub fn show(ctx: &egui::Context, alert: &mut Alert) -> Option<Answer> {
     let ok = Answer::Ok {
         dont_show_again: alert.dont_show_again.unwrap_or(false),
     };
+    let choices = alert.choices.len();
     ctx.input_mut(|i| {
         if i.consume_key(Modifiers::NONE, Key::Enter) {
-            answer = Some(ok);
+            answer = Some(if choices > 0 { Answer::Choice(0) } else { ok });
         } else if i.consume_key(Modifiers::NONE, Key::Escape) {
-            answer = Some(if alert.cancel { Answer::Cancel } else { ok });
+            answer = Some(if choices > 0 {
+                Answer::Choice(choices - 1)
+            } else if alert.cancel {
+                Answer::Cancel
+            } else {
+                ok
+            });
         }
     });
     answer
@@ -214,7 +246,20 @@ fn draw(
     let ok = Answer::Ok {
         dont_show_again: alert.dont_show_again.unwrap_or(false),
     };
-    if alert.cancel {
+    if !alert.choices.is_empty() {
+        for (k, label) in alert.choices.iter().enumerate() {
+            let top = buttons_top + pt(34.0) * k as f32;
+            let rect = Rect::from_min_max(at(pt(16.0), top), at(pt(244.0), top + pt(28.0)));
+            let (fill, text) = if k == 0 {
+                (OK, Color32::WHITE)
+            } else {
+                (CANCEL, TEXT)
+            };
+            if button(rect, label, fill, text, label) {
+                answer = Some(Answer::Choice(k));
+            }
+        }
+    } else if alert.cancel {
         if button(row(16.0, 126.0), "Cancel", CANCEL, TEXT, "cancel") {
             answer = Some(Answer::Cancel);
         }

@@ -576,10 +576,29 @@ impl eframe::App for OpenPhotoApp {
                 self.state.alert = None;
             }
         }
+        if let Some(mut prompt) = self.state.delete_group_prompt.take() {
+            match dialogs::alert::show(&ctx, &mut prompt) {
+                None => self.state.delete_group_prompt = Some(prompt),
+                // Group and Contents, Group Only, Cancel
+                Some(dialogs::alert::Answer::Choice(0)) => {
+                    if let Some(state) = self.state.active() {
+                        panels::delete_active_layer(state);
+                    }
+                }
+                Some(dialogs::alert::Answer::Choice(1)) => {
+                    if let Some(state) = self.state.active()
+                        && op_core::layer_ops::delete_selected_keep_contents(&mut state.doc)
+                    {
+                        state.record("Delete Layer");
+                    }
+                }
+                Some(_) => {}
+            }
+        }
         if let Some(mut prompt) = self.state.flatten_prompt.take() {
             match dialogs::alert::show(&ctx, &mut prompt) {
                 None => self.state.flatten_prompt = Some(prompt),
-                Some(dialogs::alert::Answer::Cancel) => {}
+                Some(dialogs::alert::Answer::Cancel | dialogs::alert::Answer::Choice(_)) => {}
                 Some(dialogs::alert::Answer::Ok { dont_show_again }) => {
                     self.state.skip_flatten_prompt |= dont_show_again;
                     if let Some(state) = self.state.active() {

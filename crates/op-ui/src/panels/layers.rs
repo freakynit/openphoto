@@ -90,8 +90,10 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
         return;
     }
 
-    let (layer_dialog, group_dialog) = bottom_bar(ui, state, bar_rect);
-    if layer_dialog {
+    let (layer_dialog, group_dialog, delete) = bottom_bar(ui, state, bar_rect);
+    if delete {
+        app.delete_layers();
+    } else if layer_dialog {
         let name = state.doc.next_layer_name();
         app.new_layer_dialog = Some(crate::dialogs::NewLayerDialog::new(name));
     } else if group_dialog {
@@ -858,9 +860,10 @@ fn visible_rows(doc: &op_core::Document) -> Vec<(LayerId, usize)> {
 /// The footer: eight buttons at Photoshop 2026's positions (centers
 /// measured from the panel's right edge). Returns true when Alt-clicking
 /// "Create a new layer" asks for the New Layer dialog, as in Photoshop.
-fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) -> (bool, bool) {
+fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) -> (bool, bool, bool) {
     let mut open_dialog = false;
     let mut open_group_dialog = false;
+    let mut ask_delete = false;
     let painter = ui.painter().clone();
     painter.rect_filled(rect, 0, color::PANEL);
     painter.rect_filled(
@@ -906,7 +909,7 @@ fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) -> (bool, bool) {
             continue;
         }
         match i {
-            Icon::DeleteLayer => delete_active_layer(state),
+            Icon::DeleteLayer => ask_delete = true,
             Icon::NewLayer if ui.input(|i| i.modifiers.alt) => open_dialog = true,
             Icon::NewGroup if ui.input(|i| i.modifiers.alt) => open_group_dialog = true,
             Icon::NewGroup => {
@@ -928,7 +931,7 @@ fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) -> (bool, bool) {
             _ => {}
         }
     }
-    (open_dialog, open_group_dialog)
+    (open_dialog, open_group_dialog, ask_delete)
 }
 
 /// Layer > Hide Layers / Show Layers. Like Photoshop's default, visibility

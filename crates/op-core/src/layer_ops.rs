@@ -32,25 +32,36 @@ fn copy_name(doc: &Document, name: &str) -> String {
         .expect("some name is free")
 }
 
-/// A copy of `source` with a new id and name. A copy of the background is
-/// a regular layer.
-fn copy_of(doc: &Document, source: &Layer, name: String) -> Layer {
-    Layer {
-        id: doc.new_layer_id(),
-        name,
-        is_background: false,
-        ..source.clone()
-    }
-}
-
 /// Layer > Duplicate Layer: an identical layer named "Name copy" directly
 /// above the active one, which becomes active.
 pub fn duplicate(doc: &mut Document) -> Option<LayerId> {
     let source = doc.layers[active_index(doc)?].clone();
-    let layer = copy_of(doc, &source, copy_name(doc, &source.name));
-    let id = layer.id;
-    doc.insert_above_active(layer);
-    Some(id)
+    duplicate_named(doc, &copy_name(doc, &source.name))
+}
+
+/// A copy of `id`'s block in `source` (a group with everything in it) with
+/// ids new to `target`, parents inside the block following, the top one
+/// named `name`. Copies of the background are regular layers.
+fn cloned_block(
+    source: &Document,
+    id: LayerId,
+    target: &Document,
+    name: &str,
+) -> Option<Vec<Layer>> {
+    let range = source.block(id)?;
+    let mut block: Vec<Layer> = source.layers[range].to_vec();
+    let ids: Vec<(LayerId, LayerId)> = block
+        .iter()
+        .map(|l| (l.id, target.new_layer_id()))
+        .collect();
+    let new_id = |old: LayerId| ids.iter().find(|(o, _)| *o == old).map(|(_, n)| *n);
+    for layer in &mut block {
+        layer.id = new_id(layer.id).expect("in the block");
+        layer.parent = layer.parent.map(|p| new_id(p).unwrap_or(p));
+        layer.is_background = false;
+    }
+    block.last_mut().expect("not empty").name = name.to_string();
+    Some(block)
 }
 
 /// The Duplicate Layer dialog's default "As" name for the active layer.
@@ -60,11 +71,15 @@ pub fn duplicate_name(doc: &Document) -> Option<String> {
 }
 
 /// Layer > Duplicate Layer... into the same document, named `name`.
+/// A group is copied with everything in it, right above the original.
 pub fn duplicate_named(doc: &mut Document, name: &str) -> Option<LayerId> {
-    let source = doc.layers[active_index(doc)?].clone();
-    let layer = copy_of(doc, &source, name.to_string());
-    let id = layer.id;
-    doc.insert_above_active(layer);
+    let source = doc.layers[active_index(doc)?].id;
+    let block = cloned_block(doc, source, doc, name)?;
+    let at = doc.block(source)?.end;
+    let id = block.last().expect("not empty").id;
+    doc.layers.splice(at..at, block);
+    doc.select_layer(id);
+    doc.mark_dirty();
     Some(id)
 }
 
@@ -74,19 +89,28 @@ pub fn duplicate_named(doc: &mut Document, name: &str) -> Option<LayerId> {
 /// is extended (revealing) or cut to the new canvas. A copy of the
 /// background is a regular layer.
 pub fn duplicate_into(source: &Document, target: &mut Document, name: &str) -> Option<LayerId> {
-    let mut layer = source.layers[active_index(source)?].clone();
-    layer.id = target.new_layer_id();
-    layer.name = name.to_string();
-    layer.is_background = false;
+    let mut block = cloned_block(
+        source,
+        source.layers[active_index(source)?].id,
+        target,
+        name,
+    )?;
     let (w, h) = (target.width, target.height);
-    if let Some(image) = layer.image_mut() {
-        *image = image.with_canvas(w, h, 0, 0, [0; 4]);
+    for layer in &mut block {
+        if let Some(image) = layer.image_mut() {
+            *image = image.with_canvas(w, h, 0, 0, [0; 4]);
+        }
+        if let Some(mask) = &mut layer.mask {
+            mask.image = mask.image.with_canvas(w, h, 0, 0, [255; 4]).clipped();
+        }
     }
-    if let Some(mask) = &mut layer.mask {
-        mask.image = mask.image.with_canvas(w, h, 0, 0, [255; 4]).clipped();
-    }
-    let id = layer.id;
-    target.insert_above_active(layer);
+    let (at, parent) = target.insertion_point();
+    let root = block.last_mut().expect("not empty");
+    root.parent = parent;
+    let id = root.id;
+    target.layers.splice(at..at, block);
+    target.select_layer(id);
+    target.mark_dirty();
     Some(id)
 }
 
@@ -116,10 +140,7 @@ pub fn via_copy(doc: &mut Document) -> Result<LayerId, ClipError> {
         } else {
             copy_name(doc, &source.name)
         };
-        let layer = copy_of(doc, &source, name);
-        let id = layer.id;
-        doc.insert_above_active(layer);
-        return Ok(id);
+        return duplicate_named(doc, &name).ok_or(ClipError::NoLayer);
     }
     let clip = clipboard::copy(doc)?;
     Ok(paste_like(doc, &clip, &source))
@@ -483,6 +504,55 @@ pub fn delete_selected(doc: &mut Document) -> bool {
     doc.select_layer(next);
     doc.mark_dirty();
     true
+}
+
+/// Deleting with "Group Only": the selected groups go but their layers
+/// stay (in the groups' places); other selected layers are deleted. The
+/// layer that took the place of the topmost removed one becomes active.
+pub fn delete_selected_keep_contents(doc: &mut Document) -> bool {
+    let selected = doc.selected_layers();
+    if selected.is_empty() {
+        return false;
+    }
+    let (groups, others): (Vec<LayerId>, Vec<LayerId>) = selected
+        .iter()
+        .partition(|&&id| doc.layer(id).is_some_and(|l| l.is_group()));
+    if others.len() + groups.len() >= doc.layers.len()
+        && doc.layers.iter().all(|l| selected.contains(&l.id))
+    {
+        return false;
+    }
+    for &g in &groups {
+        let parent = doc.layer(g).and_then(|l| l.parent);
+        for layer in &mut doc.layers {
+            if layer.parent == Some(g) {
+                layer.parent = parent;
+            }
+        }
+    }
+    let lowest = doc
+        .layers
+        .iter()
+        .position(|l| selected.contains(&l.id))
+        .expect("selected layers exist");
+    doc.layers.retain(|l| !selected.contains(&l.id));
+    if doc.layers.is_empty() {
+        return true;
+    }
+    let next = doc.layers[lowest.saturating_sub(1).min(doc.layers.len() - 1)].id;
+    doc.select_layer(next);
+    doc.mark_dirty();
+    true
+}
+
+/// Whether deleting the selection would take a group's layers along (and
+/// Photoshop asks first).
+pub fn deleting_groups_with_contents(doc: &Document) -> Option<String> {
+    doc.selected_layers()
+        .into_iter()
+        .filter_map(|id| doc.layer(id))
+        .find(|l| l.is_group() && !doc.descendants(l.id).is_empty())
+        .map(|l| l.name.clone())
 }
 
 /// Layer > Hide Layers / Show Layers: hides every selected layer, or shows
@@ -962,5 +1032,47 @@ mod tests {
         assert!(delete_selected(&mut doc));
         assert_eq!(names(&doc), ["Background"]);
         assert!(doc.layer(g).is_none());
+    }
+
+    #[test]
+    fn deleting_only_the_group_keeps_its_layers() {
+        let mut doc = Document::new_with_background("t", 2, 2, crate::Color::WHITE);
+        let a = doc.new_layer_id();
+        doc.layers
+            .push(Layer::raster(a, "A", TiledImage::new(2, 2)));
+        doc.select_layer(a);
+        let g = group_selected(&mut doc).unwrap();
+        assert_eq!(
+            deleting_groups_with_contents(&doc).as_deref(),
+            Some("Group 1")
+        );
+        assert!(delete_selected_keep_contents(&mut doc));
+        let names: Vec<&str> = doc.layers.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Background", "A"]);
+        assert_eq!(doc.layer(a).unwrap().parent, None);
+        assert!(doc.layer(g).is_none());
+        assert_eq!(deleting_groups_with_contents(&doc), None);
+    }
+
+    #[test]
+    fn duplicating_a_group_copies_its_layers() {
+        let mut doc = Document::new_with_background("t", 2, 2, crate::Color::WHITE);
+        let a = doc.new_layer_id();
+        doc.layers
+            .push(Layer::raster(a, "A", TiledImage::new(2, 2)));
+        doc.select_layer(a);
+        let g = group_selected(&mut doc).unwrap();
+        let copy = duplicate(&mut doc).unwrap();
+        let names: Vec<&str> = doc.layers.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Background", "A", "Group 1", "A", "Group 1 copy"]);
+        assert_ne!(copy, g);
+        assert_eq!(doc.layers[3].parent, Some(copy));
+        assert_eq!(doc.layers[1].parent, Some(g));
+        assert_eq!(doc.descendants(copy).len(), 1);
+        // Into another document, with its layer
+        let mut other = Document::new_with_background("o", 2, 2, crate::Color::WHITE);
+        let into = duplicate_into(&doc, &mut other, "Copied").unwrap();
+        assert_eq!(other.layers.len(), 3);
+        assert_eq!(other.descendants(into).len(), 1);
     }
 }

@@ -183,25 +183,28 @@ impl Document {
     /// Adds `layer` directly above the active layer (on top without one)
     /// and makes it active.
     pub fn insert_above_active(&mut self, mut layer: Layer) {
-        let index = match self
-            .active_layer
-            .and_then(|a| self.layers.iter().position(|l| l.id == a))
-        {
-            // Onto the top of an expanded group's layers, as in Photoshop
-            Some(i) if matches!(self.layers[i].kind, LayerKind::Group { collapsed: false }) => {
-                layer.parent = Some(self.layers[i].id);
-                i
-            }
-            // Otherwise directly above it, in the same group
-            Some(i) => {
-                layer.parent = self.layers[i].parent;
-                i + 1
-            }
-            None => self.layers.len(),
-        };
+        let (index, parent) = self.insertion_point();
+        layer.parent = parent;
         self.active_layer = Some(layer.id);
         self.layers.insert(index, layer);
         self.mark_dirty();
+    }
+
+    /// Where a new layer goes, and into which group: onto the top of the
+    /// active layer's layers when it's an expanded group (as in
+    /// Photoshop), else directly above it in its group; on top without an
+    /// active layer.
+    pub fn insertion_point(&self) -> (usize, Option<LayerId>) {
+        match self
+            .active_layer
+            .and_then(|a| self.layers.iter().position(|l| l.id == a))
+        {
+            Some(i) if matches!(self.layers[i].kind, LayerKind::Group { collapsed: false }) => {
+                (i, Some(self.layers[i].id))
+            }
+            Some(i) => (i + 1, self.layers[i].parent),
+            None => (self.layers.len(), None),
+        }
     }
 
     /// "Group N" for a new group: one more than the highest N in use.

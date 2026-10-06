@@ -2137,3 +2137,57 @@ fn screenshot_layer_groups() {
     h.run_steps(6);
     shot(&mut h, "layer_groups");
 }
+
+#[test]
+fn deleting_a_group_asks_what_to_delete() {
+    use crate::commands::Command;
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    for _ in 0..2 {
+        crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    }
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, egui::Key::A);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::G);
+    h.run_steps(2);
+    // Group Only (the second of the stacked answers, 34 pt below the first):
+    // the layers stay
+    run_command(&mut h, Command::DeleteLayer);
+    let prompt = h.state().state.delete_group_prompt.clone().expect("asked");
+    assert_eq!(
+        prompt.message,
+        "Delete the group \u{201c}Group 1\u{201d} and its contents or delete only the group?"
+    );
+    assert_eq!(
+        prompt.choices,
+        ["Group and Contents", "Group Only", "Cancel"]
+    );
+    // Three lines of message: buttons from 164 pt in a 276 pt alert
+    let (x0, y0) = (675.0 - 130.0, 400.0 - 138.0);
+    click(&mut h, at_pt(x0 + 130.0, y0 + 164.0 + 34.0 + 14.0));
+    assert_eq!(layer_names(&h), ["Background", "Layer 1", "Layer 2"]);
+    assert!(active(&h).doc.layers.iter().all(|l| l.parent.is_none()));
+    assert_eq!(last_history(&h), "Delete Layer");
+    // Group and Contents (Enter): all of it goes
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, egui::Key::A);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::G);
+    h.run_steps(2);
+    run_command(&mut h, Command::DeleteLayer);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(layer_names(&h), ["Background"]);
+    // Duplicating a group copies its layers
+    crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::G);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::J);
+    h.run_steps(2);
+    assert_eq!(
+        layer_names(&h),
+        [
+            "Background",
+            "Layer 1",
+            "Group 1",
+            "Layer 1",
+            "Group 1 copy"
+        ]
+    );
+}

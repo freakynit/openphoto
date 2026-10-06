@@ -907,6 +907,9 @@ pub struct AppState {
     pub flatten_prompt: Option<crate::dialogs::alert::Alert>,
     /// "Don't show again" was ticked in that prompt.
     pub skip_flatten_prompt: bool,
+    /// Deleting a group with layers in it: "Group and Contents", "Group
+    /// Only" or Cancel.
+    pub delete_group_prompt: Option<crate::dialogs::alert::Alert>,
     /// Window menu panels that float (Info, Navigator, Histogram).
     pub floating: crate::panels::floating::FloatingPanels,
     /// Whether the History panel is popped out from the icon strip.
@@ -1004,6 +1007,7 @@ impl Default for AppState {
             new_layer_dialog: None,
             flatten_prompt: None,
             skip_flatten_prompt: false,
+            delete_group_prompt: None,
             duplicate_dialog: None,
             new_document_dialog: None,
             modify_dialog: None,
@@ -1076,6 +1080,25 @@ impl AppState {
         }
     }
 
+    /// Deletes the selected layers, asking first (like Photoshop) when that
+    /// would take a group's layers along.
+    pub fn delete_layers(&mut self) {
+        let Some(state) = self.active() else {
+            return;
+        };
+        match op_core::layer_ops::deleting_groups_with_contents(&state.doc) {
+            Some(name) => {
+                self.delete_group_prompt = Some(crate::dialogs::alert::Alert::choose(
+                    format!(
+                        "Delete the group \u{201c}{name}\u{201d} and its contents or delete only the group?"
+                    ),
+                    &["Group and Contents", "Group Only", "Cancel"],
+                ));
+            }
+            None => crate::panels::delete_active_layer(state),
+        }
+    }
+
     /// Whether a modal dialog is open; menus and shortcuts are disabled meanwhile.
     pub fn modal_open(&self) -> bool {
         self.canvas_size_dialog.is_some()
@@ -1085,6 +1108,7 @@ impl AppState {
             || self.new_guide_dialog.is_some()
             || self.new_layer_dialog.is_some()
             || self.flatten_prompt.is_some()
+            || self.delete_group_prompt.is_some()
             || self.duplicate_dialog.is_some()
             || self.new_document_dialog.is_some()
             || self.modify_dialog.is_some()

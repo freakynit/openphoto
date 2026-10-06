@@ -1363,7 +1363,7 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                         state.record("Flatten Image");
                     }
                 }
-                Command::DeleteLayer => crate::panels::delete_active_layer(state),
+                Command::DeleteLayer => app.delete_layers(),
                 Command::ZoomIn => document_view::zoom_step(state, true, ppp),
                 Command::ZoomOut => document_view::zoom_step(state, false, ppp),
                 Command::FitOnScreen => document_view::fit_on_screen(state, ppp),
