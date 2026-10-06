@@ -104,6 +104,11 @@ pub enum Command {
     /// Layer > Rename Layer...: starts renaming the active layer in the
     /// Layers panel.
     RenameLayer,
+    /// Layer > Lock Layers...: the locks of the selected layers. Its menu
+    /// item shows Cmd+/, but the key itself runs [`Self::ToggleLockAll`].
+    LockLayers,
+    /// Cmd+/: Lock all on the selected layers, or every lock off.
+    ToggleLockAll,
     DeleteLayer,
     /// Layer > Hide Layers / Show Layers for the active layer.
     ToggleLayerVisibility,
@@ -257,10 +262,11 @@ impl Shortcut {
         if self.ctrl {
             s.push_str("Ctrl+");
         }
-        // muda knows the bracket keys by their symbols
+        // muda knows the bracket and equals keys by their symbols
         s.push_str(match self.key {
             Key::OpenBracket => "[",
             Key::CloseBracket => "]",
+            Key::Equals => "=",
             key => key.name(),
         });
         s
@@ -403,6 +409,7 @@ impl Command {
             | Self::NewGroup
             | Self::NewGroupFromLayers
             | Self::ArrangeReverse => return None,
+            Self::LockLayers | Self::ToggleLockAll => cmd(Key::Slash),
             Self::GroupLayers => cmd(Key::G),
             Self::UngroupLayers => shift_cmd(Key::G),
             Self::SelectAllLayers => Shortcut {
@@ -618,6 +625,10 @@ impl Command {
                     .and_then(|id| d.doc.layer(id))
                     .is_some_and(|l| !l.is_background)
             }),
+            // Not for the background alone
+            Self::LockLayers => doc.is_some_and(|d| layer_ops::selected_locks(&d.doc).is_some()),
+            // On the background it says it can't, like Photoshop
+            Self::ToggleLockAll => doc.is_some(),
             Self::DeleteHiddenLayers => doc.is_some_and(|d| {
                 let layers = &d.doc.layers;
                 layers.iter().any(|l| !l.visible) && layers.iter().any(|l| l.visible)
@@ -756,6 +767,7 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::ToggleLastState,
     Command::NewLayerNoDialog,
     Command::NewLayer,
+    Command::ToggleLockAll,
     Command::CanvasSize,
     Command::ImageSize,
     Command::CloseAll,
@@ -801,12 +813,18 @@ const SHORTCUT_ORDER: &[Command] = &[
 /// Cmd+= key is handled here.
 #[cfg(target_os = "macos")]
 pub fn from_shortcuts_beside_menu(ctx: &egui::Context) -> Vec<Command> {
-    let hit = ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Equals));
-    if hit {
-        vec![Command::ZoomIn]
-    } else {
-        Vec::new()
-    }
+    ctx.input_mut(|i| {
+        let mut out = Vec::new();
+        if i.consume_key(Modifiers::COMMAND, Key::Equals) {
+            out.push(Command::ZoomIn);
+        }
+        // Cmd+/ reaches egui when Lock Layers... is disabled (only the
+        // background selected); Photoshop still answers it with an alert
+        if i.consume_key(Modifiers::COMMAND, Key::Slash) {
+            out.push(Command::ToggleLockAll);
+        }
+        out
+    })
 }
 
 /// Command shortcuts typed into egui, used where there is no native menu bar
@@ -1269,6 +1287,20 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                         state.renaming = Some((layer.id, layer.name.clone()));
                     }
                 }
+                Command::LockLayers => {
+                    if let Some(locks) = layer_ops::selected_locks(&state.doc) {
+                        app.lock_dialog = Some(crate::dialogs::LockLayersDialog::new(locks));
+                    }
+                }
+                Command::ToggleLockAll => match layer_ops::toggle_lock_all(&mut state.doc) {
+                    Some(true) => state.record("Lock Layer"),
+                    Some(false) => state.record("Unlock Layer"),
+                    None => {
+                        app.alert = Some(
+                            "The command \u{201c}Set\u{201d} is not currently available.".into(),
+                        );
+                    }
+                },
                 Command::DuplicateLayer => {
                     let current = state.doc.id;
                     let source = state

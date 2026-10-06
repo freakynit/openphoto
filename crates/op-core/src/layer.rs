@@ -245,6 +245,11 @@ pub struct Layer {
     pub lock_transparency: bool,
     pub lock_pixels: bool,
     pub lock_position: bool,
+    /// Prevent auto-nesting into and out of artboards and frames.
+    pub lock_nesting: bool,
+    /// Lock all: a flag of its own, so turning it off brings back the
+    /// individual locks underneath (as in Photoshop).
+    pub lock_all: bool,
     pub kind: LayerKind,
     pub mask: Option<LayerMask>,
     pub color: LayerColor,
@@ -265,6 +270,8 @@ impl Layer {
             lock_transparency: false,
             lock_pixels: false,
             lock_position: false,
+            lock_nesting: false,
+            lock_all: false,
             kind: LayerKind::Raster(image),
             mask: None,
             color: LayerColor::None,
@@ -301,6 +308,50 @@ impl Layer {
     }
 
     pub fn is_locked(&self) -> bool {
-        self.is_background || self.lock_pixels || self.lock_position
+        self.is_background || self.pixels_locked() || self.position_locked()
     }
+
+    /// Whether transparent pixels are protected (by its lock or Lock all).
+    pub fn transparency_locked(&self) -> bool {
+        self.lock_transparency || self.lock_all
+    }
+
+    /// Whether the pixels can't be edited (by their lock or Lock all).
+    pub fn pixels_locked(&self) -> bool {
+        self.lock_pixels || self.lock_all
+    }
+
+    /// Whether the layer can't move (by its lock or Lock all).
+    pub fn position_locked(&self) -> bool {
+        self.lock_position || self.lock_all
+    }
+
+    pub fn locks(&self) -> Locks {
+        Locks {
+            transparency: self.lock_transparency,
+            pixels: self.lock_pixels,
+            position: self.lock_position,
+            nesting: self.lock_nesting,
+            all: self.lock_all,
+        }
+    }
+
+    pub fn set_locks(&mut self, locks: Locks) {
+        self.lock_transparency = locks.transparency;
+        self.lock_pixels = locks.pixels;
+        self.lock_position = locks.position;
+        self.lock_nesting = locks.nesting;
+        self.lock_all = locks.all;
+    }
+}
+
+/// A layer's lock flags, as the Lock Layers dialog and the Layers panel's
+/// lock buttons set them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Locks {
+    pub transparency: bool,
+    pub pixels: bool,
+    pub position: bool,
+    pub nesting: bool,
+    pub all: bool,
 }

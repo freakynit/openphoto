@@ -14,6 +14,9 @@ const BUTTON_BORDER: Color32 = Color32::from_gray(0xd0);
 const RADIUS: u8 = 10;
 
 /// Draws the dialog body, shadow, border and title bar into `frame`.
+/// The keyboard focus ring.
+const FOCUS_RING: Color32 = Color32::from_rgb(0x2d, 0x63, 0xcb);
+
 pub fn frame(ui: &Ui, frame: Rect, title: &str, title_font: FontId) {
     let painter = ui.painter();
     painter.add(
@@ -41,8 +44,9 @@ pub fn frame(ui: &Ui, frame: Rect, title: &str, title_font: FontId) {
         [bar.left_bottom(), bar.right_bottom()],
         Stroke::new(1.0, Color32::from_gray(0x30)),
     );
+    // Photoshop sets the title 1.5 pt above the bar's middle
     painter.text(
-        bar.center(),
+        bar.center() - vec2(0.0, pt(1.5)),
         Align2::CENTER_CENTER,
         title,
         title_font,
@@ -249,7 +253,28 @@ pub fn ps_dropdown(
 
 /// A 12 pt dialog checkbox with its label 9.5 pt to the right.
 pub fn ps_checkbox(ui: &mut Ui, min: Pos2, label: &str, checked: &mut bool, enabled: bool) {
-    let font = theme::dialog_medium(PS_FONT);
+    ps_checkbox_with(
+        ui,
+        min,
+        label,
+        checked,
+        enabled,
+        theme::dialog_medium(PS_FONT),
+        0.0,
+    );
+}
+
+/// [`ps_checkbox`] with its label in `font` (Lock Layers labels are in the
+/// panel font), moved down by `label_dy`.
+pub fn ps_checkbox_with(
+    ui: &mut Ui,
+    min: Pos2,
+    label: &str,
+    checked: &mut bool,
+    enabled: bool,
+    font: FontId,
+    label_dy: f32,
+) {
     let text = if enabled { PS_TEXT } else { PS_TEXT_OFF };
     let galley = ui.painter().layout_no_wrap(label.to_string(), font, text);
     let b = Rect::from_min_size(min, vec2(pt(12.0), pt(12.0)));
@@ -283,7 +308,10 @@ pub fn ps_checkbox(ui: &mut Ui, min: Pos2, label: &str, checked: &mut bool, enab
         painter.rect_stroke(b, pt(2.5), Stroke::new(pt(1.0), border), StrokeKind::Inside);
     }
     painter.galley(
-        Pos2::new(b.right() + pt(9.5), b.center().y - galley.size().y / 2.0),
+        Pos2::new(
+            b.right() + pt(9.5),
+            b.center().y - galley.size().y / 2.0 + label_dy,
+        ),
         galley,
         text,
     );
@@ -298,6 +326,24 @@ pub fn ps_button(
     default: bool,
     enabled: bool,
     bold: bool,
+) -> egui::Response {
+    // Photoshop's newer dialogs (New Layer) set every button in bold
+    let font = if bold {
+        theme::dialog_bold(pt(13.0))
+    } else {
+        theme::dialog(pt(13.0))
+    };
+    ps_button_with(ui, rect, label, default, enabled, font)
+}
+
+/// [`ps_button`] with its label in `font`.
+pub fn ps_button_with(
+    ui: &mut Ui,
+    rect: Rect,
+    label: &str,
+    default: bool,
+    enabled: bool,
+    font: FontId,
 ) -> egui::Response {
     let sense = if enabled {
         Sense::click()
@@ -317,12 +363,6 @@ pub fn ps_button(
         (true, true) => PS_TEXT,
         (true, false) => Color32::from_gray(0x72),
     };
-    // Photoshop's newer dialogs (New Layer) set every button in bold
-    let font = if bold {
-        theme::dialog_bold(pt(13.0))
-    } else {
-        theme::dialog(pt(13.0))
-    };
     ui.painter().rect(
         rect,
         CornerRadius::same(255),
@@ -337,5 +377,33 @@ pub fn ps_button(
         font,
         if enabled { PS_TEXT } else { PS_TEXT_OFF },
     );
+    response
+}
+
+/// The default button holding the keyboard focus, as in dialogs without a
+/// text field (Lock Layers): filled `#737373` with a white border, and a
+/// 2 pt blue ring 1 pt outside it.
+pub fn ps_focused_button(ui: &mut Ui, rect: Rect, label: &str, font: FontId) -> egui::Response {
+    let response = ui.interact(rect, ui.id().with(("button", label)), Sense::click());
+    let fill = if response.is_pointer_button_down_on() {
+        color::TOOL_ACTIVE
+    } else {
+        Color32::from_gray(0x73)
+    };
+    let painter = ui.painter();
+    painter.rect(
+        rect,
+        CornerRadius::same(255),
+        fill,
+        Stroke::new(pt(1.0), Color32::WHITE),
+        StrokeKind::Inside,
+    );
+    painter.rect_stroke(
+        rect.expand(pt(1.0)),
+        CornerRadius::same(255),
+        Stroke::new(pt(2.0), FOCUS_RING),
+        StrokeKind::Outside,
+    );
+    painter.text(rect.center(), Align2::CENTER_CENTER, label, font, PS_TEXT);
     response
 }

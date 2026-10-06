@@ -122,7 +122,7 @@ fn movable(doc: &Document) -> Vec<(LayerId, Bounds)> {
     doc.selected_layers()
         .into_iter()
         .filter_map(|id| doc.layer(id))
-        .filter(|l| !l.is_background && !l.lock_position && !l.lock_pixels)
+        .filter(|l| !l.is_background && !l.position_locked() && !l.pixels_locked())
         .filter_map(|l| {
             doc.pixel_layers(&[l.id])
                 .into_iter()

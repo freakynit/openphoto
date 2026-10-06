@@ -141,7 +141,10 @@ pub fn bounds(doc: &Document) -> Result<(f32, f32, f32, f32), TransformError> {
         return Err(TransformError::Hidden);
     }
     let selection = doc.selection();
-    if layer.lock_pixels || layer.lock_position || (layer.is_background && selection.is_none()) {
+    if layer.pixels_locked()
+        || layer.position_locked()
+        || (layer.is_background && selection.is_none())
+    {
         return Err(TransformError::Locked);
     }
     // A group transforms all its layers: the box is around their pixels

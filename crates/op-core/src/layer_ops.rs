@@ -3,7 +3,7 @@
 
 use crate::clipboard::{self, ClipError};
 use crate::document::Document;
-use crate::layer::{BlendMode, Layer, LayerId, LayerMask};
+use crate::layer::{BlendMode, Layer, LayerId, LayerMask, Locks};
 use crate::tile::TiledImage;
 
 /// Layer > Arrange.
@@ -178,9 +178,7 @@ pub fn layer_from_background(doc: &mut Document) -> bool {
     };
     layer.is_background = false;
     layer.name = "Layer 0".into();
-    layer.lock_pixels = false;
-    layer.lock_position = false;
-    layer.lock_transparency = false;
+    layer.set_locks(Locks::default());
     doc.mark_dirty();
     true
 }
@@ -647,6 +645,78 @@ pub fn toggle_selected_visibility(doc: &mut Document) -> Option<bool> {
     Some(show)
 }
 
+/// The selected layers that can be locked (all but the background).
+fn lockable(doc: &Document) -> Vec<LayerId> {
+    doc.selected_layers()
+        .into_iter()
+        .filter(|&id| doc.layer(id).is_some_and(|l| !l.is_background))
+        .collect()
+}
+
+/// Layer > Lock Layers...: the locks every selected layer has (a box is
+/// ticked only when all of them have it), or `None` when only the
+/// background (or nothing) is selected.
+pub fn selected_locks(doc: &Document) -> Option<Locks> {
+    let locks: Vec<Locks> = lockable(doc)
+        .into_iter()
+        .filter_map(|id| Some(doc.layer(id)?.locks()))
+        .collect();
+    if locks.is_empty() {
+        return None;
+    }
+    let every = |f: fn(&Locks) -> bool| locks.iter().all(f);
+    Some(Locks {
+        transparency: every(|l| l.transparency),
+        pixels: every(|l| l.pixels),
+        position: every(|l| l.position),
+        nesting: every(|l| l.nesting),
+        all: every(|l| l.all),
+    })
+}
+
+/// Sets the locks on every selected layer but the background. Returns
+/// whether anything changed.
+pub fn set_selected_locks(doc: &mut Document, locks: Locks) -> bool {
+    let mut changed = false;
+    for id in lockable(doc) {
+        if let Some(l) = doc.layer_mut(id)
+            && l.locks() != locks
+        {
+            l.set_locks(locks);
+            changed = true;
+        }
+    }
+    if changed {
+        doc.mark_dirty();
+    }
+    changed
+}
+
+/// Cmd+/: Lock all on the selected layers, or, when every one of them is
+/// already fully locked, no locks at all (the individual ones are cleared
+/// too, unlike the Lock all button). Returns whether the layers are now
+/// locked, or `None` when only the background is selected.
+pub fn toggle_lock_all(doc: &mut Document) -> Option<bool> {
+    let ids = lockable(doc);
+    if ids.is_empty() {
+        return None;
+    }
+    let lock = !ids
+        .iter()
+        .all(|&id| doc.layer(id).is_some_and(|l| l.lock_all));
+    for id in ids {
+        if let Some(l) = doc.layer_mut(id) {
+            if lock {
+                l.lock_all = true;
+            } else {
+                l.set_locks(Locks::default());
+            }
+        }
+    }
+    doc.mark_dirty();
+    Some(lock)
+}
+
 /// Whether Layer > Merge Visible has anything to merge.
 pub fn can_merge_visible(doc: &Document) -> bool {
     doc.layers.iter().filter(|l| l.visible).count() > 1
@@ -839,6 +909,59 @@ mod tests {
     fn pixel(doc: &Document, x: u32, y: u32) -> [u8; 4] {
         let i = ((y * doc.width + x) * 4) as usize;
         doc.composite_rgba8()[i..i + 4].try_into().unwrap()
+    }
+
+    #[test]
+    fn lock_layers_sets_every_selected_layer_but_the_background() {
+        let mut doc = doc();
+        let bg = doc.layers[0].id;
+        let a = doc.layers[1].id;
+        let b = doc.new_layer_id();
+        doc.insert_above_active(Layer::raster(b, "Layer 2", TiledImage::new(4, 4)));
+        let locks = |transparency, pixels, position| Locks {
+            transparency,
+            pixels,
+            position,
+            ..Locks::default()
+        };
+        // Only the background: nothing to lock
+        doc.select_layer(bg);
+        assert_eq!(selected_locks(&doc), None);
+        assert!(!set_selected_locks(&mut doc, locks(true, true, true)));
+        assert_eq!(toggle_lock_all(&mut doc), None);
+        assert!(!doc.layers[0].lock_pixels);
+        // A box is ticked only when every selected layer has that lock
+        doc.layer_mut(a).unwrap().lock_position = true;
+        doc.select_layer(a);
+        doc.toggle_layer_selection(b);
+        doc.toggle_layer_selection(bg);
+        assert_eq!(selected_locks(&doc), Some(Locks::default()));
+        assert!(set_selected_locks(&mut doc, locks(true, false, true)));
+        assert_eq!(selected_locks(&doc), Some(locks(true, false, true)));
+        for id in [a, b] {
+            let l = doc.layer(id).unwrap();
+            assert!(l.lock_transparency && !l.lock_pixels && l.lock_position);
+        }
+        assert!(!doc.layer(bg).unwrap().lock_transparency);
+        // Setting the same locks again changes nothing
+        assert!(!set_selected_locks(&mut doc, locks(true, false, true)));
+    }
+
+    #[test]
+    fn lock_all_is_a_flag_of_its_own() {
+        let mut doc = doc();
+        let id = doc.layers[1].id;
+        doc.layer_mut(id).unwrap().lock_position = true;
+        // Cmd+/ locks everything...
+        assert_eq!(toggle_lock_all(&mut doc), Some(true));
+        let l = doc.layer(id).unwrap();
+        assert!(l.lock_all && l.pixels_locked() && l.transparency_locked());
+        assert!(!l.lock_pixels, "the individual locks stay as they were");
+        // ...which stops painting and moving
+        assert!(l.is_locked());
+        // and a second Cmd+/ clears every lock, like Photoshop
+        assert_eq!(toggle_lock_all(&mut doc), Some(false));
+        assert_eq!(doc.layer(id).unwrap().locks(), Locks::default());
     }
 
     #[test]

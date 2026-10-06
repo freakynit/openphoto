@@ -452,7 +452,7 @@ impl Document {
                 keep_alpha: true,
             });
         }
-        let keep_alpha = layer.is_background || layer.lock_transparency;
+        let keep_alpha = layer.is_background || layer.transparency_locked();
         // A group has no pixels to edit
         let image = layer.image_mut()?;
         Some(EditTarget {

@@ -112,6 +112,7 @@ const ALL_COMMANDS: &[Command] = &[
     Command::DeselectLayers,
     Command::SelectAllLayers,
     Command::RenameLayer,
+    Command::LockLayers,
     Command::Deselect,
     Command::Reselect,
     Command::SelectInverse,
@@ -601,7 +602,7 @@ impl NativeMenu {
                 )
                 .expect("submenu"),
                 &sep(),
-                &todo("Lock Layers...", Some("CmdOrCtrl+/")),
+                &item("Lock Layers...", Command::LockLayers),
                 &sep(),
                 &todo("Link Layers", None),
                 &todo("Select Linked Layers", None),
@@ -970,6 +971,14 @@ impl NativeMenu {
         let ctx = ctx.clone();
         MenuEvent::set_event_handler(Some(move |event: MenuEvent| {
             if let Some(&command) = ALL_COMMANDS.iter().find(|c| event.id == id(**c).as_str()) {
+                // Lock Layers... shows Cmd+/, but in Photoshop the key toggles
+                // Lock all; only the menu opens the dialog
+                let command =
+                    if command == Command::LockLayers && crate::app_kit::handling_key_press() {
+                        Command::ToggleLockAll
+                    } else {
+                        command
+                    };
                 let _ = tx.send(command);
                 ctx.request_repaint();
             }
@@ -1076,5 +1085,23 @@ impl NativeMenu {
                 applied.1 = Some(label);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every shortcut shows in the native menu: a key muda can't parse
+    /// would silently drop the key equivalent.
+    #[test]
+    fn every_shortcut_is_a_menu_accelerator() {
+        let broken: Vec<String> = ALL_COMMANDS
+            .iter()
+            .filter_map(|c| Some((c, c.shortcut()?.accelerator())))
+            .filter(|(_, a)| accelerator(a).is_none())
+            .map(|(c, a)| format!("{c:?}: {a}"))
+            .collect();
+        assert!(broken.is_empty(), "{broken:?}");
     }
 }

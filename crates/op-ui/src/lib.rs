@@ -357,6 +357,23 @@ impl OpenPhotoApp {
         }
     }
 
+    fn lock_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.state.lock_dialog.take() else {
+            return;
+        };
+        match dialog.show(ctx) {
+            dialogs::LockOutcome::Open => self.state.lock_dialog = Some(dialog),
+            dialogs::LockOutcome::Cancel => {}
+            dialogs::LockOutcome::Apply(locks) => {
+                if let Some(state) = self.state.active()
+                    && op_core::layer_ops::set_selected_locks(&mut state.doc, locks)
+                {
+                    state.record("Lock Layers");
+                }
+            }
+        }
+    }
+
     fn new_guide_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.state.new_guide_dialog.take() else {
             return;
@@ -559,6 +576,7 @@ impl eframe::App for OpenPhotoApp {
         self.new_guide_dialog(&ctx);
         self.new_layer_dialog(&ctx);
         self.duplicate_dialog(&ctx);
+        self.lock_dialog(&ctx);
         self.new_document_dialog(&ctx);
         self.modify_dialog(&ctx);
         self.adjust_dialog(&ctx);

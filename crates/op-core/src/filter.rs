@@ -395,7 +395,7 @@ pub fn apply(doc: &mut Document, filter: Filter, background: [u8; 3]) -> Result<
     let (w, h) = (doc.width, doc.height);
     let id = doc.active_layer.expect("checked");
     let layer = doc.layer_mut(id).expect("checked");
-    let keep_alpha = layer.is_background || layer.lock_transparency;
+    let keep_alpha = layer.is_background || layer.transparency_locked();
     let is_background = layer.is_background;
     let image = layer.image_mut().expect("checked: not a group");
     let out = filtered(

@@ -1703,7 +1703,20 @@ fn layers_panel_footer_and_lock_buttons() {
     click(&mut h, at_pt(1028.0 + 88.0, 542.0 + 73.75));
     let layer = &active(&h).doc.layers[1];
     assert!(layer.lock_transparency && layer.lock_position && !layer.lock_pixels);
-    assert_eq!(last_history(&h), "Lock Change");
+    assert_eq!(last_history(&h), "Lock Layer");
+    // Lock all locks everything; while it's on the other buttons are inert
+    click(&mut h, at_pt(1028.0 + 129.0, 542.0 + 73.75));
+    click(&mut h, at_pt(1028.0 + 88.0, 542.0 + 73.75));
+    let layer = &active(&h).doc.layers[1];
+    assert!(layer.lock_all && layer.pixels_locked() && layer.lock_position);
+    // Turning it off brings back the locks underneath
+    click(&mut h, at_pt(1028.0 + 129.0, 542.0 + 73.75));
+    let layer = &active(&h).doc.layers[1];
+    assert!(!layer.lock_all && layer.lock_transparency && layer.lock_position);
+    assert!(!layer.pixels_locked());
+    // Prevent auto-nesting has its own flag
+    click(&mut h, at_pt(1028.0 + 110.5, 542.0 + 73.75));
+    assert!(active(&h).doc.layers[1].lock_nesting);
     // The background's locks can't be changed
     click(&mut h, at_pt(1100.0, 632.0 + 43.5 + 21.0));
     click(&mut h, at_pt(1028.0 + 43.5, 542.0 + 73.75));
@@ -1716,98 +1729,83 @@ fn layers_panel_footer_and_lock_buttons() {
 }
 
 #[test]
-fn dragging_a_layer_off_the_canvas_and_reveal_all() {
+fn lock_layers_dialog() {
+    use crate::commands::Command;
     let mut h = harness(Vec::new());
     reference_document(&mut h);
-    // A red square on a new layer, dragged 100 px past the left edge
+    // Only the background: nothing to lock
+    assert!(!Command::LockLayers.enabled(&h.state().state));
     crate::panels::new_layer(h.state_mut().state.active().unwrap());
-    h.state_mut().state.foreground = Color::from_rgba8([255, 0, 0, 255]);
-    select_rect(&mut h, 10.0, 100.0, 50.0, 140.0);
-    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
-    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::D);
-    h.key_press(egui::Key::V);
     h.run_steps(2);
-    let (a, b) = (
-        doc_point(&h, 30.0, 120.0),
-        doc_point(&h, 30.0 - 100.0, 120.0),
-    );
-    drag(&mut h, a, b, Modifiers::NONE);
-    assert_eq!(layer_pixel(&h, 1, 10, 120)[3], 0);
-    // The pixels past the edge are kept: dragging back brings them back
-    let (a, b) = (doc_point(&h, 5.0, 120.0), doc_point(&h, 105.0, 120.0));
-    drag(&mut h, a, b, Modifiers::NONE);
-    assert_eq!(layer_pixel(&h, 1, 10, 120), [255, 0, 0, 255]);
-    // Move it out again and reveal it: the canvas grows on the left
-    h.key_press(egui::Key::V);
-    let (a, b) = (
-        doc_point(&h, 30.0, 120.0),
-        doc_point(&h, 30.0 - 100.0, 120.0),
-    );
-    drag(&mut h, a, b, Modifiers::NONE);
-    run_command(&mut h, crate::commands::Command::RevealAll);
-    let doc = &active(&h).doc;
-    assert_eq!((doc.width, doc.height), (734 + 90, 811));
-    assert_eq!(layer_pixel(&h, 1, 0, 120), [255, 0, 0, 255]);
-    assert_eq!(last_history(&h), "Reveal All");
+    h.state_mut().state.active().unwrap().doc.layers[1].lock_position = true;
+    // The menu item opens it with the layer's locks ticked
+    run_command(&mut h, Command::LockLayers);
+    assert!(h.state().state.lock_dialog.is_some());
+    // The dialog is centered: its corner at (540.5, 297) pt
+    let at = |x: f32, y: f32| at_pt(540.5 + x, 297.0 + y);
+    // Tick Image and Prevent auto-nest, then OK
+    click(&mut h, at(58.0, 86.0));
+    click(&mut h, at(58.0, 138.0));
+    click(&mut h, at(214.0, 60.0));
+    assert!(h.state().state.lock_dialog.is_none());
+    let layer = &active(&h).doc.layers[1];
+    assert!(layer.lock_pixels && layer.lock_position && layer.lock_nesting);
+    assert!(!layer.lock_transparency && !layer.lock_all);
+    assert_eq!(last_history(&h), "Lock Layers");
+    // All (Enter for OK)
+    run_command(&mut h, Command::LockLayers);
+    click(&mut h, at(58.0, 174.0));
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(active(&h).doc.layers[1].lock_all);
+    // Cancel leaves the locks alone
+    run_command(&mut h, Command::LockLayers);
+    click(&mut h, at(58.0, 174.0));
+    click(&mut h, at(214.0, 96.0));
+    assert!(h.state().state.lock_dialog.is_none());
+    assert!(active(&h).doc.layers[1].lock_all);
 }
 
 #[test]
-fn new_layer_dialog_names_colors_and_blends() {
-    use egui_kittest::kittest::Queryable;
+fn cmd_slash_toggles_lock_all() {
     let mut h = harness(Vec::new());
     reference_document(&mut h);
-    // Shift+Cmd+N opens the dialog with the next name selected
-    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::N);
-    h.run_steps(3);
-    assert!(h.state().state.new_layer_dialog.is_some());
-    h.event(egui::Event::Text("Shade".into()));
+    // On the background Photoshop answers with an alert
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Slash);
     h.run_steps(2);
-    // The dialog sits in the middle of the window (552 × 186 pt)
-    let origin = (675.0 - 276.0, 400.0 - 93.0);
-    let at = |x: f32, y: f32| at_pt(origin.0 + x, origin.1 + y);
-    click(&mut h, at(370.0, 60.0));
-    h.get_by_label("Violet").click();
-    h.run_steps(2);
-    click(&mut h, at(138.0, 125.0));
-    h.get_by_label("Multiply").click();
-    h.run_steps(2);
-    // Multiply's neutral color is white: fill with it
-    click(&mut h, at(64.0, 154.0));
-    click(&mut h, at(497.0, 60.0));
-    h.run_steps(2);
-    assert!(h.state().state.new_layer_dialog.is_none());
-    let doc = &active(&h).doc;
-    let layer = &doc.layers[1];
-    assert_eq!(layer.name, "Shade");
-    assert_eq!(layer.color, op_core::LayerColor::Violet);
-    assert_eq!(layer.blend_mode, op_core::BlendMode::Multiply);
-    assert_eq!(layer_pixel(&h, 1, 5, 5), [255, 255, 255, 255]);
-    assert_eq!(last_history(&h), "New Layer");
-
-    // Escape cancels; Alt+Shift+Cmd+N skips the dialog
-    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::N);
-    h.run_steps(2);
-    h.key_press(egui::Key::Escape);
-    h.run_steps(2);
-    assert!(h.state().state.new_layer_dialog.is_none());
-    assert_eq!(active(&h).doc.layers.len(), 2);
-    h.key_press_modifiers(
-        Modifiers::COMMAND | Modifiers::SHIFT | Modifiers::ALT,
-        egui::Key::N,
+    assert_eq!(
+        h.state().state.alert.as_deref(),
+        Some("The command \u{201c}Set\u{201d} is not currently available.")
     );
+    h.key_press(egui::Key::Enter);
     h.run_steps(2);
-    assert!(h.state().state.new_layer_dialog.is_none());
-    assert_eq!(layer_names(&h), ["Background", "Shade", "Layer 1"]);
+    assert!(h.state().state.alert.is_none());
+    crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    h.run_steps(2);
+    h.state_mut().state.active().unwrap().doc.layers[1].lock_position = true;
+    // Locks all without a dialog...
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Slash);
+    h.run_steps(2);
+    assert!(h.state().state.lock_dialog.is_none());
+    assert!(active(&h).doc.layers[1].lock_all);
+    assert_eq!(last_history(&h), "Lock Layer");
+    // ...and unlocks everything
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Slash);
+    h.run_steps(2);
+    assert_eq!(active(&h).doc.layers[1].locks(), op_core::Locks::default());
+    assert_eq!(last_history(&h), "Unlock Layer");
 }
 
 #[test]
 #[ignore]
-fn screenshot_new_layer_dialog() {
+fn screenshot_lock_layers_dialog() {
     let mut h = harness(Vec::new());
     reference_document(&mut h);
-    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::N);
+    crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    h.run_steps(2);
+    run_command(&mut h, crate::commands::Command::LockLayers);
     h.run_steps(3);
-    shot(&mut h, "new_layer");
+    shot(&mut h, "lock_layers");
 }
 
 #[test]

@@ -335,7 +335,7 @@ pub fn write(doc: &Document) -> Vec<u8> {
             out.u8(0); // clipping: base
             // Bit 3: bit 4 is meaningful (Photoshop 5 and later)
             let mut flags = 0b1000u8;
-            if layer.is_background || layer.lock_transparency {
+            if layer.is_background || layer.transparency_locked() {
                 flags |= 1; // transparency protected
             }
             if !layer.visible {
@@ -392,6 +392,14 @@ pub fn write(doc: &Document) -> Vec<u8> {
                 out.u32(8);
                 out.u16(layer.color.psd_index());
                 out.bytes(&[0; 6]);
+            }
+            // The locks (`lspf`, as Photoshop 2026 writes them): 1
+            // transparency, 2 pixels, 4 position, 8 auto-nesting, bit 31 all
+            let locks = lock_bits(layer);
+            if !layer.is_background && locks != 0 {
+                out.bytes(b"8BIMlspf");
+                out.u32(4);
+                out.u32(locks);
             }
             // Fill opacity
             out.bytes(b"8BIMiOpa");
@@ -508,9 +516,27 @@ fn read_channel(r: &mut Reader, len: usize, rows: usize, cols: usize) -> Result<
     Ok(plane)
 }
 
+fn lock_bits(layer: &Layer) -> u32 {
+    let mut bits = 0;
+    for (on, bit) in [
+        (layer.lock_transparency, 1),
+        (layer.lock_pixels, 2),
+        (layer.lock_position, 4),
+        (layer.lock_nesting, 8),
+        (layer.lock_all, 1 << 31),
+    ] {
+        if on {
+            bits |= bit;
+        }
+    }
+    bits
+}
+
 struct LayerRecord {
     /// The color label's index (`lclr`).
     label: u16,
+    /// The lock bits (`lspf`), when saved.
+    locks: Option<u32>,
     rect: (i32, i32, i32, i32),
     channels: Vec<(i16, usize)>,
     blend: [u8; 4],
@@ -627,6 +653,7 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                 // divider at the group's bottom (0: a normal layer)
                 let mut section = None;
                 let mut label = 0u16;
+                let mut locks = None;
                 while r.pos() + 12 <= extra_end {
                     let sig = r.take::<4>()?;
                     if &sig != b"8BIM" && &sig != b"8B64" {
@@ -646,6 +673,7 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                         }
                         b"iOpa" => fill = r.u8()?,
                         b"lclr" => label = r.u16()?,
+                        b"lspf" => locks = Some(r.u32()?),
                         b"lsct" | b"lsdk" => section = Some(r.u32()?),
                         _ => {}
                     }
@@ -663,6 +691,7 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                     section,
                     mask,
                     label,
+                    locks,
                 });
             }
             let mut open_groups: Vec<usize> = Vec::new();
@@ -745,7 +774,15 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                         *image = image.clipped();
                     }
                 } else {
-                    layer.lock_transparency = rec.flags & 1 != 0;
+                    // Photoshop also sets the record's "transparency
+                    // protected" bit for locked pixels: `lspf` decides
+                    // when it's there
+                    let bits = rec.locks.unwrap_or(u32::from(rec.flags & 1));
+                    layer.lock_transparency = bits & 1 != 0;
+                    layer.lock_pixels = bits & 2 != 0;
+                    layer.lock_position = bits & 4 != 0;
+                    layer.lock_nesting = bits & 8 != 0;
+                    layer.lock_all = bits & (1 << 31) != 0;
                 }
                 if let Some(kind @ (1 | 2)) = rec.section {
                     // The folder: the layers since its divider are in it
@@ -962,6 +999,46 @@ mod photoshop_check {
         let back = read(&write(&doc), "t.psd".into()).unwrap();
         assert_eq!(back.layers[0].color, op_core::LayerColor::None);
         assert_eq!(back.layers[1].color, op_core::LayerColor::Violet);
+    }
+
+    #[test]
+    fn locks_round_trip() {
+        let mut doc = Document::new_with_background("t", 4, 3, Color::WHITE);
+        let all = op_core::Locks {
+            transparency: true,
+            pixels: false,
+            position: true,
+            nesting: true,
+            all: true,
+        };
+        for locks in [op_core::Locks::default(), all] {
+            let id = doc.new_layer_id();
+            let mut layer = op_core::Layer::raster(id, "L", TiledImage::new(4, 3));
+            layer.set_locks(locks);
+            doc.layers.push(layer);
+        }
+        let back = read(&write(&doc), "t.psd".into()).unwrap();
+        assert!(back.layers[0].is_background);
+        assert_eq!(back.layers[1].locks(), op_core::Locks::default());
+        assert_eq!(back.layers[2].locks(), all);
+    }
+
+    /// Saved by Photoshop 2026: one layer per lock, set in Photoshop.
+    #[test]
+    fn reads_photoshop_locks() {
+        let bytes = include_bytes!("../fixtures/photoshop_locks.psd");
+        let doc = read(bytes, "locks.psd".into()).unwrap();
+        let locks = |name: &str| {
+            let layer = doc.layers.iter().find(|l| l.name == name).unwrap();
+            let l = layer.locks();
+            (l.transparency, l.pixels, l.position, l.nesting, l.all)
+        };
+        assert_eq!(locks("tp"), (true, false, false, false, false));
+        assert_eq!(locks("px"), (false, true, false, false, false));
+        assert_eq!(locks("pos"), (false, false, true, false, false));
+        assert_eq!(locks("nest"), (false, false, false, true, false));
+        assert_eq!(locks("all"), (false, false, false, false, true));
+        assert!(doc.layers[0].is_background);
     }
 
     #[test]

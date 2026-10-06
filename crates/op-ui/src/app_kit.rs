@@ -17,3 +17,26 @@ pub fn hide_app() {
         }
     }
 }
+
+/// Whether the event being handled is a key press: a menu item chosen
+/// through its key equivalent rather than with the mouse.
+pub fn handling_key_press() -> bool {
+    /// `NSEventTypeKeyDown`
+    const KEY_DOWN: usize = 10;
+    let Some(class) = AnyClass::get(c"NSApplication") else {
+        return false;
+    };
+    // SAFETY: menu actions run on the main thread
+    unsafe {
+        let app: *mut AnyObject = msg_send![class, sharedApplication];
+        if app.is_null() {
+            return false;
+        }
+        let event: *mut AnyObject = msg_send![app, currentEvent];
+        if event.is_null() {
+            return false;
+        }
+        let kind: usize = msg_send![event, type];
+        kind == KEY_DOWN
+    }
+}

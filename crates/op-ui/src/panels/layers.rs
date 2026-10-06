@@ -383,55 +383,53 @@ fn lock_row(ui: &mut Ui, state: &mut DocState, full: Rect) {
         theme::body(),
         text_color(editable),
     );
-    let all = layer.is_locked();
-    let flags: [(f32, Icon, &str, Option<&mut bool>); 5] = [
+    let all = layer.lock_all;
+    // Under Lock all the other buttons show as set and can't be changed
+    let flags: [(f32, Icon, &str, &mut bool); 5] = [
         (
             43.5,
             Icon::LockTransparent,
             "Lock transparent pixels",
-            Some(&mut layer.lock_transparency),
+            &mut layer.lock_transparency,
         ),
         (
             67.0,
             Icon::LockPixels,
             "Lock image pixels",
-            Some(&mut layer.lock_pixels),
+            &mut layer.lock_pixels,
         ),
         (
             88.0,
             Icon::LockPosition,
             "Lock position",
-            Some(&mut layer.lock_position),
+            &mut layer.lock_position,
         ),
         (
             110.5,
             Icon::LockArtboards,
             "Prevent auto-nesting into and out of Artboards and Frames",
-            None,
+            &mut layer.lock_nesting,
         ),
-        (129.0, Icon::LockAll, "Lock all", None),
+        (129.0, Icon::LockAll, "Lock all", &mut layer.lock_all),
     ];
     for (x, i, tip, flag) in flags {
         let center = at(x, 73.75);
         let rect = Rect::from_center_size(center, Vec2::splat(pt(20.0)));
+        let is_all = i == Icon::LockAll;
+        let active = editable && (is_all || !all);
         let response = ui.interact(rect, ui.id().with(tip), Sense::click());
-        let on = flag
-            .as_deref()
-            .copied()
-            .unwrap_or(i == Icon::LockAll && all && editable);
+        let on = editable && (*flag || all);
         if on {
             ui.painter().rect_filled(rect, pt(2.0), color::TOOL_ACTIVE);
-        } else if editable && response.hovered() {
+        } else if active && response.hovered() {
             ui.painter().rect_filled(rect, pt(2.0), color::HOVER);
         }
         icon(ui.painter(), center, i, editable, color::PANEL);
         let response = response.on_hover_text(tip);
-        if editable
-            && response.clicked()
-            && let Some(flag) = flag
-        {
+        // Photoshop records every lock button as "Lock Layer"
+        if active && response.clicked() {
             *flag = !*flag;
-            edits.record = Some("Lock Change");
+            edits.record = Some("Lock Layer");
         }
     }
     ui.painter().text(

@@ -136,7 +136,7 @@ pub fn cut(doc: &mut Document, background: [u8; 3]) -> Result<Clip, ClipError> {
     if !layer.visible {
         return Err(ClipError::Hidden);
     }
-    if layer.lock_pixels {
+    if layer.pixels_locked() {
         return Err(ClipError::Locked);
     }
     let clip = copy(doc)?;

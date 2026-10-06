@@ -72,15 +72,18 @@ struct Pen<'a> {
     painter: &'a Painter,
     center: Pos2,
     color: Color32,
+    /// 1 for the size traced; smaller copies (e.g. the Lock Layers
+    /// dialog's icons) scale everything.
+    scale: f32,
 }
 
 impl Pen<'_> {
     fn p(&self, x: f32, y: f32) -> Pos2 {
-        self.center + Vec2::new(pt(x / 2.0), pt(y / 2.0))
+        self.center + Vec2::new(pt(x / 2.0), pt(y / 2.0)) * self.scale
     }
 
-    fn w(w: f32) -> f32 {
-        pt(w / 2.0)
+    fn w(&self, w: f32) -> f32 {
+        pt(w / 2.0) * self.scale
     }
 
     fn rect(&self, x0: f32, y0: f32, x1: f32, y1: f32) {
@@ -108,38 +111,51 @@ impl Pen<'_> {
     fn line(&self, points: &[(f32, f32)], width: f32) {
         let points = points.iter().map(|&(x, y)| self.p(x, y)).collect();
         self.painter
-            .add(Shape::line(points, Stroke::new(Self::w(width), self.color)));
+            .add(Shape::line(points, Stroke::new(self.w(width), self.color)));
     }
 
     fn round_line(&self, a: (f32, f32), b: (f32, f32), width: f32) {
         self.line(&[a, b], width);
         for (x, y) in [a, b] {
             self.painter
-                .circle_filled(self.p(x, y), Self::w(width) / 2.0, self.color);
+                .circle_filled(self.p(x, y), self.w(width) / 2.0, self.color);
         }
     }
 
     fn ring(&self, x: f32, y: f32, r: f32, width: f32) {
         self.painter.circle_stroke(
             self.p(x, y),
-            Self::w(r),
-            Stroke::new(Self::w(width), self.color),
+            self.w(r),
+            Stroke::new(self.w(width), self.color),
         );
     }
 
     fn dot(&self, x: f32, y: f32, r: f32) {
         self.painter
-            .circle_filled(self.p(x, y), Self::w(r), self.color);
+            .circle_filled(self.p(x, y), self.w(r), self.color);
     }
 }
 
 /// Paints `icon` centered on `center`. `background` is the color behind it,
 /// used for the gear's hole.
 pub fn paint(painter: &Painter, center: Pos2, icon: Icon, color: Color32, background: Color32) {
+    paint_scaled(painter, center, icon, color, background, 1.0);
+}
+
+/// [`paint`] at `scale` times the traced size.
+pub fn paint_scaled(
+    painter: &Painter,
+    center: Pos2,
+    icon: Icon,
+    color: Color32,
+    background: Color32,
+    scale: f32,
+) {
     let pen = Pen {
         painter,
         center,
         color,
+        scale,
     };
     match icon {
         Icon::Home => {
@@ -338,7 +354,7 @@ pub fn paint(painter: &Painter, center: Pos2, icon: Icon, color: Color32, backgr
             pen.painter.rect_stroke(
                 Rect::from_min_max(pen.p(-12.0, -10.0), pen.p(12.0, 10.0)),
                 0,
-                Stroke::new(Pen::w(2.0), color),
+                Stroke::new(pen.w(2.0), color),
                 egui::StrokeKind::Inside,
             );
             pen.poly(&[(-6.5, 6.0), (-3.5, -3.5), (3.0, 6.0)]);
@@ -371,9 +387,9 @@ pub fn paint(painter: &Painter, center: Pos2, icon: Icon, color: Color32, backgr
             pen.rect(7.0, -5.0, 9.0, 5.0);
             for (x, y) in [(-8.0, -8.0), (8.0, -8.0), (-8.0, 8.0), (8.0, 8.0)] {
                 pen.painter.rect_stroke(
-                    Rect::from_center_size(pen.p(x, y), Vec2::splat(Pen::w(6.0))),
+                    Rect::from_center_size(pen.p(x, y), Vec2::splat(pen.w(6.0))),
                     0,
-                    Stroke::new(Pen::w(2.0), color),
+                    Stroke::new(pen.w(2.0), color),
                     egui::StrokeKind::Inside,
                 );
             }
@@ -397,7 +413,7 @@ pub fn paint(painter: &Painter, center: Pos2, icon: Icon, color: Color32, backgr
             pen.painter.rect_stroke(
                 Rect::from_min_max(pen.p(-11.0, -11.0), pen.p(11.0, 11.0)),
                 0,
-                Stroke::new(Pen::w(2.0), color),
+                Stroke::new(pen.w(2.0), color),
                 egui::StrokeKind::Inside,
             );
             pen.rect(-3.0, -9.0, 3.0, -3.0);
@@ -499,7 +515,7 @@ pub fn paint(painter: &Painter, center: Pos2, icon: Icon, color: Color32, backgr
             pen.painter.rect_stroke(
                 Rect::from_min_max(pen.p(-10.0, -4.0), pen.p(10.0, 12.0)),
                 0,
-                Stroke::new(Pen::w(2.0), color),
+                Stroke::new(pen.w(2.0), color),
                 egui::StrokeKind::Inside,
             );
             pen.rect(-3.0, 2.0, 3.0, 7.0);
@@ -554,7 +570,7 @@ pub fn paint(painter: &Painter, center: Pos2, icon: Icon, color: Color32, backgr
             pen.painter.rect_stroke(
                 Rect::from_min_max(pen.p(-11.5, -11.5), pen.p(11.5, 11.5)),
                 0,
-                Stroke::new(Pen::w(2.0), color),
+                Stroke::new(pen.w(2.0), color),
                 egui::StrokeKind::Inside,
             );
             pen.rect(-6.0, -1.0, 6.0, 1.0);

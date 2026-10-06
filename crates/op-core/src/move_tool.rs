@@ -49,7 +49,9 @@ impl Move {
         }
         let selection = doc.selection().cloned();
         // The background layer can only have selected pixels moved
-        if layer.lock_position || layer.lock_pixels || (layer.is_background && selection.is_none())
+        if layer.position_locked()
+            || layer.pixels_locked()
+            || (layer.is_background && selection.is_none())
         {
             return Err(MoveError::Locked);
         }
@@ -64,7 +66,10 @@ impl Move {
                 .into_iter()
                 .filter_map(|other| doc.layer(other))
                 .filter(|l| {
-                    doc.is_shown(l.id) && !l.is_background && !l.lock_position && !l.lock_pixels
+                    doc.is_shown(l.id)
+                        && !l.is_background
+                        && !l.position_locked()
+                        && !l.pixels_locked()
                 })
                 .filter_map(|l| Some((l.id, l.image()?.clone())))
                 .collect()
