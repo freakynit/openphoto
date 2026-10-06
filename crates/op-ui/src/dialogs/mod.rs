@@ -5,6 +5,7 @@ pub mod alert;
 mod appkit;
 mod brightness_contrast;
 mod canvas_size;
+mod channel_mixer;
 mod color_balance;
 mod color_picker;
 mod common;
@@ -21,6 +22,7 @@ mod new_guide;
 mod new_layer;
 mod rotate_canvas;
 pub mod save_changes;
+mod selective_color;
 mod trim;
 mod uxp;
 

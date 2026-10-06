@@ -82,6 +82,20 @@ pub enum Adjustment {
         points: [[(u8, u8); 16]; 4],
         counts: [u8; 4],
     },
+    /// Channel Mixer: each output channel (or, with `monochrome`, the gray)
+    /// is red, green and blue in percent (−200–200) plus a constant
+    /// (−200–200 percent of white).
+    ChannelMixer {
+        rows: [[i32; 4]; 3],
+        monochrome: bool,
+    },
+    /// Selective Color: cyan, magenta, yellow and black (−100–100 percent)
+    /// for Reds, Yellows, Greens, Cyans, Blues, Magentas, Whites, Neutrals
+    /// and Blacks; `absolute` is the Absolute method (otherwise Relative).
+    SelectiveColor {
+        colors: [[i32; 4]; 9],
+        absolute: bool,
+    },
     /// Image > Auto Color: here each channel stretched like Auto Tone
     /// (Photoshop also neutralizes the midtones).
     AutoColor,
@@ -109,6 +123,8 @@ impl Adjustment {
             Self::AutoContrast => "Auto Contrast",
             Self::AutoColor => "Auto Color",
             Self::Curves { .. } => "Curves",
+            Self::ChannelMixer { .. } => "Channel Mixer",
+            Self::SelectiveColor { .. } => "Selective Color",
         }
     }
 
@@ -493,6 +509,22 @@ fn color_adjust(adjustment: Adjustment, px: [u8; 4]) -> [u8; 4] {
     let rgb = [px[0], px[1], px[2]].map(|v| v as f32 / 255.0);
     let lum = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2];
     match adjustment {
+        Adjustment::ChannelMixer { rows, monochrome } => {
+            let mix = |r: &[i32; 4]| {
+                let v = px[0] as f32 * r[0] as f32
+                    + px[1] as f32 * r[1] as f32
+                    + px[2] as f32 * r[2] as f32;
+                (v / 100.0 + r[3] as f32 * 2.55) / 255.0
+            };
+            let out = if monochrome {
+                [mix(&rows[0]); 3]
+            } else {
+                [mix(&rows[0]), mix(&rows[1]), mix(&rows[2])]
+            };
+            let [r, g, b] = out.map(|v| round_half_up(v * 255.0));
+            [r, g, b, px[3]]
+        }
+        Adjustment::SelectiveColor { colors, absolute } => selective_color(px, &colors, absolute),
         Adjustment::BlackWhite { weights } => {
             // The gray is the darkest channel plus the primary and the
             // secondary hue's shares, each weighted
@@ -552,6 +584,55 @@ fn color_adjust(adjustment: Adjustment, px: [u8; 4]) -> [u8; 4] {
         }
         _ => px,
     }
+}
+
+/// Selective Color on one pixel (Photoshop 2026, fitted within a level):
+/// each color range has a weight for the pixel — Reds, Greens, Blues: how
+/// far the largest channel (it alone) is above the middle one; Cyans,
+/// Magentas, Yellows: how far the middle is above the smallest (it alone);
+/// Whites: twice how far the smallest is above 50%; Blacks: twice how far
+/// the largest is below it; Neutrals: 1 − (|max − 50%| + |min − 50%|).
+/// A channel's ink (1 − value) changes by weight × d with
+/// d = amount + black × (1 + amount), times the ink itself in Relative
+/// mode, each range's change kept within what the ink can take (−ink to
+/// 1 − ink); the ranges' changes add up.
+fn selective_color(px: [u8; 4], colors: &[[i32; 4]; 9], absolute: bool) -> [u8; 4] {
+    let [r, g, b] = [px[0], px[1], px[2]].map(|v| v as f32 / 255.0);
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let mid = r + g + b - max - min;
+    let top = |v: f32, o1: f32, o2: f32| if v > o1 && v > o2 { max - mid } else { 0.0 };
+    let bottom = |v: f32, o1: f32, o2: f32| if v < o1 && v < o2 { mid - min } else { 0.0 };
+    let weights = [
+        top(r, g, b),
+        bottom(b, r, g),
+        top(g, r, b),
+        bottom(r, g, b),
+        top(b, r, g),
+        bottom(g, r, b),
+        ((min - 0.5) * 2.0).max(0.0),
+        1.0 - ((max - 0.5).abs() + (min - 0.5).abs()),
+        ((0.5 - max) * 2.0).max(0.0),
+    ];
+    let mut out = [px[0], px[1], px[2], px[3]];
+    for (c, v) in [r, g, b].into_iter().enumerate() {
+        let ink = 1.0 - v;
+        let mut change = 0.0;
+        for (w, settings) in weights.iter().zip(colors) {
+            if *w <= 0.0 {
+                continue;
+            }
+            let a = settings[c] as f32 / 100.0;
+            let k = settings[3] as f32 / 100.0;
+            let mut d = a + k * (1.0 + a);
+            if !absolute {
+                d *= ink;
+            }
+            change += w * d.clamp(-ink, 1.0 - ink);
+        }
+        out[c] = round_half_up((1.0 - (ink + change).clamp(0.0, 1.0)) * 255.0);
+    }
+    out
 }
 
 /// Auto Tone / Auto Contrast lookup tables: a channel's range without its
@@ -985,6 +1066,8 @@ pub fn apply(doc: &mut Document, adjustment: Adjustment) -> Result<(), FillError
                 [t[0][r as usize], t[1][g as usize], t[2][b as usize], a]
             }
             Adjustment::BlackWhite { .. }
+            | Adjustment::ChannelMixer { .. }
+            | Adjustment::SelectiveColor { .. }
             | Adjustment::Vibrance { .. }
             | Adjustment::PhotoFilter { .. }
             | Adjustment::GradientMap { .. } => color_adjust(adjustment, px),
@@ -1411,6 +1494,67 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+
+        #[test]
+        fn channel_mixer_matches_photoshop() {
+            for (name, rows, monochrome) in [
+                (
+                    "cm2.rgb",
+                    [[50, 30, 20, 0], [-40, 120, 10, 10], [0, 0, 100, -20]],
+                    false,
+                ),
+                ("cm3.rgb", [[40, 40, 20, 0], [0; 4], [0; 4]], true),
+                (
+                    "cm4.rgb",
+                    [[200, -50, 0, 5], [0, 100, 0, 0], [30, 30, 30, 0]],
+                    false,
+                ),
+            ] {
+                let (worst, _) = compare(Adjustment::ChannelMixer { rows, monochrome }, name);
+                assert!(worst <= 1, "{name}: off by {worst}");
+            }
+        }
+
+        #[test]
+        fn selective_color_matches_photoshop() {
+            let mut colors = [[0; 4]; 9];
+            let set = |colors: &mut [[i32; 4]; 9], i: usize, v: [i32; 4]| colors[i] = v;
+            set(&mut colors, 0, [60, -40, 30, 20]);
+            set(&mut colors, 7, [30, 20, -50, -10]);
+            set(&mut colors, 6, [-60, 0, 40, 0]);
+            set(&mut colors, 1, [0, 80, -30, 10]);
+            let (worst, _) = compare(
+                Adjustment::SelectiveColor {
+                    colors,
+                    absolute: false,
+                },
+                "sc_multi.rgb",
+            );
+            assert!(worst <= 1, "relative: off by {worst}");
+            let mut colors = [[0; 4]; 9];
+            set(&mut colors, 0, [60, -40, 30, 20]);
+            set(&mut colors, 7, [30, 20, -50, -10]);
+            set(&mut colors, 8, [0, 30, 0, 50]);
+            set(&mut colors, 3, [-70, 0, 40, 0]);
+            let (worst, _) = compare(
+                Adjustment::SelectiveColor {
+                    colors,
+                    absolute: true,
+                },
+                "sc_multi_abs.rgb",
+            );
+            assert!(worst <= 1, "absolute: off by {worst}");
+            for (name, i, v, absolute) in [
+                ("sc_n_abs.rgb", 7, [20, -20, 0, 30], true),
+                ("sc_k.rgb", 8, [0, 0, 0, 40], true),
+                ("sc_y.rgb", 1, [100, 0, 0, 0], false),
+            ] {
+                let mut colors = [[0; 4]; 9];
+                colors[i] = v;
+                let (worst, _) = compare(Adjustment::SelectiveColor { colors, absolute }, name);
+                assert!(worst <= 1, "{name}: off by {worst}");
             }
         }
 

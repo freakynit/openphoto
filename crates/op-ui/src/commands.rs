@@ -62,6 +62,8 @@ pub enum Command {
     ColorBalance,
     BlackWhite,
     Vibrance,
+    ChannelMixer,
+    SelectiveColor,
     PhotoFilter,
     GradientMap,
     AutoTone,
@@ -472,7 +474,12 @@ impl Command {
                 ..alt_cmd(Key::L)
             },
             Self::AutoColor => shift_cmd(Key::B),
-            Self::BrightnessContrast | Self::Vibrance | Self::PhotoFilter | Self::GradientMap => {
+            Self::BrightnessContrast
+            | Self::Vibrance
+            | Self::PhotoFilter
+            | Self::GradientMap
+            | Self::ChannelMixer
+            | Self::SelectiveColor => {
                 return None;
             }
             Self::LastFilter => Shortcut {
@@ -732,6 +739,8 @@ impl Command {
             | Self::ColorBalance
             | Self::BlackWhite
             | Self::Vibrance
+            | Self::ChannelMixer
+            | Self::SelectiveColor
             | Self::PhotoFilter
             | Self::GradientMap
             | Self::AutoTone
@@ -1044,6 +1053,8 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
         | Command::ColorBalance
         | Command::BlackWhite
         | Command::Vibrance
+        | Command::ChannelMixer
+        | Command::SelectiveColor
         | Command::PhotoFilter
         | Command::GradientMap
         | Command::GaussianBlur
@@ -1069,6 +1080,8 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 Command::ColorBalance => (AdjustKind::ColorBalance, "Color Balance"),
                 Command::BlackWhite => (AdjustKind::BlackWhite, "Black & White"),
                 Command::Vibrance => (AdjustKind::Vibrance, "Vibrance"),
+                Command::ChannelMixer => (AdjustKind::ChannelMixer, "Channel Mixer"),
+                Command::SelectiveColor => (AdjustKind::SelectiveColor, "Selective Color"),
                 Command::PhotoFilter => (AdjustKind::PhotoFilter, "Photo Filter"),
                 Command::GradientMap => (AdjustKind::GradientMap, "Gradient Map"),
                 Command::GaussianBlur => (AdjustKind::GaussianBlur, "Gaussian Blur"),

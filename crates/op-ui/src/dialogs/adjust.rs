@@ -13,7 +13,10 @@ use egui::{Align2, Color32, FontId, Key, Pos2, Rect, Sense, Shape, Stroke, Strok
 use op_core::adjust::Adjustment;
 use op_core::filter::{Filter, OffsetFill};
 
-use super::{brightness_contrast, color_balance, common, curves, hue_saturation, levels, uxp};
+use super::{
+    brightness_contrast, channel_mixer, color_balance, common, curves, hue_saturation, levels,
+    selective_color, uxp,
+};
 use crate::theme::{self, color, pt};
 
 const FONT: f32 = pt(12.5);
@@ -202,6 +205,8 @@ pub enum Kind {
     ColorBalance,
     BlackWhite,
     Vibrance,
+    ChannelMixer,
+    SelectiveColor,
     PhotoFilter,
     GradientMap,
     GaussianBlur,
@@ -229,6 +234,8 @@ impl Kind {
             Self::ColorBalance => "Color Balance",
             Self::BlackWhite => "Black and White",
             Self::Vibrance => "Vibrance",
+            Self::ChannelMixer => "Channel Mixer",
+            Self::SelectiveColor => "Selective Color",
             Self::PhotoFilter => "Photo Filter",
             Self::GradientMap => "Gradient Map",
             Self::GaussianBlur => "Gaussian Blur",
@@ -253,7 +260,9 @@ impl Kind {
             | Self::Curves
             | Self::HueSaturation
             | Self::BrightnessContrast
-            | Self::ColorBalance => &[],
+            | Self::ColorBalance
+            | Self::ChannelMixer
+            | Self::SelectiveColor => &[],
             Self::Exposure => EXPOSURE,
             Self::BlackWhite => BLACK_WHITE,
             Self::Vibrance => VIBRANCE,
@@ -324,6 +333,8 @@ enum Custom {
     HueSaturation(Box<hue_saturation::Dialog>),
     Levels(Box<levels::Dialog>),
     Curves(Box<curves::Dialog>),
+    ChannelMixer(Box<channel_mixer::Dialog>),
+    SelectiveColor(Box<selective_color::Dialog>),
 }
 
 fn format(v: f32, decimals: usize) -> String {
@@ -352,6 +363,8 @@ impl AdjustDialog {
                     hue_saturation::Dialog::new(0),
                 ))),
                 Kind::Levels => Some(Custom::Levels(Box::new(levels::Dialog::new([[0; 256]; 3])))),
+                Kind::ChannelMixer => Some(Custom::ChannelMixer(Default::default())),
+                Kind::SelectiveColor => Some(Custom::SelectiveColor(Default::default())),
                 Kind::Curves => Some(Custom::Curves(Box::new(curves::Dialog::new([[0; 256]; 3])))),
                 _ => None,
             },
@@ -393,6 +406,8 @@ impl AdjustDialog {
             Some(Custom::HueSaturation(d)) => return d.adjustment().map(Effect::Adjustment),
             Some(Custom::Levels(d)) => return d.adjustment().map(Effect::Adjustment),
             Some(Custom::Curves(d)) => return Some(Effect::Adjustment(d.adjustment())),
+            Some(Custom::ChannelMixer(d)) => return d.adjustment().map(Effect::Adjustment),
+            Some(Custom::SelectiveColor(d)) => return d.adjustment().map(Effect::Adjustment),
             None => {}
         }
         let v: Vec<f32> = (0..self.values.len())
@@ -480,6 +495,8 @@ impl AdjustDialog {
                     Some(Custom::HueSaturation(_)) => hue_saturation::SIZE,
                     Some(Custom::Levels(_)) => levels::SIZE,
                     Some(Custom::Curves(_)) => curves::SIZE,
+                    Some(Custom::ChannelMixer(_)) => channel_mixer::SIZE,
+                    Some(Custom::SelectiveColor(_)) => selective_color::SIZE,
                     None => self.kind.size(),
                 };
                 let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
@@ -512,6 +529,8 @@ impl AdjustDialog {
             Some(Custom::HueSaturation(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
             Some(Custom::Levels(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
             Some(Custom::Curves(d)) => d.ui(ui, frame, &mut self.preview),
+            Some(Custom::ChannelMixer(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
+            Some(Custom::SelectiveColor(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
             None => None,
         };
         match button {

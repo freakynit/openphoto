@@ -89,8 +89,10 @@ pub fn slider(
     (min, max): (f32, f32),
     colors: &dyn Fn(f32) -> Color32,
 ) -> Option<f32> {
-    // A range starting at 0 (Colorize's hue and saturation) runs from the
-    // left end; otherwise 0 is in the middle
+    // The thumb's center travels between the ends inset by its radius; a
+    // range starting at 0 (Colorize's hue and saturation) runs from the
+    // left, otherwise 0 is in the middle
+    let (x0, x1) = (x0 + THUMB_RADIUS, x1 - THUMB_RADIUS);
     let mid = if min >= 0.0 { x0 } else { (x0 + x1) / 2.0 };
     let to_x = |v: f32| {
         if v >= 0.0 || min >= 0.0 {
@@ -134,7 +136,7 @@ pub fn slider(
         let steps = ((b - a) / pt(4.0)).ceil().max(1.0) as usize;
         for k in 0..=steps {
             let px = a + (b - a) * k as f32 / steps as f32;
-            let c = colors((px - x0) / (x1 - x0));
+            let c = colors((px - x0 + THUMB_RADIUS) / (x1 - x0 + 2.0 * THUMB_RADIUS));
             mesh.colored_vertex(Pos2::new(px, y - half), c);
             mesh.colored_vertex(Pos2::new(px, y + half), c);
             if k > 0 {
@@ -145,8 +147,8 @@ pub fn slider(
         }
         painter.add(egui::Shape::mesh(mesh));
     };
-    segment(x0, x - THUMB_RADIUS - TRACK_GAP);
-    segment(x + THUMB_RADIUS + TRACK_GAP, x1);
+    segment(x0 - THUMB_RADIUS, x - THUMB_RADIUS - TRACK_GAP);
+    segment(x + THUMB_RADIUS + TRACK_GAP, x1 + THUMB_RADIUS);
     let ring = if response.dragged() {
         THUMB_DRAGGED
     } else {
@@ -227,4 +229,30 @@ pub fn preview(ui: &mut Ui, min: Pos2, preview: &mut bool) {
 /// A 12 pt checkbox with its label 9.5 pt to the right.
 pub fn checkbox(ui: &mut Ui, min: Pos2, label: &str, checked: &mut bool) {
     common::ps_checkbox_with(ui, min, label, checked, true, font(), pt(1.0));
+}
+
+/// A Spectrum radio button centered on `center` with its label 15.5 pt to
+/// the right: chosen, a light disc around a hole; otherwise a gray ring.
+/// Returns whether it was clicked.
+pub fn radio(ui: &mut Ui, center: Pos2, text: &str, chosen: bool) -> bool {
+    let rect = label(ui, center + vec2(pt(15.5), 0.0), text);
+    let hit = Rect::from_min_max(
+        center - vec2(pt(7.0), pt(9.0)),
+        Pos2::new(rect.right(), center.y + pt(9.0)),
+    );
+    let clicked = ui
+        .interact(hit, ui.id().with(("uxp-radio", text)), Sense::click())
+        .clicked();
+    let painter = ui.painter();
+    if chosen {
+        painter.circle_filled(center, pt(6.0), Color32::from_gray(0xd4));
+        painter.circle_filled(center, pt(1.75), crate::theme::color::PANEL);
+    } else {
+        painter.circle_stroke(
+            center,
+            pt(5.5),
+            Stroke::new(pt(1.0), Color32::from_gray(0x8e)),
+        );
+    }
+    clicked
 }

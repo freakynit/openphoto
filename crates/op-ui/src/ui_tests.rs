@@ -817,6 +817,8 @@ fn screenshot_adjustment_dialogs() {
         (Command::BrightnessContrast, "brightness_contrast_dialog"),
         (Command::ColorBalance, "color_balance_dialog"),
         (Command::Curves, "curves_dialog"),
+        (Command::ChannelMixer, "channel_mixer_dialog"),
+        (Command::SelectiveColor, "selective_color_dialog"),
     ] {
         let mut h = harness(Vec::new());
         reference_document(&mut h);
@@ -3120,4 +3122,40 @@ fn levels_and_curves_edit_one_channel() {
     let px = composite_pixel(&mut h, 5, 5);
     assert_eq!((px[0], px[2]), (62, 100));
     assert!(px[1] > 130, "{px:?}");
+}
+
+#[test]
+fn channel_mixer_and_selective_color_apply() {
+    let mut h = harness(Vec::new());
+    color_document(&mut h, [200, 100, 50]);
+    // Channel Mixer: Red output takes 50% red (its first box is focused)
+    run_command(&mut h, crate::commands::Command::ChannelMixer);
+    h.event(egui::Event::Text("50".into()));
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(last_history(&h), "Channel Mixer");
+    assert_eq!(composite_pixel(&mut h, 5, 5), [100, 100, 50, 255]);
+
+    // Selective Color: Yellows (second swatch), cyan 100, Absolute
+    run_command(&mut h, crate::commands::Command::SelectiveColor);
+    click_dialog(&mut h, (473.0, 400.0), 68.0, 96.0);
+    h.run_steps(2);
+    h.event(egui::Event::Text("100".into()));
+    click_dialog(&mut h, (473.0, 400.0), 98.0, 368.5);
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(last_history(&h), "Selective Color");
+    let mut colors = [[0; 4]; 9];
+    colors[1] = [100, 0, 0, 0];
+    let want = op_core::adjust::Adjustment::SelectiveColor {
+        colors,
+        absolute: true,
+    };
+    let mut doc =
+        op_core::Document::new_with_background("t", 1, 1, Color::from_rgba8([100, 100, 50, 255]));
+    op_core::adjust::apply(&mut doc, want).unwrap();
+    let px = composite_pixel(&mut h, 5, 5);
+    assert_eq!(&px[..], &doc.composite_rgba8()[..4]);
 }
