@@ -968,3 +968,22 @@ fn eyedropper_magic_wand_and_lassos() {
     let s = active(&h).doc.selection().unwrap();
     assert_eq!((s.get(210, 210), s.get(20, 20)), (255, 0));
 }
+
+#[test]
+fn gradient_tool_paints_foreground_to_background() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.state_mut().state.foreground = Color::from_rgba8([0, 0, 0, 255]);
+    h.state_mut().state.background = Color::from_rgba8([255, 255, 255, 255]);
+    h.key_press(egui::Key::G);
+    h.run_steps(2);
+    assert_eq!(h.state().state.tool, op_tools::Tool::Gradient);
+    let (a, b) = (doc_point(&h, 100.0, 300.0), doc_point(&h, 600.0, 300.0));
+    drag(&mut h, a, b, Modifiers::NONE);
+    assert_eq!(last_history(&h), "Gradient");
+    assert_eq!(composite_pixel(&mut h, 50, 10), [0, 0, 0, 255]);
+    assert_eq!(composite_pixel(&mut h, 700, 700), [255, 255, 255, 255]);
+    let mid = composite_pixel(&mut h, 350, 500)[0];
+    assert!((118..=138).contains(&mid), "{mid}");
+    shot(&mut h, "gradient");
+}

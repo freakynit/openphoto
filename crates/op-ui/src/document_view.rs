@@ -192,6 +192,12 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
                     }
                 }
             }
+            Tool::Gradient => {
+                let [r0, g0, b0, _] = foreground.to_rgba8();
+                let [r1, g1, b1, _] = background.to_rgba8();
+                let colors = ([r0, g0, b0], [r1, g1, b1]);
+                paint_error = gradient_input(ui, &response, state, colors, app.gradient, ppp);
+            }
             Tool::Lasso | Tool::PolygonalLasso => {
                 let options = (
                     app.marquee.mode,
@@ -274,6 +280,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
                     CursorIcon::None
                 }
                 Tool::Eyedropper
+                | Tool::Gradient
                 | Tool::MagicWand
                 | Tool::Lasso
                 | Tool::PolygonalLasso
@@ -361,6 +368,62 @@ fn marquee_rect(
 
 /// Marquee tools: drag to select, click to deselect; single row/column
 /// marquees select a 1-pixel line on click.
+/// Snaps the end of a drag from `a` to a multiple of 45°, keeping its
+/// length (Shift while dragging a gradient).
+fn snap_45(a: Pos2, b: Pos2) -> Pos2 {
+    let d = b - a;
+    let step = std::f32::consts::FRAC_PI_4;
+    let angle = (d.y.atan2(d.x) / step).round() * step;
+    a + Vec2::new(angle.cos(), angle.sin()) * d.length()
+}
+
+/// Gradient tool: drag from the start color's point to the end color's;
+/// Shift constrains the direction to 45° steps. Paints once released.
+fn gradient_input(
+    ui: &Ui,
+    response: &egui::Response,
+    state: &mut DocState,
+    colors: ([u8; 3], [u8; 3]),
+    options: op_core::gradient::GradientOptions,
+    ppp: f32,
+) -> Option<String> {
+    if response.drag_started_by(PointerButton::Primary)
+        && let Some(p) = ui.input(|i| i.pointer.press_origin())
+    {
+        let start = to_doc(state, p, ppp);
+        state.gradient_drag = Some((start, start));
+    }
+    let (start, _) = state.gradient_drag?;
+    let shift = ui.input(|i| i.modifiers.shift);
+    if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
+        let p = to_doc(state, p, ppp);
+        let end = if shift { snap_45(start, p) } else { p };
+        state.gradient_drag = Some((start, end));
+    }
+    if !(response.drag_stopped() || !ui.input(|i| i.pointer.primary_down())) {
+        ui.ctx().request_repaint();
+        return None;
+    }
+    let (start, end) = state.gradient_drag.take()?;
+    if start == end {
+        return None;
+    }
+    let result = op_core::gradient::gradient(
+        &mut state.doc,
+        (start.x, start.y),
+        (end.x, end.y),
+        colors,
+        options,
+    );
+    match result {
+        Ok(()) => {
+            state.record("Gradient");
+            None
+        }
+        Err(e) => Some(e.message("Gradient")),
+    }
+}
+
 /// The combine mode for a new selection shape: with a selection, Shift adds,
 /// Alt subtracts and both intersect; otherwise the options bar's mode. Also
 /// returns whether Shift and Alt were used for the mode (and so don't
@@ -803,6 +866,21 @@ fn draw_selection(ui: &Ui, state: &mut DocState, canvas: Rect, ppp: f32, tool: T
             ] {
                 ants(a, b);
             }
+        }
+    }
+    // The gradient's direction while dragging: a line with a dot at each end
+    if let Some((a, b)) = state.gradient_drag {
+        let (a, b) = (to_screen(state, a, ppp), to_screen(state, b, ppp));
+        let painter = ui.painter_at(canvas);
+        painter.line_segment([a, b], egui::Stroke::new(2.0, Color32::BLACK));
+        painter.line_segment([a, b], egui::Stroke::new(1.0, Color32::WHITE));
+        for p in [a, b] {
+            painter.circle(
+                p,
+                3.0,
+                Color32::WHITE,
+                egui::Stroke::new(1.0, Color32::BLACK),
+            );
         }
     }
     if let Some(lasso) = &state.lasso {

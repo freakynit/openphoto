@@ -57,6 +57,8 @@ pub struct DocState {
     pub last_paint_point: Option<(f32, f32)>,
     /// A lasso outline being drawn.
     pub lasso: Option<LassoPath>,
+    /// A Gradient tool drag: start and current point, in document pixels.
+    pub gradient_drag: Option<(egui::Pos2, egui::Pos2)>,
     /// A layer name being edited in the Layers panel, and the text so far.
     pub renaming: Option<(LayerId, String)>,
     /// Marching-ants outline of the selection, cached per selection revision.
@@ -90,6 +92,7 @@ impl DocState {
             last_paint_point: None,
             renaming: None,
             lasso: None,
+            gradient_drag: None,
             outline: None,
             canvas: None,
             thumbs: HashMap::new(),
@@ -510,6 +513,7 @@ pub struct AppState {
     pub background: Color,
     pub marquee: MarqueeOptions,
     pub eyedropper: EyedropperOptions,
+    pub gradient: op_core::gradient::GradientOptions,
     pub wand: WandOptions,
     pub brush: PaintOptions,
     pub pencil: PaintOptions,
@@ -570,6 +574,7 @@ impl Default for AppState {
             background: Color::WHITE,
             marquee: MarqueeOptions::default(),
             eyedropper: EyedropperOptions::default(),
+            gradient: Default::default(),
             wand: WandOptions::default(),
             brush: PaintOptions::brush(),
             pencil: PaintOptions::pencil(),

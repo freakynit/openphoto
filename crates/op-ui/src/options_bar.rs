@@ -37,6 +37,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
                 Tool::Brush | Tool::Pencil | Tool::Eraser => paint_options(ui, app),
                 Tool::PaintBucket => bucket_options(ui, app),
                 Tool::Eyedropper => eyedropper_options(ui, app),
+                Tool::Gradient => gradient_options(ui, app),
                 Tool::MagicWand => wand_options(ui, app),
                 Tool::Hand | Tool::Zoom => view_options(ui, app),
                 _ => {}
@@ -189,6 +190,75 @@ fn eyedropper_options(ui: &mut Ui, app: &mut AppState) {
     ui.add_space(6.0);
     let mut ring = true;
     ui.add_enabled(false, egui::Checkbox::new(&mut ring, "Show Sampling Ring"));
+}
+
+/// Gradient (classic): the gradient swatch (foreground to background), the
+/// five kinds, Mode, Opacity and Reverse.
+fn gradient_options(ui: &mut Ui, app: &mut AppState) {
+    use op_core::gradient::GradientKind;
+    // Swatch: the current two-color gradient
+    let (r, _) = ui.allocate_exact_size(Vec2::new(110.0, 26.0), Sense::hover());
+    let to32 = |c: op_core::Color| {
+        let [r, g, b, _] = c.to_rgba8();
+        egui::Color32::from_rgb(r, g, b)
+    };
+    let (start, end) = if app.gradient.reverse {
+        (app.background, app.foreground)
+    } else {
+        (app.foreground, app.background)
+    };
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(r.left_top(), to32(start));
+    mesh.colored_vertex(r.right_top(), to32(end));
+    mesh.colored_vertex(r.right_bottom(), to32(end));
+    mesh.colored_vertex(r.left_bottom(), to32(start));
+    mesh.add_triangle(0, 1, 2);
+    mesh.add_triangle(0, 2, 3);
+    ui.painter().add(egui::Shape::mesh(mesh));
+    ui.painter().rect_stroke(
+        r,
+        0,
+        egui::Stroke::new(1.0, color::SEPARATOR),
+        egui::StrokeKind::Outside,
+    );
+    widgets::icon(ui, icons::CARET_DOWN, 13.0, color::ICON);
+    widgets::vseparator(ui, 34.0);
+    let opts = &mut app.gradient;
+    for kind in GradientKind::ALL {
+        let icon = match kind {
+            GradientKind::Linear => icons::GRADIENT,
+            GradientKind::Radial => icons::CIRCLE_HALF,
+            GradientKind::Angle => icons::SPIRAL,
+            GradientKind::Reflected => icons::ARROWS_IN_LINE_HORIZONTAL,
+            GradientKind::Diamond => icons::DIAMOND,
+        };
+        if widgets::icon_button(ui, icon, 34.0, opts.kind == kind)
+            .on_hover_text(kind.label())
+            .clicked()
+        {
+            opts.kind = kind;
+        }
+    }
+    widgets::vseparator(ui, 34.0);
+    ui.label("Mode:");
+    egui::ComboBox::from_id_salt("gradient-mode")
+        .width(110.0)
+        .selected_text(opts.mode.label())
+        .show_ui(ui, |ui| {
+            for (gi, group) in op_core::BlendMode::GROUPS.iter().enumerate() {
+                if gi > 0 {
+                    ui.separator();
+                }
+                for &m in *group {
+                    ui.selectable_value(&mut opts.mode, m, m.label());
+                }
+            }
+        });
+    ui.add_space(6.0);
+    ui.label("Opacity:");
+    widgets::percent_drag(ui, &mut opts.opacity);
+    ui.add_space(6.0);
+    ui.checkbox(&mut opts.reverse, "Reverse");
 }
 
 /// Magic Wand: mode, Tolerance, Anti-alias, Contiguous, Sample All Layers.
