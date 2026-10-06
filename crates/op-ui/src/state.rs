@@ -71,6 +71,8 @@ pub struct DocState {
     pub free_transform: Option<FreeTransform>,
     /// A Gradient tool drag: start and current point, in document pixels.
     pub gradient_drag: Option<(egui::Pos2, egui::Pos2)>,
+    /// A shape tool drag: start and current point, in document pixels.
+    pub shape_drag: Option<(egui::Pos2, egui::Pos2)>,
     /// A layer name being edited in the Layers panel, and the text so far.
     pub renaming: Option<(LayerId, String)>,
     /// Marching-ants outline of the selection, cached per selection revision.
@@ -112,6 +114,7 @@ impl DocState {
             clone_offset: None,
             picking_clone_source: false,
             gradient_drag: None,
+            shape_drag: None,
             outline: None,
             canvas: None,
             thumbs: HashMap::new(),
@@ -392,6 +395,23 @@ pub struct MarqueeDrag {
     /// so they chose the combine mode and don't constrain the shape.
     pub shift_for_op: bool,
     pub alt_for_op: bool,
+}
+
+/// Shape tool options: the Polygon's sides (5) and the Line's weight
+/// (1 px), Photoshop's defaults.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShapeOptions {
+    pub sides: u32,
+    pub weight: f32,
+}
+
+impl Default for ShapeOptions {
+    fn default() -> Self {
+        Self {
+            sides: 5,
+            weight: 1.0,
+        }
+    }
 }
 
 /// Options of the retouching tools beyond their brushes.
@@ -739,6 +759,7 @@ pub struct AppState {
     pub clone_stamp: PaintOptions,
     pub history_brush: PaintOptions,
     pub retouch: RetouchOptions,
+    pub shape: ShapeOptions,
     /// Whether the Color panel edits the background or the foreground color.
     pub editing_background: bool,
     /// Cached HSB so the hue doesn't snap back to 0 for grays.
@@ -817,6 +838,7 @@ impl Default for AppState {
             clone_stamp: PaintOptions::brush(),
             history_brush: PaintOptions::brush(),
             retouch: RetouchOptions::default(),
+            shape: ShapeOptions::default(),
             editing_background: false,
             picker_hsb: Hsb::from_color(foreground),
             untitled_counter: 0,

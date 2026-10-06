@@ -125,6 +125,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
     let bucket = app.bucket;
     let view_options = app.view;
     let retouch = app.retouch;
+    let shape_options = app.shape;
     let mut paint_error = None;
     let Some(state) = app.docs.get_mut(&id) else {
         return;
@@ -290,6 +291,10 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
             Tool::Crop => {
                 crate::crop_tool::input(ui, &response, state, ppp);
             }
+            Tool::Rectangle | Tool::Ellipse | Tool::Triangle | Tool::Polygon | Tool::Line => {
+                let [r, g, b, _] = foreground.to_rgba8();
+                shape_input(ui, &response, state, tool, shape_options, [r, g, b], ppp);
+            }
             Tool::Gradient => {
                 let [r0, g0, b0, _] = foreground.to_rgba8();
                 let [r1, g1, b1, _] = background.to_rgba8();
@@ -409,6 +414,11 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
                     CursorIcon::None
                 }
                 Tool::Eyedropper
+                | Tool::Rectangle
+                | Tool::Ellipse
+                | Tool::Triangle
+                | Tool::Polygon
+                | Tool::Line
                 | Tool::Gradient
                 | Tool::MagicWand
                 | Tool::Lasso
@@ -457,7 +467,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
     }
     // Extras off hides the selection edges (the selection stays)
     if view_options.extras {
-        draw_selection(ui, state, canvas_rect, ppp, tool);
+        draw_selection(ui, state, canvas_rect, ppp, tool, shape_options);
     }
     if view_options.guides_visible() || state.guide_drag.is_some() {
         crate::rulers::draw_guides(ui, state, canvas_rect, ppp);
@@ -524,6 +534,81 @@ fn marquee_rect(
 
 /// Marquee tools: drag to select, click to deselect; single row/column
 /// marquees select a 1-pixel line on click.
+fn shape_kind(tool: Tool, options: crate::state::ShapeOptions) -> op_core::shape::ShapeKind {
+    use op_core::shape::ShapeKind;
+    match tool {
+        Tool::Ellipse => ShapeKind::Ellipse,
+        Tool::Triangle => ShapeKind::Triangle,
+        Tool::Polygon => ShapeKind::Polygon(options.sides),
+        Tool::Line => ShapeKind::Line,
+        _ => ShapeKind::Rectangle,
+    }
+}
+
+/// The two points a shape drag describes, with Photoshop's modifiers:
+/// Shift makes box shapes square (and snaps the Line to 45°), Alt draws
+/// them from the center.
+fn shape_points(tool: Tool, start: Pos2, end: Pos2, mods: egui::Modifiers) -> (Pos2, Pos2) {
+    if tool == Tool::Line {
+        return (start, if mods.shift { snap_45(start, end) } else { end });
+    }
+    let mut d = end - start;
+    if mods.shift {
+        let side = d.x.abs().max(d.y.abs());
+        d = Vec2::new(side.copysign(d.x), side.copysign(d.y));
+    }
+    if mods.alt {
+        (start - d, start + d)
+    } else {
+        (start, start + d)
+    }
+}
+
+/// Shape tools: drag out the shape; on release it becomes a new layer
+/// filled with the foreground color ("Rectangle 1", ...).
+fn shape_input(
+    ui: &Ui,
+    response: &egui::Response,
+    state: &mut DocState,
+    tool: Tool,
+    options: crate::state::ShapeOptions,
+    color: [u8; 3],
+    ppp: f32,
+) {
+    if response.drag_started_by(PointerButton::Primary)
+        && let Some(p) = ui.input(|i| i.pointer.press_origin())
+    {
+        let start = to_doc(state, p, ppp);
+        state.shape_drag = Some((start, start));
+    }
+    let Some((start, _)) = state.shape_drag else {
+        return;
+    };
+    if let Some(p) = ui.input(|i| i.pointer.interact_pos()) {
+        state.shape_drag = Some((start, to_doc(state, p, ppp)));
+    }
+    if response.drag_stopped() || !ui.input(|i| i.pointer.primary_down()) {
+        let (s, e) = state.shape_drag.take().expect("checked");
+        let mods = ui.input(|i| i.modifiers);
+        let (a, b) = shape_points(tool, s, e, mods);
+        let kind = shape_kind(tool, options);
+        if op_core::shape::add_shape_layer(
+            &mut state.doc,
+            kind,
+            (a.x, a.y),
+            (b.x, b.y),
+            options.weight,
+            color,
+        )
+        .is_some()
+        {
+            state.record(&format!("{} Tool", kind.layer_name()));
+        }
+    } else {
+        ui.ctx().request_repaint();
+    }
+}
+
 /// Snaps the end of a drag from `a` to a multiple of 45°, keeping its
 /// length (Shift while dragging a gradient).
 fn snap_45(a: Pos2, b: Pos2) -> Pos2 {
@@ -1063,7 +1148,16 @@ fn brush_cursor(ui: &Ui, canvas: Rect, center: Pos2, diameter: f32) {
 }
 
 /// Marching ants around the selection and the marquee being dragged.
-fn draw_selection(ui: &Ui, state: &mut DocState, canvas: Rect, ppp: f32, tool: Tool) {
+/// The selection's marching ants and the outlines of drags in progress
+/// (marquee, lasso, shape, gradient).
+fn draw_selection(
+    ui: &Ui,
+    state: &mut DocState,
+    canvas: Rect,
+    ppp: f32,
+    tool: Tool,
+    shape: crate::state::ShapeOptions,
+) {
     let painter = ui.painter_at(canvas);
     let time = ui.input(|i| i.time);
     // Ants march by one dash every 1/8 s
@@ -1127,6 +1221,49 @@ fn draw_selection(ui: &Ui, state: &mut DocState, canvas: Rect, ppp: f32, tool: T
                 ants(a, b);
             }
         }
+    }
+    // A shape being dragged: its outline as a thin blue path
+    if let Some((s, e)) = state.shape_drag {
+        let mods = ui.input(|i| i.modifiers);
+        let (a, b) = shape_points(tool, s, e, mods);
+        let (a, b) = (to_screen(state, a, ppp), to_screen(state, b, ppp));
+        let r = Rect::from_two_pos(a, b);
+        let blue = egui::Stroke::new(1.0, Color32::from_rgb(0x2c, 0x8b, 0xe8));
+        let painter = ui.painter_at(canvas);
+        let outline: Vec<Pos2> = match tool {
+            Tool::Line => vec![a, b],
+            Tool::Ellipse => (0..=96)
+                .map(|i| {
+                    let t = i as f32 / 96.0 * std::f32::consts::TAU;
+                    r.center() + Vec2::new(t.cos() * r.width() / 2.0, t.sin() * r.height() / 2.0)
+                })
+                .collect(),
+            Tool::Triangle => vec![
+                r.center_top(),
+                r.right_bottom(),
+                r.left_bottom(),
+                r.center_top(),
+            ],
+            Tool::Polygon => {
+                let n = shape.sides.max(3);
+                (0..=n)
+                    .map(|k| {
+                        let t = -std::f32::consts::FRAC_PI_2
+                            + k as f32 * std::f32::consts::TAU / n as f32;
+                        r.center()
+                            + Vec2::new(t.cos() * r.width() / 2.0, t.sin() * r.height() / 2.0)
+                    })
+                    .collect()
+            }
+            _ => vec![
+                r.left_top(),
+                r.right_top(),
+                r.right_bottom(),
+                r.left_bottom(),
+                r.left_top(),
+            ],
+        };
+        painter.add(egui::Shape::line(outline, blue));
     }
     // The gradient's direction while dragging: a line with a dot at each end
     if let Some((a, b)) = state.gradient_drag {

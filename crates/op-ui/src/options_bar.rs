@@ -124,8 +124,68 @@ fn tool_options(ui: &mut Ui, app: &mut AppState) {
         Tool::Eyedropper => eyedropper_options(ui, app),
         Tool::Gradient => gradient_options(ui, app),
         Tool::Crop => crop_options(ui, app),
+        Tool::Rectangle | Tool::Ellipse | Tool::Triangle | Tool::Polygon | Tool::Line => {
+            shape_options(ui, app)
+        }
         Tool::MagicWand => wand_options(ui, app),
         Tool::Hand | Tool::Zoom => view_options(ui, app),
+        _ => {}
+    }
+}
+
+/// Shape tools: the mode (Shape, the only one), Fill (the foreground
+/// color) and Stroke (none), plus the Polygon's sides or the Line's weight.
+fn shape_options(ui: &mut Ui, app: &mut AppState) {
+    ui.add_enabled_ui(false, |ui| {
+        egui::ComboBox::from_id_salt("shape-mode")
+            .width(80.0)
+            .selected_text("Shape")
+            .show_ui(ui, |_| {});
+    });
+    ui.add_space(8.0);
+    ui.label("Fill:");
+    let [r, g, b, _] = app.foreground.to_rgba8();
+    let (swatch, _) = ui.allocate_exact_size(Vec2::new(26.0, 26.0), Sense::hover());
+    ui.painter().rect(
+        swatch,
+        2,
+        egui::Color32::from_rgb(r, g, b),
+        egui::Stroke::new(1.0, color::SEPARATOR),
+        egui::StrokeKind::Outside,
+    );
+    ui.add_space(8.0);
+    ui.label("Stroke:");
+    let (none, _) = ui.allocate_exact_size(Vec2::new(26.0, 26.0), Sense::hover());
+    ui.painter().rect(
+        none,
+        2,
+        egui::Color32::WHITE,
+        egui::Stroke::new(1.0, color::SEPARATOR),
+        egui::StrokeKind::Outside,
+    );
+    // "No color": a red diagonal
+    ui.painter().line_segment(
+        [none.left_bottom(), none.right_top()],
+        egui::Stroke::new(2.0, egui::Color32::from_rgb(0xe0, 0x30, 0x30)),
+    );
+    widgets::vseparator(ui, 34.0);
+    match app.tool {
+        Tool::Polygon => {
+            widgets::icon(ui, icons::POLYGON, 16.0, color::ICON);
+            ui.add_sized(
+                [48.0, size::FIELD_HEIGHT],
+                egui::DragValue::new(&mut app.shape.sides).range(3..=100),
+            );
+        }
+        Tool::Line => {
+            ui.label("Weight:");
+            ui.add_sized(
+                [64.0, size::FIELD_HEIGHT],
+                egui::DragValue::new(&mut app.shape.weight)
+                    .range(1.0..=1000.0)
+                    .suffix(" px"),
+            );
+        }
         _ => {}
     }
 }

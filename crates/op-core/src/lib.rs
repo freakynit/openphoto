@@ -19,6 +19,7 @@ pub mod move_tool;
 pub mod paint;
 pub mod pixel;
 pub mod selection;
+pub mod shape;
 pub mod tile;
 pub mod transform;
 

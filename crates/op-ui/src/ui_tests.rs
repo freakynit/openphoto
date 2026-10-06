@@ -1336,3 +1336,31 @@ fn active_canvas_pixel(h: &mut Harness<'_, OpenPhotoApp>, x: u32, y: u32) -> [u8
     let i = ((y * img.width + x) * 4) as usize;
     img.pixels[i..i + 4].try_into().unwrap()
 }
+
+#[test]
+fn shape_tools_make_layers() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.state_mut().state.foreground = Color::from_rgba8([0, 128, 255, 255]);
+    h.key_press(egui::Key::U);
+    h.run_steps(2);
+    assert_eq!(h.state().state.tool, op_tools::Tool::Rectangle);
+    let (a, b) = (doc_point(&h, 100.0, 100.0), doc_point(&h, 300.0, 200.0));
+    drag(&mut h, a, b, Modifiers::NONE);
+    assert_eq!(layer_names(&h), ["Background", "Rectangle 1"]);
+    assert_eq!(last_history(&h), "Rectangle Tool");
+    assert_eq!(composite_pixel(&mut h, 200, 150), [0, 128, 255, 255]);
+    assert_eq!(composite_pixel(&mut h, 350, 150), [0x14, 0x14, 0x14, 255]);
+
+    // Shift+U: the Ellipse; Alt draws it around the press point
+    h.key_press_modifiers(Modifiers::SHIFT, egui::Key::U);
+    h.run_steps(2);
+    assert_eq!(h.state().state.tool, op_tools::Tool::Ellipse);
+    let (c, d) = (doc_point(&h, 500.0, 500.0), doc_point(&h, 560.0, 560.0));
+    drag(&mut h, c, d, Modifiers::ALT);
+    assert_eq!(layer_names(&h), ["Background", "Rectangle 1", "Ellipse 1"]);
+    // The ellipse spans about 440..560 around (500, 500)
+    assert_eq!(composite_pixel(&mut h, 450, 500), [0, 128, 255, 255]);
+    assert_eq!(composite_pixel(&mut h, 445, 445), [0x14, 0x14, 0x14, 255]);
+    shot(&mut h, "shapes");
+}
