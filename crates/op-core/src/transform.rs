@@ -1,8 +1,9 @@
 //! Edit > Free Transform and Edit > Transform: moving, scaling, rotating
-//! and flipping the active layer's pixels (or the selected pixels) by an
+//! and flipping the selected and linked layers (or the selected pixels) by an
 //! affine transform, resampled bilinearly.
 
 use crate::document::Document;
+use crate::layer::LayerId;
 use crate::selection::Selection;
 use crate::tile::TiledImage;
 
@@ -129,9 +130,35 @@ impl TransformError {
     }
 }
 
+/// The pixel layers a transform changes: with a selection, the active
+/// layer (or the layers in the active group); without one, also the other
+/// selected layers and the layers linked to them, as in Photoshop, leaving
+/// out those that are hidden, locked or the background.
+fn targets(doc: &Document) -> Vec<LayerId> {
+    let Some(active) = doc.active_layer else {
+        return Vec::new();
+    };
+    if doc.selection().is_some() {
+        return doc.pixel_layers(&[active]);
+    }
+    doc.pixel_layers(&crate::link::with_linked(doc))
+        .into_iter()
+        .filter(|&id| {
+            id == active
+                || doc.layer(id).is_some_and(|l| {
+                    doc.is_shown(id)
+                        && !l.is_background
+                        && !l.pixels_locked()
+                        && !l.position_locked()
+                })
+        })
+        .collect()
+}
+
 /// What a transform acts on, as (x0, y0, x1, y1): the selection's bounds,
-/// or the active layer's non-transparent pixels. Also checks that the layer
-/// can be transformed: the background only with a selection.
+/// or the box around the target layers' non-transparent pixels. Also checks
+/// that the active layer can be transformed: the background only with a
+/// selection.
 pub fn bounds(doc: &Document) -> Result<(f32, f32, f32, f32), TransformError> {
     let layer = doc
         .active_layer
@@ -147,18 +174,18 @@ pub fn bounds(doc: &Document) -> Result<(f32, f32, f32, f32), TransformError> {
     {
         return Err(TransformError::Locked);
     }
-    // A group transforms all its layers: the box is around their pixels
-    let Some(image) = layer.image() else {
-        if selection.is_some() {
-            return Err(TransformError::Empty);
-        }
-        let (x0, y0, x1, y1) = doc
-            .pixel_layers(&[layer.id])
+    // Without a selection the box is around all the target layers' pixels
+    // (a group's layers, the other selected and the linked layers)
+    if selection.is_none() {
+        let (x0, y0, x1, y1) = targets(doc)
             .into_iter()
             .filter_map(|p| doc.layer(p)?.image()?.content_bounds())
             .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
             .ok_or(TransformError::Empty)?;
         return Ok((x0 as f32, y0 as f32, x1 as f32, y1 as f32));
+    }
+    let Some(image) = layer.image() else {
+        return Err(TransformError::Empty);
     };
     let (w, h) = (doc.width, doc.height);
     let b = match selection {
@@ -219,10 +246,8 @@ pub fn transform(doc: &mut Document, m: Affine, background: [u8; 3]) -> Result<(
     let inverse = m.inverse().ok_or(TransformError::Empty)?;
     let selection = doc.selection().cloned();
     let (cw, ch) = (doc.width as i64, doc.height as i64);
-    let active = doc.active_layer.expect("checked");
-    // A group: every pixel layer in it, with the same map
-    let targets = doc.pixel_layers(&[active]);
-    for id in targets {
+    // Every target layer, with the same map
+    for id in targets(doc) {
         let layer = doc.layer_mut(id).expect("checked");
         let is_background = layer.is_background;
         let Some(image) = layer.image_mut() else {
@@ -399,6 +424,41 @@ mod tests {
         assert_eq!(bounds(&d), Err(TransformError::Locked));
         d.set_selection(Some(Selection::rect(6, 6, Rect::new(0.0, 0.0, 4.0, 4.0))));
         assert_eq!(bounds(&d), Ok((0.0, 0.0, 4.0, 4.0)));
+    }
+
+    /// Layer 1 and a second layer selected, a third linked to the second
+    /// and a fourth locked but linked: the box spans the three movable
+    /// ones and they move together; the locked one stays.
+    #[test]
+    fn selected_and_linked_layers_transform_together() {
+        let mut d = doc();
+        let one = d.layers[1].id;
+        let dot = |d: &mut Document, x: u32, y: u32| {
+            let mut image = TiledImage::new(6, 6);
+            image.set_pixel(x, y, [0, 0, 255, 255]);
+            let id = d.new_layer_id();
+            d.layers.push(Layer::raster(id, "dot", image));
+            id
+        };
+        let two = dot(&mut d, 4, 4);
+        let three = dot(&mut d, 5, 0);
+        let locked = dot(&mut d, 0, 5);
+        d.layer_mut(locked).unwrap().lock_position = true;
+        d.set_selected_layers(vec![two, three, locked]);
+        crate::link::link_selected(&mut d);
+        d.set_selected_layers(vec![two, one]);
+        assert_eq!(bounds(&d).unwrap(), (1.0, 0.0, 6.0, 5.0));
+        transform(&mut d, Affine::translate(0.0, 1.0), [255; 3]).unwrap();
+        let px = |d: &Document, id, x, y| d.layer(id).unwrap().image().unwrap().pixel(x, y);
+        assert_eq!(px(&d, one, 1, 2), [255, 0, 0, 255]);
+        assert_eq!(px(&d, two, 4, 5), [0, 0, 255, 255]);
+        assert_eq!(px(&d, three, 5, 1), [0, 0, 255, 255]);
+        assert_eq!(px(&d, locked, 0, 5), [0, 0, 255, 255]);
+        // With a selection only the active layer's selected pixels move
+        d.set_selection(Some(Selection::rect(6, 6, Rect::new(0.0, 0.0, 6.0, 6.0))));
+        transform(&mut d, Affine::translate(0.0, -1.0), [255; 3]).unwrap();
+        assert_eq!(px(&d, one, 1, 1), [255, 0, 0, 255]);
+        assert_eq!(px(&d, two, 4, 5), [0, 0, 255, 255]);
     }
 
     #[test]
