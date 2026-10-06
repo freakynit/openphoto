@@ -6,6 +6,7 @@
 mod actions;
 mod commands;
 mod dialogs;
+mod doc_tabs;
 mod document_view;
 mod icons;
 #[cfg(target_os = "macos")]
@@ -23,16 +24,13 @@ mod ui_tests;
 
 use std::path::PathBuf;
 
-use egui::{Frame, Margin, Stroke};
-use egui_dock::{DockArea, DockState, TabViewer};
-use op_core::DocId;
+use egui::Frame;
 
 use state::AppState;
 use theme::{color, size};
 
 pub struct OpenPhotoApp {
     state: AppState,
-    dock: DockState<DocId>,
     panels: panels::Panels,
     /// The native menu bar; `None` in headless tests.
     #[cfg(target_os = "macos")]
@@ -63,66 +61,16 @@ impl OpenPhotoApp {
 
         let mut app = Self {
             state: AppState::default(),
-            dock: DockState::new(Vec::new()),
             panels: panels::Panels::default(),
             #[cfg(target_os = "macos")]
             menu: None,
         };
         if files.is_empty() {
-            actions::new_document(&mut app.state, &mut app.dock);
+            actions::new_document(&mut app.state);
         } else {
-            actions::open_paths(&mut app.state, &mut app.dock, files);
+            actions::open_paths(&mut app.state, files);
         }
         app
-    }
-
-    fn dock_style(&self, ui: &egui::Ui) -> egui_dock::Style {
-        let mut s = egui_dock::Style::from_egui(ui.style());
-        s.main_surface_border_stroke = Stroke::NONE;
-        s.dock_area_padding = None;
-        s.tab_bar.bg_fill = color::TAB_BAR;
-        s.tab_bar.height = size::DOC_TAB_BAR;
-        s.tab_bar.hline_color = color::TAB_BAR;
-        s.tab_bar.corner_radius = 0.into();
-        s.tab.spacing = 0.0;
-        s.tab.hline_below_active_tab_name = false;
-        s.tab.tab_body.bg_fill = color::PASTEBOARD;
-        s.tab.tab_body.stroke = Stroke::NONE;
-        s.tab.tab_body.inner_margin = Margin::ZERO;
-        s.tab.tab_body.corner_radius = 0.into();
-        for (style, fill, text) in [
-            (&mut s.tab.active, color::TAB_ACTIVE, color::TEXT),
-            (&mut s.tab.focused, color::TAB_ACTIVE, color::TEXT),
-            (
-                &mut s.tab.active_with_kb_focus,
-                color::TAB_ACTIVE,
-                color::TEXT,
-            ),
-            (
-                &mut s.tab.focused_with_kb_focus,
-                color::TAB_ACTIVE,
-                color::TEXT,
-            ),
-            (&mut s.tab.inactive, color::TAB_BAR, color::TEXT_DIM),
-            (
-                &mut s.tab.inactive_with_kb_focus,
-                color::TAB_BAR,
-                color::TEXT_DIM,
-            ),
-            (&mut s.tab.hovered, color::TAB_INACTIVE, color::TEXT),
-        ] {
-            style.bg_fill = fill;
-            style.text_color = text;
-            style.outline_color = color::SEPARATOR;
-            style.corner_radius = 0.into();
-        }
-        s.buttons.close_tab_color = color::TEXT_DIM;
-        s.buttons.close_tab_active_color = color::TEXT;
-        s.buttons.close_tab_bg_fill = color::HOVER;
-        s.separator.color_idle = color::SEPARATOR;
-        s.separator.width = 2.0;
-        s.overlay.selection_color = color::ACCENT.gamma_multiply(0.4);
-        s
     }
 }
 
@@ -142,7 +90,7 @@ impl OpenPhotoApp {
         #[cfg(not(target_os = "macos"))]
         let commands = commands::from_shortcuts(ctx);
         for command in commands {
-            commands::run(command, ctx, &mut self.state, &mut self.dock);
+            commands::run(command, ctx, &mut self.state);
         }
     }
 
@@ -237,55 +185,6 @@ impl OpenPhotoApp {
     }
 }
 
-struct DocTabs<'a> {
-    state: &'a mut AppState,
-}
-
-impl TabViewer for DocTabs<'_> {
-    type Tab = DocId;
-
-    fn id(&mut self, tab: &mut DocId) -> egui::Id {
-        egui::Id::new(("doc", tab.0))
-    }
-
-    fn title(&mut self, tab: &mut DocId) -> egui::WidgetText {
-        let Some(s) = self.state.docs.get(tab) else {
-            return "".into();
-        };
-        let d = &s.doc;
-        let text = format!(
-            "{} @ {} ({}/{})",
-            d.title,
-            document_view::zoom_label(s.view.zoom),
-            d.color_mode.short(),
-            d.bit_depth.bits()
-        );
-        egui::RichText::new(text)
-            .font(theme::semibold(theme::font::BODY))
-            .into()
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, tab: &mut DocId) {
-        document_view::show(ui, self.state, *tab);
-    }
-
-    fn on_close(&mut self, tab: &mut DocId) -> egui_dock::widgets::tab_viewer::OnCloseResponse {
-        self.state.docs.remove(tab);
-        if self.state.active_doc == Some(*tab) {
-            self.state.active_doc = None;
-        }
-        egui_dock::widgets::tab_viewer::OnCloseResponse::Close
-    }
-
-    fn scroll_bars(&self, _tab: &DocId) -> [bool; 2] {
-        [false, false]
-    }
-
-    fn allowed_in_windows(&self, _tab: &mut DocId) -> bool {
-        false
-    }
-}
-
 impl eframe::App for OpenPhotoApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -299,7 +198,7 @@ impl eframe::App for OpenPhotoApp {
                 .collect()
         });
         if !dropped.is_empty() {
-            actions::open_paths(&mut self.state, &mut self.dock, dropped);
+            actions::open_paths(&mut self.state, dropped);
         }
         self.run_commands(&ctx);
         actions::handle_tool_keys(&ctx, &mut self.state);
@@ -308,27 +207,32 @@ impl eframe::App for OpenPhotoApp {
 
         if cfg!(target_os = "macos") {
             egui::Panel::top("titlebar")
+                .show_separator_line(false)
                 .exact_size(size::TITLE_BAR)
                 .resizable(false)
                 .frame(bar_frame)
                 .show(ui, titlebar::show);
         }
         egui::Panel::top("options-bar")
+            .show_separator_line(false)
             .exact_size(size::OPTIONS_BAR)
             .resizable(false)
             .frame(bar_frame)
             .show(ui, |ui| options_bar::show(ui, &mut self.state));
         egui::Panel::left("toolbar")
+            .show_separator_line(false)
             .exact_size(size::TOOLBAR)
             .resizable(false)
             .frame(bar_frame)
             .show(ui, |ui| toolbar::show(ui, &mut self.state));
         egui::Panel::right("panels")
+            .show_separator_line(false)
             .exact_size(size::PANEL_COLUMN)
             .resizable(false)
             .frame(bar_frame)
             .show(ui, |ui| self.panels.show(ui, &mut self.state));
         let strip = egui::Panel::right("icon-strip")
+            .show_separator_line(false)
             .exact_size(size::ICON_STRIP)
             .resizable(false)
             .frame(bar_frame)
@@ -338,32 +242,24 @@ impl eframe::App for OpenPhotoApp {
         egui::CentralPanel::no_frame()
             .frame(Frame::NONE.fill(color::PASTEBOARD))
             .show(ui, |ui| {
-                if self.dock.iter_all_tabs().next().is_none() {
+                let area = ui.max_rect();
+                if self.state.doc_order.is_empty() {
                     return;
                 }
-                let style = self.dock_style(ui);
-                DockArea::new(&mut self.dock)
-                    .style(style)
-                    .show_add_buttons(false)
-                    .show_leaf_collapse_buttons(false)
-                    .show_leaf_close_all_buttons(false)
-                    .show_inside(
-                        ui,
-                        &mut DocTabs {
-                            state: &mut self.state,
-                        },
-                    );
+                let tabs =
+                    egui::Rect::from_min_size(area.min, egui::vec2(area.width(), doc_tabs::HEIGHT));
+                doc_tabs::show(ui, &mut self.state, tabs);
+                doc_tabs::ensure_active(&mut self.state);
+                let view =
+                    egui::Rect::from_min_max(egui::pos2(area.left(), tabs.bottom()), area.max);
+                if let Some(id) = self.state.active_doc {
+                    let mut child =
+                        ui.new_child(egui::UiBuilder::new().max_rect(view).id_salt(("doc", id.0)));
+                    child.set_clip_rect(view);
+                    document_view::show(&mut child, &mut self.state, id);
+                }
             });
-
-        if let Some((_, tab)) = self.dock.find_active_focused() {
-            self.state.active_doc = Some(*tab);
-        } else if self
-            .state
-            .active_doc
-            .is_none_or(|id| !self.state.docs.contains_key(&id))
-        {
-            self.state.active_doc = self.dock.iter_all_tabs().next().map(|(_, id)| *id);
-        }
+        doc_tabs::ensure_active(&mut self.state);
 
         if self.state.history_open {
             self.history_popout(&ctx, strip_rect, history_button);

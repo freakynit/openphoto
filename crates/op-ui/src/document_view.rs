@@ -1,11 +1,11 @@
 //! Document window: the canvas (zoom/pan/tool input) and the status bar.
 
-use egui::{Align2, CursorIcon, Key, PointerButton, Pos2, Rect, Sense, Ui, Vec2};
+use egui::{Align2, Color32, CursorIcon, Key, PointerButton, Pos2, Rect, Sense, Ui, Vec2};
 use op_core::DocId;
 use op_tools::Tool;
 
 use crate::state::{AppState, DocState};
-use crate::theme::{self, color, size};
+use crate::theme::{self, color, pt, size};
 
 /// Photoshop's preset zoom levels, in percent.
 const ZOOM_STEPS: &[f32] = &[
@@ -83,14 +83,18 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
     let full = ui.max_rect();
     ui.painter().rect_filled(full, 0, color::PASTEBOARD);
 
-    let (canvas_rect, status_rect) = {
-        let mut c = full;
-        c.max.y -= size::STATUS_BAR;
-        (
-            c,
-            Rect::from_min_max(Pos2::new(full.min.x, c.max.y), full.max),
-        )
-    };
+    // Photoshop's document window: canvas, a vertical scrollbar column on
+    // the right, and the status bar (with the horizontal scrollbar) below
+    let status_rect = Rect::from_min_max(
+        Pos2::new(full.left(), full.bottom() - size::STATUS_BAR),
+        full.max,
+    );
+    let vscroll_rect = Rect::from_min_max(
+        Pos2::new(full.right() - VSCROLL_W, full.top()),
+        Pos2::new(full.right(), status_rect.top()),
+    );
+    let canvas_rect =
+        Rect::from_min_max(full.min, Pos2::new(vscroll_rect.left(), status_rect.top()));
 
     // Layout may not be settled in the first frames; pick the initial zoom only
     // once the viewport size is the same for two consecutive frames
@@ -160,6 +164,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
     }
 
     let state = app.docs.get_mut(&id).unwrap();
+    clamp_offset(state, ppp);
     if response.hovered() {
         let cursor = if panning || middle_drag {
             if response.dragged() {
@@ -198,25 +203,115 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
         .with_clip_rect(canvas_rect)
         .add(op_render::paint_callback(canvas_rect, image, view));
 
-    status_bar(ui, state, status_rect);
+    status_bar(ui, state, status_rect, ppp);
+    vertical_scrollbar(ui, state, vscroll_rect, ppp);
 }
 
-fn status_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) {
+/// Width of the vertical scrollbar column, and the status bar's layout.
+const VSCROLL_W: f32 = pt(17.0);
+const ZOOM_BOX_W: f32 = pt(60.0);
+const INFO_X: f32 = pt(89.0);
+const CARET_X: f32 = pt(237.0);
+const HSCROLL_X: f32 = pt(243.0);
+const TRACK: Color32 = Color32::from_gray(0x4a);
+const THUMB: Color32 = Color32::from_gray(0x69);
+const THUMB_THICKNESS: f32 = pt(10.0);
+const VTHUMB_THICKNESS: f32 = pt(12.0);
+
+/// The scrollable extent along one axis: the document plus one viewport, so
+/// the document's edge can be scrolled to the middle of the window. Returns
+/// (visible start, visible length) as fractions of the extent.
+fn scroll_fraction(doc_pt: f32, viewport: f32, offset: f32) -> (f32, f32) {
+    let extent = doc_pt + viewport;
+    ((doc_pt / 2.0 - offset) / extent, viewport / extent)
+}
+
+/// Keeps the document's edge from being scrolled past the middle of the
+/// viewport (the same extent the scrollbars show).
+fn clamp_offset(state: &mut DocState, ppp: f32) {
+    let size = doc_size_pt(state, state.view.zoom, ppp);
+    let o = &mut state.view.offset;
+    o.x = o.x.clamp(-size.x / 2.0, size.x / 2.0);
+    o.y = o.y.clamp(-size.y / 2.0, size.y / 2.0);
+}
+
+/// Draws a scrollbar thumb in `track` and returns the drag, as a change of
+/// the visible start in fractions of the extent.
+fn scrollbar(
+    ui: &mut Ui,
+    track: Rect,
+    vertical: bool,
+    (start, len): (f32, f32),
+    thickness: f32,
+    id: &str,
+) -> f32 {
+    let along = |r: Rect| if vertical { r.height() } else { r.width() };
+    let length = along(track);
+    let t0 = start.clamp(0.0, 1.0 - len.min(1.0)) * length;
+    let t1 = t0 + len.min(1.0) * length;
+    let thumb = if vertical {
+        Rect::from_min_max(
+            Pos2::new(track.center().x - thickness / 2.0, track.top() + t0),
+            Pos2::new(track.center().x + thickness / 2.0, track.top() + t1),
+        )
+    } else {
+        Rect::from_min_max(
+            Pos2::new(track.left() + t0, track.center().y - thickness / 2.0),
+            Pos2::new(track.left() + t1, track.center().y + thickness / 2.0),
+        )
+    };
+    let response = ui.interact(thumb, ui.id().with(id), Sense::drag());
+    ui.painter().rect_filled(
+        thumb,
+        egui::CornerRadius::same((thickness / 2.0) as u8),
+        THUMB,
+    );
+    if response.dragged() && length > 0.0 {
+        let d = response.drag_delta();
+        (if vertical { d.y } else { d.x }) / length
+    } else {
+        0.0
+    }
+}
+
+fn vertical_scrollbar(ui: &mut Ui, state: &mut DocState, column: Rect, ppp: f32) {
+    let painter = ui.painter();
+    painter.rect_filled(column, 0, TRACK);
+    // 1 pt edges: the canvas border, then a lighter and a darker line
+    let edge = |x: f32, c: u8| {
+        let r = Rect::from_min_max(
+            Pos2::new(x, column.top()),
+            Pos2::new(x + pt(1.0), column.bottom()),
+        );
+        painter.rect_filled(r, 0, Color32::from_gray(c));
+    };
+    edge(column.left(), 0x2e);
+    edge(column.left() + pt(1.0), 0x46);
+    edge(column.right() - pt(1.0), 0x45);
+
+    let doc = doc_size_pt(state, state.view.zoom, ppp);
+    let fraction = scroll_fraction(doc.y, state.view.viewport.height(), state.view.offset.y);
+    let extent = doc.y + state.view.viewport.height();
+    let track = column.shrink2(Vec2::new(0.0, pt(1.0)));
+    let d = scrollbar(ui, track, true, fraction, VTHUMB_THICKNESS, "vscroll");
+    state.view.offset.y -= d * extent;
+    clamp_offset(state, ppp);
+}
+
+/// Photoshop's status bar: zoom box, document info, the info menu caret,
+/// then the horizontal scrollbar filling the rest.
+fn status_bar(ui: &mut Ui, state: &mut DocState, rect: Rect, ppp: f32) {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0, color::PANEL);
-    painter.line_segment(
-        [rect.left_top(), rect.right_top()],
-        egui::Stroke::new(1.0, color::SEPARATOR),
-    );
+    let line = Rect::from_min_max(rect.min, Pos2::new(rect.right(), rect.top() + pt(1.0)));
+    painter.rect_filled(line, 0, Color32::from_gray(0x44));
+    let body = Rect::from_min_max(Pos2::new(rect.left(), line.bottom()), rect.max);
 
-    let zoom_rect = Rect::from_min_size(
-        rect.min + Vec2::new(10.0, 3.0),
-        Vec2::new(64.0, rect.height() - 6.0),
-    );
-    painter.rect_filled(zoom_rect, 2, color::FIELD);
+    let zoom_rect = Rect::from_min_size(body.min, Vec2::new(ZOOM_BOX_W, body.height()));
+    painter.rect_filled(zoom_rect, 0, Color32::from_gray(0x41));
     painter.text(
-        zoom_rect.left_center() + Vec2::new(8.0, 0.0),
-        Align2::LEFT_CENTER,
+        zoom_rect.center(),
+        Align2::CENTER_CENTER,
         zoom_label(state.view.zoom),
         theme::body(),
         color::TEXT,
@@ -229,18 +324,34 @@ fn status_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) {
         doc.height,
         doc.resolution.round()
     );
-    let info_rect = painter.text(
-        Pos2::new(zoom_rect.right() + 20.0, rect.center().y),
+    painter.text(
+        Pos2::new(body.left() + INFO_X, body.center().y),
         Align2::LEFT_CENTER,
         info,
         theme::body(),
         color::TEXT_DIM,
     );
     painter.text(
-        Pos2::new(info_rect.right() + 40.0, rect.center().y),
-        Align2::LEFT_CENTER,
+        Pos2::new(body.left() + CARET_X, body.center().y),
+        Align2::CENTER_CENTER,
         crate::icons::CARET_RIGHT,
-        theme::icon(14.0),
+        theme::icon(pt(9.0)),
         color::TEXT_DIM,
     );
+
+    // The horizontal scrollbar stops where the vertical one's column starts;
+    // the corner below that column stays panel-colored
+    let track = Rect::from_min_max(
+        Pos2::new(body.left() + HSCROLL_X, body.top()),
+        Pos2::new(body.right() - VSCROLL_W, body.bottom()),
+    );
+    if track.width() > 0.0 {
+        painter.rect_filled(track, 0, TRACK);
+        let doc = doc_size_pt(state, state.view.zoom, ppp);
+        let fraction = scroll_fraction(doc.x, state.view.viewport.width(), state.view.offset.x);
+        let extent = doc.x + state.view.viewport.width();
+        let d = scrollbar(ui, track, false, fraction, THUMB_THICKNESS, "hscroll");
+        state.view.offset.x -= d * extent;
+        clamp_offset(state, ppp);
+    }
 }

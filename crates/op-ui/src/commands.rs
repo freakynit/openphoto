@@ -2,8 +2,6 @@
 //! [`Command`], which is executed in one place.
 
 use egui::{Key, Modifiers};
-use egui_dock::DockState;
-use op_core::DocId;
 
 use crate::actions;
 use crate::document_view;
@@ -203,17 +201,17 @@ pub fn from_shortcuts(ctx: &egui::Context) -> Vec<Command> {
     out
 }
 
-pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState, dock: &mut DockState<DocId>) {
+pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
     if !command.enabled(app) {
         return;
     }
     let ppp = ctx.pixels_per_point();
     match command {
-        Command::New => actions::new_document(app, dock),
-        Command::Open => actions::open_dialog(app, dock),
-        Command::Close => actions::close_active(app, dock),
-        Command::CloseAll => actions::close_all(app, dock),
-        Command::CloseOthers => actions::close_others(app, dock),
+        Command::New => actions::new_document(app),
+        Command::Open => actions::open_dialog(app),
+        Command::Close => actions::close_active(app),
+        Command::CloseAll => actions::close_all(app),
+        Command::CloseOthers => actions::close_others(app),
         Command::ExportAs => actions::export_dialog(app),
         Command::ToggleHistory => app.history_open = !app.history_open,
         Command::CanvasSize => {

@@ -14,7 +14,6 @@ op-tools.workspace = true
 
 eframe.workspace = true
 egui.workspace = true
-egui_dock.workspace = true
 egui-phosphor.workspace = true
 rfd.workspace = true
 log.workspace = true
@@ -23,4 +22,5 @@ log.workspace = true
 muda = { version = "0.21", default-features = false }
 
 [dev-dependencies]
+image.workspace = true
 egui_kittest = { version = "0.36", features = ["wgpu", "snapshot", "eframe"] }

@@ -219,6 +219,29 @@ fn placeholder(ui: &mut Ui, kind: PanelKind) {
 /// The icon column between the canvas and the panels (collapsed History, Comments, ...).
 /// Returns the rect of the History button, which the History popout is anchored to.
 pub fn icon_strip(ui: &mut Ui, app: &mut AppState) -> Rect {
+    use crate::theme::pt;
+    // Photoshop: a 3 pt dark border on the left (next to the document's
+    // scrollbar) and a 5 pt divider on the right (next to the panels)
+    let full = ui.max_rect();
+    let painter = ui.painter();
+    painter.rect_filled(
+        Rect::from_min_max(full.min, Pos2::new(full.left() + pt(3.0), full.bottom())),
+        0,
+        egui::Color32::from_gray(0x3f),
+    );
+    let divider = Rect::from_min_max(Pos2::new(full.right() - pt(5.0), full.top()), full.max);
+    painter.rect_filled(divider, 0, egui::Color32::from_gray(0x4d));
+    painter.rect_filled(
+        divider.shrink2(Vec2::new(pt(1.0), 0.0)),
+        0,
+        egui::Color32::from_gray(0x41),
+    );
+    let content = Rect::from_min_max(
+        Pos2::new(full.left() + pt(3.0), full.top()),
+        Pos2::new(full.right() - pt(5.0), full.bottom()),
+    );
+    let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(content));
+    let ui = &mut inner;
     crate::toolbar::header(ui, icons::CARET_DOUBLE_LEFT, Align2::RIGHT_CENTER);
     ui.add_space(4.0);
     let history = ui.vertical_centered(|ui| {

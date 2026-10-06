@@ -3,24 +3,15 @@
 use std::path::PathBuf;
 
 use egui::Key;
-use egui_dock::DockState;
-use op_core::{Color, DocId, Document};
+use op_core::{Color, Document};
 use op_tools::Tool;
 
-use crate::state::{AppState, DocState};
+use crate::state::AppState;
 
-/// `initial` names the document's first history state ("Open" or "New").
-pub fn add_document(app: &mut AppState, dock: &mut DockState<DocId>, doc: Document, initial: &str) {
-    let id = doc.id;
-    app.docs.insert(id, DocState::new(doc, initial));
-    dock.push_to_focused_leaf(id);
-    app.active_doc = Some(id);
-}
-
-pub fn open_paths(app: &mut AppState, dock: &mut DockState<DocId>, paths: Vec<PathBuf>) {
+pub fn open_paths(app: &mut AppState, paths: Vec<PathBuf>) {
     for path in paths {
         match op_io::open(&path) {
-            Ok(doc) => add_document(app, dock, doc, "Open"),
+            Ok(doc) => app.add_document(doc, "Open"),
             Err(e) => {
                 log::error!("{}: {e}", path.display());
                 app.alert = Some(format!("Could not open “{}”: {e}", path.display()));
@@ -29,16 +20,16 @@ pub fn open_paths(app: &mut AppState, dock: &mut DockState<DocId>, paths: Vec<Pa
     }
 }
 
-pub fn open_dialog(app: &mut AppState, dock: &mut DockState<DocId>) {
+pub fn open_dialog(app: &mut AppState) {
     let paths = rfd::FileDialog::new()
         .add_filter("Images", op_io::OPEN_EXTENSIONS)
         .pick_files();
     if let Some(paths) = paths {
-        open_paths(app, dock, paths);
+        open_paths(app, paths);
     }
 }
 
-pub fn new_document(app: &mut AppState, dock: &mut DockState<DocId>) {
+pub fn new_document(app: &mut AppState) {
     app.untitled_counter += 1;
     let doc = Document::new_with_background(
         format!("Untitled-{}", app.untitled_counter),
@@ -46,7 +37,7 @@ pub fn new_document(app: &mut AppState, dock: &mut DockState<DocId>) {
         1080,
         Color::WHITE,
     );
-    add_document(app, dock, doc, "New");
+    app.add_document(doc, "New");
 }
 
 pub fn export_dialog(app: &mut AppState) {
@@ -71,43 +62,25 @@ pub fn export_dialog(app: &mut AppState) {
     }
 }
 
-pub fn close_active(app: &mut AppState, dock: &mut DockState<DocId>) {
-    let Some(id) = app.active_doc else {
-        return;
-    };
-    if let Some(path) = dock.find_tab(&id) {
-        dock.remove_tab(path);
+pub fn close_active(app: &mut AppState) {
+    if let Some(id) = app.active_doc {
+        app.close_document(id);
     }
-    app.docs.remove(&id);
-    app.active_doc = None;
 }
 
 /// File > Close All.
-pub fn close_all(app: &mut AppState, dock: &mut DockState<DocId>) {
-    let ids: Vec<DocId> = app.docs.keys().copied().collect();
-    close_docs(app, dock, &ids);
+pub fn close_all(app: &mut AppState) {
+    for id in app.doc_order.clone() {
+        app.close_document(id);
+    }
 }
 
 /// File > Close Others: closes every document except the active one.
-pub fn close_others(app: &mut AppState, dock: &mut DockState<DocId>) {
+pub fn close_others(app: &mut AppState) {
     let active = app.active_doc;
-    let ids: Vec<DocId> = app
-        .docs
-        .keys()
-        .copied()
-        .filter(|id| Some(*id) != active)
-        .collect();
-    close_docs(app, dock, &ids);
-}
-
-fn close_docs(app: &mut AppState, dock: &mut DockState<DocId>, ids: &[DocId]) {
-    for id in ids {
-        if let Some(path) = dock.find_tab(id) {
-            dock.remove_tab(path);
-        }
-        app.docs.remove(id);
-        if app.active_doc == Some(*id) {
-            app.active_doc = None;
+    for id in app.doc_order.clone() {
+        if Some(id) != active {
+            app.close_document(id);
         }
     }
 }

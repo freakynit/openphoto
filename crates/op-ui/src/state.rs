@@ -33,6 +33,10 @@ impl Default for View {
 
 pub struct DocState {
     pub doc: Document,
+    /// The document has no embedded color profile (shown as "#" in its tab).
+    /// Opened files are untagged because profiles aren't read; new documents
+    /// are sRGB.
+    pub untagged: bool,
     pub history: History,
     pub view: View,
     /// Set by continuous edits (e.g. dragging opacity) that haven't been
@@ -51,6 +55,7 @@ impl DocState {
     pub fn new(doc: Document, initial: &str) -> Self {
         let snapshot_thumb = Some(composite_thumbnail(&doc, SNAPSHOT_THUMB_PX));
         Self {
+            untagged: initial == "Open",
             history: History::new(&doc, initial),
             snapshot_thumb,
             snapshot_texture: None,
@@ -261,6 +266,8 @@ pub struct PickerSession {
 
 pub struct AppState {
     pub docs: HashMap<DocId, DocState>,
+    /// Tab order of the open documents.
+    pub doc_order: Vec<DocId>,
     pub active_doc: Option<DocId>,
     pub tool: Tool,
     pub foreground: Color,
@@ -289,6 +296,7 @@ impl Default for AppState {
         let foreground = Color::from_rgba8([0x14, 0xa5, 0xdc, 0xff]);
         Self {
             docs: HashMap::new(),
+            doc_order: Vec::new(),
             active_doc: None,
             tool: Tool::RectangularMarquee,
             foreground,
@@ -313,6 +321,29 @@ impl Default for AppState {
 }
 
 impl AppState {
+    /// Adds a document as the last tab and makes it active.
+    pub fn add_document(&mut self, doc: Document, initial: &str) {
+        let id = doc.id;
+        self.docs.insert(id, DocState::new(doc, initial));
+        self.doc_order.push(id);
+        self.active_doc = Some(id);
+    }
+
+    /// Closes a document; the tab to its left becomes active if it was active.
+    pub fn close_document(&mut self, id: DocId) {
+        let index = self.doc_order.iter().position(|d| *d == id);
+        self.doc_order.retain(|d| *d != id);
+        self.docs.remove(&id);
+        if self.active_doc == Some(id) {
+            self.active_doc = index.and_then(|i| {
+                self.doc_order
+                    .get(i.saturating_sub(1))
+                    .or(self.doc_order.first())
+                    .copied()
+            });
+        }
+    }
+
     /// Whether a modal dialog is open; menus and shortcuts are disabled meanwhile.
     pub fn modal_open(&self) -> bool {
         self.canvas_size_dialog.is_some() || self.color_picker.is_some() || self.alert.is_some()

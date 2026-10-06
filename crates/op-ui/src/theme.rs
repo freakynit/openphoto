@@ -44,22 +44,32 @@ pub mod color {
 }
 
 pub mod size {
-    pub const TITLE_BAR: f32 = 40.0;
-    pub const OPTIONS_BAR: f32 = 52.0;
-    pub const TOOLBAR: f32 = 58.0;
+    use super::pt;
+
+    // Window frame, measured in Photoshop at 1:1 (points)
+    /// Title bar including its 1 pt bottom line.
+    pub const TITLE_BAR: f32 = pt(29.0);
+    pub const OPTIONS_BAR: f32 = pt(33.0);
+    /// Toolbar including its 3 pt dark right border.
+    pub const TOOLBAR: f32 = pt(42.0);
+    pub const STATUS_BAR: f32 = pt(16.0);
+    /// Icon strip including the 3 pt border on its left and the divider on its right.
+    pub const ICON_STRIP: f32 = pt(44.0);
+    pub const PANEL_COLUMN: f32 = pt(321.0);
+
+    // Measured on the reference screenshot (scaled by UI_SCALE)
     pub const TOOL_BUTTON: f32 = 38.0;
-    pub const DOC_TAB_BAR: f32 = 42.0;
-    pub const STATUS_BAR: f32 = 26.0;
-    pub const ICON_STRIP: f32 = 58.0;
-    pub const PANEL_COLUMN: f32 = 478.0;
     pub const PANEL_TAB_BAR: f32 = 42.0;
     pub const FIELD_HEIGHT: f32 = 26.0;
     pub const LAYER_ROW: f32 = 60.0;
 }
 
 pub mod font {
-    pub const BODY: f32 = 15.0;
-    pub const SMALL: f32 = 13.5;
+    use super::pt;
+
+    /// Matches the cap height of Photoshop's panel text (8 pt).
+    pub const BODY: f32 = pt(11.5);
+    pub const SMALL: f32 = pt(10.5);
     pub const ICON: f32 = 20.0;
 }
 

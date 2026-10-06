@@ -9,9 +9,17 @@ use crate::state::{AppState, PickerTarget};
 use crate::theme::{self, color, size};
 use crate::widgets;
 
+/// Dark border on the toolbar's right edge, next to the canvas.
+const RIGHT_BORDER: f32 = crate::theme::pt(3.0);
+
 pub fn show(ui: &mut Ui, app: &mut AppState) {
+    let full = ui.max_rect();
+    let border = Rect::from_min_max(Pos2::new(full.right() - RIGHT_BORDER, full.top()), full.max);
+    ui.painter()
+        .rect_filled(border, 0, Color32::from_gray(0x39));
+    ui.set_max_width(full.width() - RIGHT_BORDER);
     ui.spacing_mut().item_spacing = Vec2::new(0.0, 0.0);
-    let x_pad = (size::TOOLBAR - size::TOOL_BUTTON) / 2.0;
+    let x_pad = (size::TOOLBAR - RIGHT_BORDER - size::TOOL_BUTTON) / 2.0;
 
     // Collapse arrows and drag grip at the top
     header(ui, icons::CARET_DOUBLE_RIGHT, Align2::LEFT_CENTER);
@@ -96,7 +104,10 @@ fn group_marker(ui: &Ui, rect: Rect) {
 /// Foreground/background swatches; the top-left icon resets to defaults and the
 /// top-right one swaps them.
 fn color_swatches(ui: &mut Ui, app: &mut AppState) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(size::TOOLBAR, 58.0), Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(size::TOOLBAR - RIGHT_BORDER, 58.0),
+        Sense::hover(),
+    );
     let sw = 26.0;
     let fg_rect = Rect::from_min_size(rect.min + Vec2::new(9.0, 16.0), Vec2::splat(sw));
     let bg_rect = fg_rect.translate(Vec2::splat(13.0));
