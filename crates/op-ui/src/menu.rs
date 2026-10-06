@@ -479,7 +479,7 @@ impl NativeMenu {
                 &todo("Quick Export as PNG", Some("CmdOrCtrl+Shift+'")),
                 &todo("Export As...", Some("CmdOrCtrl+Shift+Alt+'")),
                 &sep(),
-                &todo("Rename Layer...", None),
+                &item("Rename Layer...", Command::RenameLayer),
                 &todo_sub("Layer Style"),
                 &todo_sub("Smart Filter"),
                 &sep(),

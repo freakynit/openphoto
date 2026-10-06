@@ -83,6 +83,9 @@ pub enum Command {
     NewLayer,
     /// Alt+Shift+Cmd+N: a new layer without the dialog.
     NewLayerNoDialog,
+    /// Layer > Rename Layer...: starts renaming the active layer in the
+    /// Layers panel.
+    RenameLayer,
     DeleteLayer,
     /// Layer > Hide Layers / Show Layers for the active layer.
     ToggleLayerVisibility,
@@ -374,7 +377,8 @@ impl Command {
             | Self::TransformRotate90Clockwise
             | Self::TransformRotate90CounterClockwise
             | Self::TransformFlipHorizontal
-            | Self::TransformFlipVertical => return None,
+            | Self::TransformFlipVertical
+            | Self::RenameLayer => return None,
             Self::Rotate180
             | Self::Rotate90Clockwise
             | Self::Rotate90CounterClockwise
@@ -558,6 +562,13 @@ impl Command {
             Self::TransformAgain => doc.is_some() && app.last_transform.is_some(),
             Self::LastFilter => doc.is_some() && app.last_filter.is_some(),
             Self::LayerFromBackground => doc.is_some_and(|d| d.doc.has_background()),
+            // Photoshop renames the background through Layer from Background
+            Self::RenameLayer => doc.is_some_and(|d| {
+                d.doc
+                    .active_layer
+                    .and_then(|id| d.doc.layer(id))
+                    .is_some_and(|l| !l.is_background)
+            }),
             Self::DeleteHiddenLayers => doc.is_some_and(|d| {
                 let layers = &d.doc.layers;
                 layers.iter().any(|l| !l.visible) && layers.iter().any(|l| l.visible)
@@ -1104,6 +1115,7 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
             }
         }
         _ => {
+            let skip_flatten_prompt = app.skip_flatten_prompt;
             let Some(state) = app.active() else {
                 return;
             };
@@ -1184,6 +1196,13 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                     app.new_layer_dialog = Some(crate::dialogs::NewLayerDialog::new(name));
                 }
                 Command::NewLayerNoDialog => crate::panels::new_layer(state),
+                Command::RenameLayer => {
+                    if let Some(layer) = state.doc.active_layer.and_then(|id| state.doc.layer(id))
+                        && !layer.is_background
+                    {
+                        state.renaming = Some((layer.id, layer.name.clone()));
+                    }
+                }
                 Command::DuplicateLayer => {
                     let current = state.doc.id;
                     let source = state
@@ -1240,8 +1259,16 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                     }
                 }
                 Command::FlattenImage => {
-                    layer_ops::flatten(&mut state.doc);
-                    state.record("Flatten Image");
+                    // Photoshop asks before throwing hidden layers away
+                    let hidden = state.doc.layers.iter().any(|l| !l.visible);
+                    if hidden && !skip_flatten_prompt {
+                        app.flatten_prompt = Some(crate::dialogs::alert::Alert::caution(
+                            "Discard hidden layers?",
+                        ));
+                    } else {
+                        layer_ops::flatten(&mut state.doc);
+                        state.record("Flatten Image");
+                    }
                 }
                 Command::DeleteLayer => crate::panels::delete_active_layer(state),
                 Command::ZoomIn => document_view::zoom_step(state, true, ppp),

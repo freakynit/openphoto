@@ -1878,3 +1878,73 @@ fn screenshot_duplicate_layer_dialog() {
     run_command(&mut h, crate::commands::Command::DuplicateLayer);
     shot(&mut h, "duplicate_layer");
 }
+
+#[test]
+fn flatten_asks_before_discarding_hidden_layers() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    crate::panels::toggle_active_visibility(h.state_mut().state.active().unwrap());
+    h.run_steps(2);
+    // Cancel keeps both layers
+    run_command(&mut h, crate::commands::Command::FlattenImage);
+    assert!(h.state().state.flatten_prompt.is_some());
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().state.flatten_prompt.is_none());
+    assert_eq!(active(&h).doc.layers.len(), 2);
+    // "Don't show again", then OK: flattened, and not asked next time
+    run_command(&mut h, crate::commands::Command::FlattenImage);
+    let (x0, y0) = (675.0 - 130.0, 400.0 - 104.0);
+    click(&mut h, at_pt(x0 + 30.0, y0 + 140.0));
+    click(&mut h, at_pt(x0 + 189.0, y0 + 178.0));
+    assert_eq!(layer_names(&h), ["Background"]);
+    assert_eq!(last_history(&h), "Flatten Image");
+    assert!(h.state().state.skip_flatten_prompt);
+    crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    crate::panels::toggle_active_visibility(h.state_mut().state.active().unwrap());
+    run_command(&mut h, crate::commands::Command::FlattenImage);
+    assert!(h.state().state.flatten_prompt.is_none());
+    assert_eq!(layer_names(&h), ["Background"]);
+}
+
+#[test]
+fn rename_layer_and_alerts() {
+    use crate::commands::Command;
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    // The background can't be renamed this way
+    assert!(!Command::RenameLayer.enabled(&h.state().state));
+    crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    h.run_steps(2);
+    run_command(&mut h, Command::RenameLayer);
+    assert!(active(&h).renaming.is_some());
+    h.event(egui::Event::Text("Ink".into()));
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(layer_names(&h), ["Background", "Ink"]);
+
+    // An error alert goes away with Enter
+    h.state_mut().state.alert = Some("Could not complete the Copy command.".into());
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(h.state().state.alert.is_none());
+}
+
+#[test]
+#[ignore]
+fn screenshot_alerts() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.state_mut().state.alert =
+        Some("Could not complete the Copy command because the selected area is empty.".into());
+    h.run_steps(3);
+    shot(&mut h, "alert_error");
+    h.state_mut().state.alert = None;
+    h.state_mut().state.flatten_prompt = Some(crate::dialogs::alert::Alert::caution(
+        "Discard hidden layers?",
+    ));
+    h.run_steps(3);
+    shot(&mut h, "alert_caution");
+}

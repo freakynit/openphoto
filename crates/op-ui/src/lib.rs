@@ -566,14 +566,23 @@ impl eframe::App for OpenPhotoApp {
         }
 
         if let Some(msg) = self.state.alert.clone() {
-            egui::Modal::new(egui::Id::new("alert")).show(&ctx, |ui| {
-                ui.set_max_width(360.0);
-                ui.label(msg);
-                ui.add_space(8.0);
-                if ui.button("OK").clicked() {
-                    self.state.alert = None;
+            let mut alert = dialogs::alert::Alert::error(msg);
+            if dialogs::alert::show(&ctx, &mut alert).is_some() {
+                self.state.alert = None;
+            }
+        }
+        if let Some(mut prompt) = self.state.flatten_prompt.take() {
+            match dialogs::alert::show(&ctx, &mut prompt) {
+                None => self.state.flatten_prompt = Some(prompt),
+                Some(dialogs::alert::Answer::Cancel) => {}
+                Some(dialogs::alert::Answer::Ok { dont_show_again }) => {
+                    self.state.skip_flatten_prompt |= dont_show_again;
+                    if let Some(state) = self.state.active() {
+                        op_core::layer_ops::flatten(&mut state.doc);
+                        state.record("Flatten Image");
+                    }
                 }
-            });
+            }
         }
     }
 }

@@ -1,6 +1,7 @@
 //! Modal dialogs.
 
 mod adjust;
+pub mod alert;
 mod canvas_size;
 mod color_picker;
 mod common;

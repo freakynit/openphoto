@@ -904,6 +904,10 @@ pub struct AppState {
     pub untitled_counter: u32,
     /// Error message to show to the user.
     pub alert: Option<String>,
+    /// Layer > Flatten Image's "Discard hidden layers?" while asked.
+    pub flatten_prompt: Option<crate::dialogs::alert::Alert>,
+    /// "Don't show again" was ticked in that prompt.
+    pub skip_flatten_prompt: bool,
     /// Window menu panels that float (Info, Navigator, Histogram).
     pub floating: crate::panels::floating::FloatingPanels,
     /// Whether the History panel is popped out from the icon strip.
@@ -999,6 +1003,8 @@ impl Default for AppState {
             image_size_dialog: None,
             new_guide_dialog: None,
             new_layer_dialog: None,
+            flatten_prompt: None,
+            skip_flatten_prompt: false,
             duplicate_dialog: None,
             new_document_dialog: None,
             modify_dialog: None,
@@ -1079,6 +1085,7 @@ impl AppState {
             || self.image_size_dialog.is_some()
             || self.new_guide_dialog.is_some()
             || self.new_layer_dialog.is_some()
+            || self.flatten_prompt.is_some()
             || self.duplicate_dialog.is_some()
             || self.new_document_dialog.is_some()
             || self.modify_dialog.is_some()
