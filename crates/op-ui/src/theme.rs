@@ -103,6 +103,11 @@ pub fn icon(size: f32) -> FontId {
     FontId::proportional(size)
 }
 
+/// The toolbar's tool icons: Phosphor Bold.
+pub fn tool_icon(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name("phosphor-bold".into()))
+}
+
 /// The bundled interface fonts, also the Type tool's fonts.
 pub const SOURCE_SANS_REGULAR: &[u8] = include_bytes!("../assets/fonts/SourceSans3-Regular.ttf");
 pub const SOURCE_SANS_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/SourceSans3-Semibold.ttf");
@@ -124,6 +129,12 @@ pub fn install_fonts(ctx: &egui::Context) {
 
     // The icon font is appended to Proportional as a fallback
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    // The toolbar's heavier icons, closer to Photoshop's
+    egui_phosphor::add_font_bytes_as_family(
+        &mut fonts,
+        "phosphor-bold",
+        egui_phosphor::Variant::Bold.font_bytes(),
+    );
 
     let mut semibold = vec!["source-sans-semibold".to_owned()];
     semibold.extend(

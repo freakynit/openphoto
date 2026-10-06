@@ -24,19 +24,38 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
     // Collapse arrows and drag grip at the top
     header(ui, icons::CARET_DOUBLE_RIGHT, Align2::LEFT_CENTER);
     grip(ui);
-    ui.add_space(8.0);
+    // Measured on Photoshop 2026: the first tool's center 43 pt below the
+    // toolbar's top, then one tool every 25.9 pt, with no gaps between groups
+    let pitch = crate::theme::pt(25.9);
+    // Tool buttons are 30.5 pt wide, centered in the bar
+    let button_w = crate::theme::pt(30.5);
+    let tool_pad = (size::TOOLBAR - RIGHT_BORDER - button_w) / 2.0;
+    let first_top = full.top() + crate::theme::pt(43.0) - pitch / 2.0;
+    ui.add_space((first_top - ui.cursor().top()).max(0.0));
 
-    let group_breaks = [Tool::Crop, Tool::Eyedropper, Tool::Pen, Tool::Hand];
     for (slot, group) in TOOLBAR.iter().enumerate() {
-        if group_breaks.contains(&group[0]) {
-            ui.add_space(2.0);
-        }
         // Each slot shows the tool of its group that was used last
         let shown = app.tool_slots[slot];
         ui.horizontal(|ui| {
-            ui.add_space(x_pad);
+            ui.add_space(tool_pad);
             let selected = app.tool.slot() == slot;
-            let r = widgets::icon_button(ui, icons::tool(shown), size::TOOL_BUTTON, selected);
+            // Photoshop's tool icons are about 15 pt across
+            let r = widgets::icon_button_font(
+                ui,
+                icons::tool(shown),
+                Vec2::new(button_w, pitch - 1.0),
+                theme::tool_icon(crate::theme::pt(17.5)),
+                selected,
+            );
+            // The selected tool's box has a faint light outline
+            if selected {
+                ui.painter().rect_stroke(
+                    r.rect,
+                    4,
+                    egui::Stroke::new(1.0, Color32::from_gray(0x60)),
+                    egui::StrokeKind::Outside,
+                );
+            }
             if group.len() > 1 {
                 group_marker(ui, r.rect);
             }

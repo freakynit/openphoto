@@ -16,6 +16,17 @@ pub fn icon_button_sized(
     icon_size: f32,
     selected: bool,
 ) -> Response {
+    icon_button_font(ui, icon, size, theme::icon(icon_size), selected)
+}
+
+/// An icon button drawing its icon in `font`.
+pub fn icon_button_font(
+    ui: &mut Ui,
+    icon: &str,
+    size: Vec2,
+    font: egui::FontId,
+    selected: bool,
+) -> Response {
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     if ui.is_rect_visible(rect) {
         let fill = if selected || response.is_pointer_button_down_on() {
@@ -31,13 +42,8 @@ pub fn icon_button_sized(
         } else {
             color::TEXT_DISABLED
         };
-        ui.painter().text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            icon,
-            theme::icon(icon_size),
-            tint,
-        );
+        ui.painter()
+            .text(rect.center(), Align2::CENTER_CENTER, icon, font, tint);
     }
     response
 }

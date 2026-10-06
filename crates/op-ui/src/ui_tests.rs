@@ -425,7 +425,7 @@ fn toolbar_foreground_opens_color_picker() {
     let mut h = harness(Vec::new());
     h.state_mut().state.foreground = Color::from_rgba8([0x00, 0xaf, 0xdc, 255]);
     // The foreground swatch at the bottom of the toolbar
-    click(&mut h, at_pt(13.0, 690.0));
+    click(&mut h, at_pt(13.0, 720.0));
     let session = h
         .state()
         .state
@@ -1539,4 +1539,16 @@ fn info_navigator_and_histogram_panels() {
     h.key_press(egui::Key::F8);
     h.run_steps(2);
     assert!(!h.state().state.floating.info);
+}
+
+#[test]
+#[ignore]
+fn screenshot_move_tool() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.state_mut().state.foreground = Color::WHITE;
+    h.state_mut().state.background = Color::from_rgba8([0x14, 0xa5, 0xdc, 255]);
+    h.key_press(egui::Key::V);
+    h.run_steps(3);
+    shot(&mut h, "move_tool");
 }

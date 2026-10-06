@@ -13,6 +13,8 @@ pub enum Tool {
     Lasso,
     PolygonalLasso,
     MagneticLasso,
+    /// Photoshop 2026's Selection Brush (paints a selection).
+    SelectionBrush,
     ObjectSelection,
     QuickSelection,
     MagicWand,
@@ -48,6 +50,8 @@ pub enum Tool {
     Blur,
     Sharpen,
     Smudge,
+    /// Photoshop 2025+'s Adjustment Brush (paints an adjustment).
+    AdjustmentBrush,
     Dodge,
     Burn,
     Sponge,
@@ -86,7 +90,7 @@ pub const TOOLBAR: &[&[Tool]] = &[
         SingleRowMarquee,
         SingleColumnMarquee,
     ],
-    &[Lasso, PolygonalLasso, MagneticLasso],
+    &[Lasso, PolygonalLasso, MagneticLasso, SelectionBrush],
     &[ObjectSelection, QuickSelection, MagicWand],
     &[Crop, PerspectiveCrop, Slice, SliceSelect],
     &[Frame],
@@ -105,6 +109,7 @@ pub const TOOLBAR: &[&[Tool]] = &[
     &[Eraser, BackgroundEraser, MagicEraser],
     &[Gradient, PaintBucket],
     &[Blur, Sharpen, Smudge],
+    &[AdjustmentBrush],
     &[Dodge, Burn, Sponge],
     &[
         Pen,
@@ -138,6 +143,7 @@ impl Tool {
             Lasso => "Lasso Tool",
             PolygonalLasso => "Polygonal Lasso Tool",
             MagneticLasso => "Magnetic Lasso Tool",
+            SelectionBrush => "Selection Brush Tool",
             ObjectSelection => "Object Selection Tool",
             QuickSelection => "Quick Selection Tool",
             MagicWand => "Magic Wand Tool",
@@ -173,6 +179,7 @@ impl Tool {
             Blur => "Blur Tool",
             Sharpen => "Sharpen Tool",
             Smudge => "Smudge Tool",
+            AdjustmentBrush => "Adjustment Brush Tool",
             Dodge => "Dodge Tool",
             Burn => "Burn Tool",
             Sponge => "Sponge Tool",
@@ -226,7 +233,7 @@ impl Tool {
             RotateView => 'R',
             Zoom => 'Z',
             SingleRowMarquee | SingleColumnMarquee | Blur | Sharpen | Smudge | AddAnchorPoint
-            | DeleteAnchorPoint | ConvertPoint => return None,
+            | DeleteAnchorPoint | ConvertPoint | SelectionBrush | AdjustmentBrush => return None,
         })
     }
 
@@ -286,7 +293,8 @@ mod tests {
         dedup.sort_by_key(|t| *t as usize);
         dedup.dedup();
         assert_eq!(all.len(), dedup.len());
-        assert_eq!(all.len(), 68);
+        assert_eq!(all.len(), 70);
+        assert_eq!(TOOLBAR.len(), 22);
     }
 
     #[test]
