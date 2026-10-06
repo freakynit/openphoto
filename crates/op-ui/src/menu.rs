@@ -24,6 +24,10 @@ const ALL_COMMANDS: &[Command] = &[
     Command::NewLayer,
     Command::DeleteLayer,
     Command::ToggleLayerVisibility,
+    Command::SelectAll,
+    Command::Deselect,
+    Command::Reselect,
+    Command::SelectInverse,
     Command::ZoomIn,
     Command::ZoomOut,
     Command::FitOnScreen,
@@ -168,6 +172,40 @@ impl NativeMenu {
             ],
         );
 
+        let select = Submenu::with_items(
+            "Select",
+            true,
+            &[
+                &item("All", Command::SelectAll) as &dyn IsMenuItem,
+                &item("Deselect", Command::Deselect),
+                &item("Reselect", Command::Reselect),
+                &item("Inverse", Command::SelectInverse),
+                &sep(),
+                &todo("All Layers", Some("CmdOrCtrl+Alt+A")),
+                &todo("Deselect Layers", None),
+                &todo("Find Layers", Some("CmdOrCtrl+Shift+Alt+F")),
+                &todo("Isolate Layers", None),
+                &sep(),
+                &todo("Color Range...", None),
+                &todo("Focus Area...", None),
+                &todo("Subject", None),
+                &todo("Sky", None),
+                &sep(),
+                &todo("Select and Mask...", Some("CmdOrCtrl+Alt+R")),
+                &todo_sub("Modify"),
+                &sep(),
+                &todo("Grow", None),
+                &todo("Similar", None),
+                &sep(),
+                &todo("Transform Selection", None),
+                &sep(),
+                &todo("Edit in Quick Mask Mode", None),
+                &sep(),
+                &todo("Load Selection...", None),
+                &todo("Save Selection...", None),
+            ],
+        );
+
         let view = Submenu::with_items(
             "View",
             true,
@@ -184,16 +222,18 @@ impl NativeMenu {
         let help = Submenu::with_items("Help", true, &[&todo("OpenPhoto Help", None)]);
 
         let menu = Menu::new();
-        let submenus: Vec<Submenu> = [app_menu, file, edit, image, layer, view, window, help]
-            .into_iter()
-            .map(|m| m.expect("static menu definition is valid"))
-            .collect();
+        let submenus: Vec<Submenu> = [
+            app_menu, file, edit, image, layer, select, view, window, help,
+        ]
+        .into_iter()
+        .map(|m| m.expect("static menu definition is valid"))
+        .collect();
         for submenu in &submenus {
             menu.append(submenu).expect("append submenu");
         }
         menu.init_for_nsapp();
         // "Window" also gets the standard window list from macOS
-        submenus[6].set_as_windows_menu_for_nsapp();
+        submenus[7].set_as_windows_menu_for_nsapp();
 
         // Menu events arrive on the main thread outside egui's frame; queue
         // them and wake egui up.

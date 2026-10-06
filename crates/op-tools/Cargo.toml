@@ -6,4 +6,3 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-op-core.workspace = true

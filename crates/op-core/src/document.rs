@@ -4,6 +4,7 @@ use crate::blend;
 use crate::color::Color;
 use crate::layer::{Layer, LayerId, LayerKind};
 use crate::pixel::{BitDepth, ColorMode};
+use crate::selection::Selection;
 use crate::tile::{TILE_SIZE, TiledImage};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -48,6 +49,8 @@ pub struct Snapshot {
     resolution: f32,
     layers: Vec<Layer>,
     active_layer: Option<LayerId>,
+    selection: Option<Selection>,
+    last_selection: Option<Selection>,
 }
 
 pub struct Document {
@@ -65,6 +68,13 @@ pub struct Document {
     /// Bumped on every pixel or layer property change; the renderer uses it to
     /// decide whether to re-upload.
     revision: u64,
+    /// The current selection; `None` means nothing is selected (Photoshop then
+    /// treats the whole document as the target of edits).
+    selection: Option<Selection>,
+    /// The selection before the last Deselect, for Select > Reselect.
+    last_selection: Option<Selection>,
+    /// Bumped when the selection changes, so its outline can be cached.
+    selection_revision: u64,
 }
 
 impl Document {
@@ -80,6 +90,9 @@ impl Document {
             layers: Vec::new(),
             active_layer: None,
             revision: 0,
+            selection: None,
+            last_selection: None,
+            selection_revision: 0,
         }
     }
 
@@ -133,6 +146,8 @@ impl Document {
             resolution: self.resolution,
             layers: self.layers.clone(),
             active_layer: self.active_layer,
+            selection: self.selection.clone(),
+            last_selection: self.last_selection.clone(),
         }
     }
 
@@ -143,6 +158,9 @@ impl Document {
         self.resolution = s.resolution;
         self.layers = s.layers;
         self.active_layer = s.active_layer;
+        self.selection = s.selection;
+        self.last_selection = s.last_selection;
+        self.selection_revision += 1;
         self.mark_dirty();
     }
 
@@ -161,9 +179,51 @@ impl Document {
             };
             *image = image.with_canvas(width, height, dx, dy, extension);
         }
+        for sel in [&mut self.selection, &mut self.last_selection]
+            .into_iter()
+            .flatten()
+        {
+            *sel = sel.with_canvas(width, height, dx, dy);
+        }
+        self.selection_revision += 1;
         self.width = width;
         self.height = height;
         self.mark_dirty();
+    }
+
+    pub fn selection(&self) -> Option<&Selection> {
+        self.selection.as_ref()
+    }
+
+    pub fn selection_revision(&self) -> u64 {
+        self.selection_revision
+    }
+
+    /// Replaces the selection. An empty selection counts as no selection.
+    /// Clearing a selection remembers it for [`Self::reselect`].
+    pub fn set_selection(&mut self, selection: Option<Selection>) {
+        let selection = selection.filter(|s| !s.is_empty());
+        if selection.is_none() && self.selection.is_some() {
+            self.last_selection = self.selection.take();
+        }
+        self.selection = selection;
+        self.selection_revision += 1;
+    }
+
+    /// Select > Reselect: restores the selection cleared by the last Deselect.
+    pub fn reselect(&mut self) -> bool {
+        match self.last_selection.take() {
+            Some(s) => {
+                self.selection = Some(s);
+                self.selection_revision += 1;
+                true
+            }
+            None => false,
+        }
+    }
+
+    pub fn can_reselect(&self) -> bool {
+        self.selection.is_none() && self.last_selection.is_some()
     }
 
     /// Whether the document has a background layer (which decides whether the
@@ -284,6 +344,25 @@ mod tests {
         let LayerKind::Raster(img) = &doc.layer(id).unwrap().kind;
         assert_eq!(img.pixel(2, 2), [0; 4]);
         assert_eq!(img.pixel(1, 1), [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn selection_deselect_reselect_and_undo() {
+        use crate::selection::Rect;
+        let mut doc = Document::new_with_background("t", 10, 10, Color::WHITE);
+        let snapshot = doc.snapshot();
+        doc.set_selection(Some(Selection::rect(10, 10, Rect::new(1.0, 1.0, 4.0, 4.0))));
+        assert!(doc.selection().is_some());
+        doc.set_selection(None);
+        assert!(doc.can_reselect());
+        assert!(doc.reselect());
+        assert_eq!(doc.selection().unwrap().bounds(), Some((1, 1, 4, 4)));
+        // Restoring an earlier snapshot restores its (empty) selection
+        doc.restore(&snapshot);
+        assert!(doc.selection().is_none());
+        // An empty selection counts as none
+        doc.set_selection(Some(Selection::rect(10, 10, Rect::new(3.0, 3.0, 3.0, 3.0))));
+        assert!(doc.selection().is_none());
     }
 
     #[test]

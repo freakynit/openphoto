@@ -26,7 +26,13 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
             widgets::vseparator(ui, 34.0);
 
             match app.tool {
-                Tool::RectangularMarquee | Tool::Lasso => marquee_options(ui, app),
+                Tool::RectangularMarquee
+                | Tool::EllipticalMarquee
+                | Tool::SingleRowMarquee
+                | Tool::SingleColumnMarquee
+                | Tool::Lasso
+                | Tool::PolygonalLasso
+                | Tool::MagneticLasso => marquee_options(ui, app),
                 Tool::Move => move_options(ui),
                 Tool::Hand | Tool::Zoom => view_options(ui, app),
                 _ => {}
@@ -93,9 +99,13 @@ fn marquee_options(ui: &mut Ui, app: &mut AppState) {
             .suffix(" px"),
     );
     ui.add_space(6.0);
-    // Anti-alias is disabled for the rectangular marquee, as in Photoshop
+    // Anti-alias only applies to curved edges, so it's disabled for the
+    // rectangular and single row/column marquees, as in Photoshop
     ui.add_enabled(
-        app.tool == Tool::Lasso,
+        !matches!(
+            app.tool,
+            Tool::RectangularMarquee | Tool::SingleRowMarquee | Tool::SingleColumnMarquee
+        ),
         egui::Checkbox::new(&mut opts.anti_alias, "Anti-alias"),
     );
     ui.add_space(6.0);

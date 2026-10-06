@@ -42,6 +42,10 @@ pub struct DocState {
     /// Set by continuous edits (e.g. dragging opacity) that haven't been
     /// recorded in the history yet.
     pending_edit: bool,
+    /// A marquee being dragged on the canvas.
+    pub marquee_drag: Option<MarqueeDrag>,
+    /// Marching-ants outline of the selection, cached per selection revision.
+    outline: Option<(u64, Arc<Vec<[u32; 4]>>)>,
     canvas: Option<Arc<CanvasImage>>,
     thumbs: HashMap<LayerId, (u64, egui::TextureHandle)>,
     /// Thumbnail of the document as opened, for the History panel's snapshot
@@ -62,6 +66,8 @@ impl DocState {
             doc,
             view: View::default(),
             pending_edit: false,
+            marquee_drag: None,
+            outline: None,
             canvas: None,
             thumbs: HashMap::new(),
         }
@@ -108,6 +114,20 @@ impl DocState {
     pub fn delete_states_from(&mut self, index: usize) -> bool {
         self.pending_edit = false;
         self.history.delete_from(index, &mut self.doc)
+    }
+
+    /// Outline of the current selection (see `Selection::outline`), cached.
+    pub fn selection_outline(&mut self) -> Option<Arc<Vec<[u32; 4]>>> {
+        let selection = self.doc.selection()?;
+        let rev = self.doc.selection_revision();
+        if let Some((r, segs)) = &self.outline
+            && *r == rev
+        {
+            return Some(segs.clone());
+        }
+        let segs = Arc::new(selection.outline());
+        self.outline = Some((rev, segs.clone()));
+        Some(segs)
     }
 
     /// The current composite, recomputed when the document changes.
@@ -212,6 +232,18 @@ fn composite_thumbnail(doc: &Document, max_px: u32) -> egui::ColorImage {
     egui::ColorImage::new([tw as usize, th as usize], out)
 }
 
+/// A marquee drag in progress, in document pixels.
+#[derive(Clone, Copy, Debug)]
+pub struct MarqueeDrag {
+    pub start: egui::Pos2,
+    pub current: egui::Pos2,
+    pub op: op_core::SelectionOp,
+    /// Shift/Alt were held when the drag started with an existing selection,
+    /// so they chose the combine mode and don't constrain the shape.
+    pub shift_for_op: bool,
+    pub alt_for_op: bool,
+}
+
 /// Selection combine mode (the four buttons in the options bar).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum SelectionMode {
@@ -220,6 +252,17 @@ pub enum SelectionMode {
     Add,
     Subtract,
     Intersect,
+}
+
+impl SelectionMode {
+    pub fn op(self) -> op_core::SelectionOp {
+        match self {
+            Self::New => op_core::SelectionOp::Replace,
+            Self::Add => op_core::SelectionOp::Add,
+            Self::Subtract => op_core::SelectionOp::Subtract,
+            Self::Intersect => op_core::SelectionOp::Intersect,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -242,12 +285,24 @@ impl MarqueeStyle {
     }
 }
 
-#[derive(Default)]
 pub struct MarqueeOptions {
     pub mode: SelectionMode,
     pub feather: f32,
+    /// Photoshop has Anti-alias on by default (it applies to the elliptical
+    /// marquee).
     pub anti_alias: bool,
     pub style: MarqueeStyle,
+}
+
+impl Default for MarqueeOptions {
+    fn default() -> Self {
+        Self {
+            mode: SelectionMode::New,
+            feather: 0.0,
+            anti_alias: true,
+            style: MarqueeStyle::Normal,
+        }
+    }
 }
 
 /// What a confirmed Color Picker color is applied to.
@@ -270,6 +325,8 @@ pub struct AppState {
     pub doc_order: Vec<DocId>,
     pub active_doc: Option<DocId>,
     pub tool: Tool,
+    /// The tool each toolbar slot shows (the last one used in its group).
+    pub tool_slots: Vec<Tool>,
     pub foreground: Color,
     pub background: Color,
     pub marquee: MarqueeOptions,
@@ -299,6 +356,7 @@ impl Default for AppState {
             doc_order: Vec::new(),
             active_doc: None,
             tool: Tool::RectangularMarquee,
+            tool_slots: op_tools::TOOLBAR.iter().map(|group| group[0]).collect(),
             foreground,
             background: Color::WHITE,
             marquee: MarqueeOptions::default(),
@@ -321,6 +379,12 @@ impl Default for AppState {
 }
 
 impl AppState {
+    /// Makes `tool` current and the tool shown in its toolbar slot.
+    pub fn select_tool(&mut self, tool: Tool) {
+        self.tool = tool;
+        self.tool_slots[tool.slot()] = tool;
+    }
+
     /// Adds a document as the last tab and makes it active.
     pub fn add_document(&mut self, doc: Document, initial: &str) {
         let id = doc.id;

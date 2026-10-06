@@ -27,23 +27,25 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
     ui.add_space(8.0);
 
     let group_breaks = [Tool::Crop, Tool::Eyedropper, Tool::Pen, Tool::Hand];
-    for &tool in TOOLBAR {
-        if group_breaks.contains(&tool) {
+    for (slot, group) in TOOLBAR.iter().enumerate() {
+        if group_breaks.contains(&group[0]) {
             ui.add_space(2.0);
         }
+        // Each slot shows the tool of its group that was used last
+        let shown = app.tool_slots[slot];
         ui.horizontal(|ui| {
             ui.add_space(x_pad);
-            let selected = app.tool == tool;
-            let r = widgets::icon_button(ui, icons::tool(tool), size::TOOL_BUTTON, selected);
-            if tool.has_group() {
+            let selected = app.tool.slot() == slot;
+            let r = widgets::icon_button(ui, icons::tool(shown), size::TOOL_BUTTON, selected);
+            if group.len() > 1 {
                 group_marker(ui, r.rect);
             }
-            let tip = match tool.shortcut() {
-                Some(k) => format!("{} ({k})", tool.name()),
-                None => tool.name().to_owned(),
-            };
-            if r.on_hover_text(tip).clicked() {
-                app.tool = tool;
+            let r = r.on_hover_text(tool_tip(shown));
+            if r.clicked() {
+                app.select_tool(shown);
+            }
+            if group.len() > 1 {
+                flyout(&r, group, shown, app);
             }
         });
         ui.add_space(1.0);
@@ -89,6 +91,71 @@ fn grip(ui: &mut Ui) {
         ui.painter()
             .circle_filled(Pos2::new(x, c.y), 0.6, Color32::from_gray(0x80));
     }
+}
+
+fn tool_tip(tool: Tool) -> String {
+    match tool.shortcut() {
+        Some(k) => format!("{} ({k})", tool.name()),
+        None => tool.name().to_owned(),
+    }
+}
+
+/// Photoshop's tool flyout: right-clicking a slot lists the tools of its
+/// group to the right of the button, with the shown tool marked.
+fn flyout(button: &egui::Response, group: &[Tool], shown: Tool, app: &mut AppState) {
+    let open = button
+        .secondary_clicked()
+        .then_some(egui::SetOpenCommand::Bool(true));
+    egui::Popup::from_response(button)
+        .open_memory(open)
+        .align(egui::RectAlign::RIGHT_START)
+        .gap(crate::theme::pt(2.0))
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+        .show(|ui| {
+            ui.set_min_width(crate::theme::pt(200.0));
+            for &tool in group {
+                let row_h = crate::theme::pt(22.0);
+                let (rect, response) =
+                    ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::click());
+                let painter = ui.painter();
+                if response.hovered() {
+                    painter.rect_filled(rect, 2, color::ACCENT);
+                }
+                if tool == shown {
+                    let mark = Rect::from_center_size(
+                        rect.left_center() + Vec2::new(crate::theme::pt(7.0), 0.0),
+                        Vec2::splat(crate::theme::pt(4.0)),
+                    );
+                    painter.rect_filled(mark, 0, color::TEXT);
+                }
+                painter.text(
+                    rect.left_center() + Vec2::new(crate::theme::pt(22.0), 0.0),
+                    Align2::CENTER_CENTER,
+                    icons::tool(tool),
+                    theme::icon(crate::theme::pt(14.0)),
+                    color::ICON,
+                );
+                painter.text(
+                    rect.left_center() + Vec2::new(crate::theme::pt(36.0), 0.0),
+                    Align2::LEFT_CENTER,
+                    tool.name(),
+                    theme::body(),
+                    color::TEXT,
+                );
+                if let Some(k) = tool.shortcut() {
+                    painter.text(
+                        rect.right_center() - Vec2::new(crate::theme::pt(8.0), 0.0),
+                        Align2::RIGHT_CENTER,
+                        k,
+                        theme::body(),
+                        color::TEXT,
+                    );
+                }
+                if response.clicked() {
+                    app.select_tool(tool);
+                }
+            }
+        });
 }
 
 /// Small corner triangle indicating more tools in the group.

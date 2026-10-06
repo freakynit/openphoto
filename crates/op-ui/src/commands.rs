@@ -23,6 +23,10 @@ pub enum Command {
     DeleteLayer,
     /// Layer > Hide Layers / Show Layers for the active layer.
     ToggleLayerVisibility,
+    SelectAll,
+    Deselect,
+    Reselect,
+    SelectInverse,
     ZoomIn,
     ZoomOut,
     FitOnScreen,
@@ -107,6 +111,10 @@ impl Command {
             Self::CanvasSize => alt_cmd(Key::C),
             Self::NewLayer => shift_cmd(Key::N),
             Self::ToggleLayerVisibility => cmd(Key::Comma),
+            Self::SelectAll => cmd(Key::A),
+            Self::Deselect => cmd(Key::D),
+            Self::Reselect => shift_cmd(Key::D),
+            Self::SelectInverse => shift_cmd(Key::I),
             // Photoshop shows Cmd++ and also accepts Cmd+=
             Self::ZoomIn => cmd(Key::Equals),
             Self::ZoomOut => cmd(Key::Minus),
@@ -130,10 +138,15 @@ impl Command {
             Self::Redo => doc.is_some_and(|d| d.history.can_redo()),
             Self::DeleteLayer => doc.is_some_and(|d| d.doc.layers.len() > 1),
             Self::CloseOthers => app.docs.len() > 1,
+            Self::Deselect | Self::SelectInverse => {
+                doc.is_some_and(|d| d.doc.selection().is_some())
+            }
+            Self::Reselect => doc.is_some_and(|d| d.doc.can_reselect()),
             Self::ToggleLayerVisibility => doc
                 .and_then(|d| d.doc.active_layer.and_then(|id| d.doc.layer(id)))
                 .is_some(),
             Self::Close
+            | Self::SelectAll
             | Self::CloseAll
             | Self::ExportAs
             | Self::CanvasSize
@@ -150,6 +163,8 @@ impl Command {
 /// extra Shift/Alt when matching, so Shift+Cmd+Z must be checked before Cmd+Z.
 const SHORTCUT_ORDER: &[Command] = &[
     Command::ExportAs,
+    Command::Reselect,
+    Command::SelectInverse,
     Command::Redo,
     Command::ToggleLastState,
     Command::NewLayer,
@@ -161,6 +176,8 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::Open,
     Command::Close,
     Command::ToggleLayerVisibility,
+    Command::SelectAll,
+    Command::Deselect,
     Command::ZoomIn,
     Command::ZoomOut,
     Command::FitOnScreen,
@@ -235,6 +252,24 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                     state.toggle_last_state();
                 }
                 Command::ToggleLayerVisibility => crate::panels::toggle_active_visibility(state),
+                Command::SelectAll => {
+                    let (w, h) = (state.doc.width, state.doc.height);
+                    state.doc.set_selection(Some(op_core::Selection::all(w, h)));
+                    state.record("Select All");
+                }
+                Command::Deselect => {
+                    state.doc.set_selection(None);
+                    state.record("Deselect");
+                }
+                Command::Reselect => {
+                    state.doc.reselect();
+                    state.record("Reselect");
+                }
+                Command::SelectInverse => {
+                    let inverse = state.doc.selection().map(|s| s.inverse());
+                    state.doc.set_selection(inverse);
+                    state.record("Select Inverse");
+                }
                 Command::NewLayer => crate::panels::new_layer(state),
                 Command::DeleteLayer => crate::panels::delete_active_layer(state),
                 Command::ZoomIn => document_view::zoom_step(state, true, ppp),

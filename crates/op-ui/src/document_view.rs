@@ -159,6 +159,17 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
                     }
                 }
             }
+            Tool::RectangularMarquee
+            | Tool::EllipticalMarquee
+            | Tool::SingleRowMarquee
+            | Tool::SingleColumnMarquee => {
+                let options = (
+                    app.marquee.mode,
+                    app.marquee.feather,
+                    app.marquee.anti_alias,
+                );
+                marquee_input(ui, &response, state, tool, options, ppp);
+            }
             _ => {}
         }
     }
@@ -176,9 +187,13 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
             match tool {
                 Tool::Zoom if alt => CursorIcon::ZoomOut,
                 Tool::Zoom => CursorIcon::ZoomIn,
-                Tool::Eyedropper | Tool::Brush | Tool::Eraser | Tool::RectangularMarquee => {
-                    CursorIcon::Crosshair
-                }
+                Tool::Eyedropper
+                | Tool::Brush
+                | Tool::Eraser
+                | Tool::RectangularMarquee
+                | Tool::EllipticalMarquee
+                | Tool::SingleRowMarquee
+                | Tool::SingleColumnMarquee => CursorIcon::Crosshair,
                 Tool::Move => CursorIcon::Move,
                 Tool::HorizontalType => CursorIcon::Text,
                 _ => CursorIcon::Default,
@@ -203,8 +218,217 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
         .with_clip_rect(canvas_rect)
         .add(op_render::paint_callback(canvas_rect, image, view));
 
+    draw_selection(ui, state, canvas_rect, ppp, tool);
     status_bar(ui, state, status_rect, ppp);
     vertical_scrollbar(ui, state, vscroll_rect, ppp);
+}
+
+/// Screen point → document pixel coordinates (not clamped).
+fn to_doc(state: &DocState, p: Pos2, ppp: f32) -> Pos2 {
+    let d = (p - origin(state, ppp)) * ppp / state.view.zoom;
+    Pos2::new(d.x, d.y)
+}
+
+/// Document pixel → screen point.
+fn to_screen(state: &DocState, d: Pos2, ppp: f32) -> Pos2 {
+    origin(state, ppp) + d.to_vec2() * state.view.zoom / ppp
+}
+
+/// The marquee rectangle from a drag, with Photoshop's modifiers: Shift
+/// constrains to a square/circle, Alt draws from the center. Rectangles snap
+/// to whole pixels.
+fn marquee_rect(
+    drag: &crate::state::MarqueeDrag,
+    shift: bool,
+    alt: bool,
+) -> op_core::selection::Rect {
+    let constrain = shift && !drag.shift_for_op;
+    let from_center = alt && !drag.alt_for_op;
+    let mut d = drag.current - drag.start;
+    if constrain {
+        let m = d.x.abs().max(d.y.abs());
+        d = Vec2::new(m.copysign(d.x), m.copysign(d.y));
+    }
+    let (a, b) = if from_center {
+        (drag.start - d, drag.start + d)
+    } else {
+        (drag.start, drag.start + d)
+    };
+    op_core::selection::Rect::new(a.x.round(), a.y.round(), b.x.round(), b.y.round())
+}
+
+/// Marquee tools: drag to select, click to deselect; single row/column
+/// marquees select a 1-pixel line on click.
+fn marquee_input(
+    ui: &Ui,
+    response: &egui::Response,
+    state: &mut DocState,
+    tool: Tool,
+    (mode, feather, anti_alias): (crate::state::SelectionMode, f32, bool),
+    ppp: f32,
+) {
+    use op_core::{Selection, SelectionOp};
+    let mods = ui.input(|i| i.modifiers);
+    let has_selection = state.doc.selection().is_some();
+    // With a selection, Shift/Alt at mouse-down pick the combine mode
+    let op_from_mods = || match (mods.shift, mods.alt) {
+        (true, true) if has_selection => (SelectionOp::Intersect, true, true),
+        (true, false) if has_selection => (SelectionOp::Add, true, false),
+        (false, true) if has_selection => (SelectionOp::Subtract, false, true),
+        _ => (mode.op(), false, false),
+    };
+    let (w, h) = (state.doc.width, state.doc.height);
+
+    if matches!(tool, Tool::SingleRowMarquee | Tool::SingleColumnMarquee) {
+        if response.clicked()
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            let d = to_doc(state, p, ppp);
+            let (op, _, _) = op_from_mods();
+            let (rect, name) = if tool == Tool::SingleRowMarquee {
+                (
+                    op_core::selection::Rect::new(0.0, d.y.floor(), w as f32, d.y.floor() + 1.0),
+                    "Single Row Marquee",
+                )
+            } else {
+                (
+                    op_core::selection::Rect::new(d.x.floor(), 0.0, d.x.floor() + 1.0, h as f32),
+                    "Single Column Marquee",
+                )
+            };
+            let shape = Selection::rect(w, h, rect);
+            let combined = Selection::combine(state.doc.selection(), shape, op);
+            state.doc.set_selection(Some(combined));
+            state.record(name);
+        }
+        return;
+    }
+
+    // egui reports a drag only after the pointer moved a little, so the
+    // marquee starts where the button went down
+    if response.drag_started_by(PointerButton::Primary)
+        && let Some(p) = ui.input(|i| i.pointer.press_origin())
+    {
+        let (op, shift_for_op, alt_for_op) = op_from_mods();
+        let start = to_doc(state, p, ppp);
+        state.marquee_drag = Some(crate::state::MarqueeDrag {
+            start,
+            current: start,
+            op,
+            shift_for_op,
+            alt_for_op,
+        });
+    }
+    let pointer = ui
+        .input(|i| i.pointer.interact_pos())
+        .map(|p| to_doc(state, p, ppp));
+    if let Some(drag) = &mut state.marquee_drag {
+        if let Some(p) = pointer {
+            drag.current = p;
+        }
+        if response.drag_stopped() || !ui.input(|i| i.pointer.primary_down()) {
+            let drag = state.marquee_drag.take().unwrap();
+            let rect = marquee_rect(&drag, mods.shift, mods.alt);
+            if !rect.is_empty() {
+                let mut shape = if tool == Tool::EllipticalMarquee {
+                    Selection::ellipse(w, h, rect, anti_alias)
+                } else {
+                    Selection::rect(w, h, rect)
+                };
+                if feather > 0.0 {
+                    shape = shape.feather(feather);
+                }
+                let combined = Selection::combine(state.doc.selection(), shape, drag.op);
+                state.doc.set_selection(Some(combined));
+                let name = if tool == Tool::EllipticalMarquee {
+                    "Elliptical Marquee"
+                } else {
+                    "Rectangular Marquee"
+                };
+                state.record(name);
+            }
+        } else {
+            ui.ctx().request_repaint();
+        }
+        return;
+    }
+    // A click without a drag deselects, as in Photoshop
+    if response.clicked() && has_selection && !mods.shift && !mods.alt {
+        state.doc.set_selection(None);
+        state.record("Deselect");
+    }
+}
+
+/// Marching ants around the selection and the marquee being dragged.
+fn draw_selection(ui: &Ui, state: &mut DocState, canvas: Rect, ppp: f32, tool: Tool) {
+    let painter = ui.painter_at(canvas);
+    let time = ui.input(|i| i.time);
+    // Ants march by one dash every 1/8 s
+    let phase = ((time * 8.0) as i64 % 8) as f32;
+    let thin = 1.0 / ppp;
+    let dash = 4.0 / ppp;
+    let mut animate = false;
+
+    // The dash phase depends on the segment's position, so the pattern runs
+    // on across the many short steps of a curved outline
+    let mut ants = |a: Pos2, b: Pos2| {
+        painter.line_segment([a, b], egui::Stroke::new(thin, Color32::WHITE));
+        let along = ((a.x + a.y) * ppp + phase).rem_euclid(8.0);
+        painter.add(egui::Shape::dashed_line_with_offset(
+            &[a, b],
+            egui::Stroke::new(thin, Color32::BLACK),
+            &[dash],
+            &[dash],
+            along / ppp,
+        ));
+        animate = true;
+    };
+
+    if let Some(segs) = state.selection_outline() {
+        let visible = canvas.expand(2.0);
+        for s in segs.iter() {
+            let a = to_screen(state, Pos2::new(s[0] as f32, s[1] as f32), ppp);
+            let b = to_screen(state, Pos2::new(s[2] as f32, s[3] as f32), ppp);
+            if visible.intersects(Rect::from_two_pos(a, b)) {
+                ants(a, b);
+            }
+        }
+    }
+
+    if let Some(drag) = state.marquee_drag {
+        let mods = ui.input(|i| i.modifiers);
+        let r = marquee_rect(&drag, mods.shift, mods.alt);
+        let a = to_screen(state, Pos2::new(r.x0, r.y0), ppp);
+        let b = to_screen(state, Pos2::new(r.x1, r.y1), ppp);
+        let rect = Rect::from_two_pos(a, b);
+        if tool == Tool::EllipticalMarquee {
+            // Ellipse preview: a polyline approximating the ellipse
+            let n = 96;
+            let pts: Vec<Pos2> = (0..=n)
+                .map(|i| {
+                    let t = i as f32 / n as f32 * std::f32::consts::TAU;
+                    rect.center()
+                        + Vec2::new(t.cos() * rect.width() / 2.0, t.sin() * rect.height() / 2.0)
+                })
+                .collect();
+            for w in pts.windows(2) {
+                ants(w[0], w[1]);
+            }
+        } else {
+            for (a, b) in [
+                (rect.left_top(), rect.right_top()),
+                (rect.right_top(), rect.right_bottom()),
+                (rect.right_bottom(), rect.left_bottom()),
+                (rect.left_bottom(), rect.left_top()),
+            ] {
+                ants(a, b);
+            }
+        }
+    }
+    if animate {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(120));
+    }
 }
 
 /// Width of the vertical scrollbar column, and the status bar's layout.

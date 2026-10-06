@@ -71,6 +71,123 @@ pub fn click(harness: &mut Harness<'_, OpenPhotoApp>, pos: Pos2) {
     harness.run_steps(3);
 }
 
+pub fn drag(harness: &mut Harness<'_, OpenPhotoApp>, from: Pos2, to: Pos2, modifiers: Modifiers) {
+    harness.hover_at(from);
+    harness.event_modifiers(
+        egui::Event::PointerButton {
+            pos: from,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers,
+        },
+        modifiers,
+    );
+    harness.step();
+    for i in 1..=4 {
+        let p = from + (to - from) * (i as f32 / 4.0);
+        harness.event_modifiers(egui::Event::PointerMoved(p), modifiers);
+        harness.step();
+    }
+    harness.event_modifiers(
+        egui::Event::PointerButton {
+            pos: to,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers,
+        },
+        modifiers,
+    );
+    harness.run_steps(3);
+}
+
+fn active<'a>(h: &'a Harness<'_, OpenPhotoApp>) -> &'a crate::state::DocState {
+    let app = &h.state().state;
+    &app.docs[&app.active_doc.unwrap()]
+}
+
+/// Screen position (egui points) of a document pixel in the active document.
+fn doc_point(h: &Harness<'_, OpenPhotoApp>, x: f32, y: f32) -> Pos2 {
+    let state = active(h);
+    let ppp = 2.0 * UI_SCALE;
+    crate::document_view::origin(state, ppp) + egui::vec2(x, y) * state.view.zoom / ppp
+}
+
+#[test]
+fn marquee_selects_and_click_deselects() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    assert_eq!(h.state().state.tool, op_tools::Tool::RectangularMarquee);
+
+    let (a, b) = (doc_point(&h, 100.0, 120.0), doc_point(&h, 300.0, 220.0));
+    drag(&mut h, a, b, Modifiers::NONE);
+    let sel = active(&h).doc.selection().expect("selection made");
+    let (x0, y0, x1, y1) = sel.bounds().unwrap();
+    assert!(
+        (x0 as i32 - 100).abs() <= 1 && (y0 as i32 - 120).abs() <= 1,
+        "{x0},{y0}"
+    );
+    assert!(
+        (x1 as i32 - 300).abs() <= 1 && (y1 as i32 - 220).abs() <= 1,
+        "{x1},{y1}"
+    );
+    let states = active(&h).history.states();
+    assert_eq!(states.last().unwrap().name, "Rectangular Marquee");
+
+    // Shift-drag adds to the selection
+    let (c, d) = (doc_point(&h, 400.0, 400.0), doc_point(&h, 500.0, 500.0));
+    drag(&mut h, c, d, Modifiers::SHIFT);
+    let (_, _, x1, y1) = active(&h).doc.selection().unwrap().bounds().unwrap();
+    assert!(x1 >= 499 && y1 >= 499);
+
+    // A click deselects
+    let p = doc_point(&h, 50.0, 50.0);
+    click(&mut h, p);
+    assert!(active(&h).doc.selection().is_none());
+    assert_eq!(active(&h).history.states().last().unwrap().name, "Deselect");
+
+    // Cmd+Shift+D reselects, Cmd+A selects all, Cmd+D deselects
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::D);
+    h.run_steps(2);
+    assert!(active(&h).doc.selection().is_some());
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    h.run_steps(2);
+    assert_eq!(
+        active(&h).doc.selection().unwrap().bounds(),
+        Some((0, 0, 734, 811))
+    );
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::D);
+    h.run_steps(2);
+    assert!(active(&h).doc.selection().is_none());
+}
+
+#[test]
+fn shift_m_cycles_marquee_tools() {
+    let mut h = harness(Vec::new());
+    h.key_press_modifiers(Modifiers::SHIFT, egui::Key::M);
+    h.run_steps(2);
+    assert_eq!(h.state().state.tool, op_tools::Tool::EllipticalMarquee);
+    h.key_press(egui::Key::V);
+    h.run_steps(2);
+    h.key_press(egui::Key::M);
+    h.run_steps(2);
+    // The slot remembers the elliptical marquee
+    assert_eq!(h.state().state.tool, op_tools::Tool::EllipticalMarquee);
+}
+
+#[test]
+#[ignore]
+fn screenshot_selection() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    let (a, b) = (doc_point(&h, 100.0, 120.0), doc_point(&h, 400.0, 420.0));
+    drag(&mut h, a, b, Modifiers::NONE);
+    h.key_press_modifiers(Modifiers::SHIFT, egui::Key::M);
+    h.run_steps(2);
+    let (c, d) = (doc_point(&h, 300.0, 300.0), doc_point(&h, 650.0, 700.0));
+    drag(&mut h, c, d, Modifiers::SHIFT);
+    shot(&mut h, "selection");
+}
+
 #[test]
 fn toolbar_foreground_opens_color_picker() {
     let mut h = harness(Vec::new());

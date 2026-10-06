@@ -2339,9 +2339,6 @@ dependencies = [
 [[package]]
 name = "op-tools"
 version = "0.1.0"
-dependencies = [
- "op-core",
-]
 
 [[package]]
 name = "op-ui"

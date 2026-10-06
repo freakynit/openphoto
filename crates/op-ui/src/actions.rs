@@ -4,7 +4,6 @@ use std::path::PathBuf;
 
 use egui::Key;
 use op_core::{Color, Document};
-use op_tools::Tool;
 
 use crate::state::AppState;
 
@@ -95,7 +94,7 @@ pub fn handle_tool_keys(ctx: &egui::Context, app: &mut AppState) {
     if ctx.egui_wants_keyboard_input() {
         return;
     }
-    let keys: Vec<Key> = ctx.input(|i| {
+    let keys: Vec<(Key, bool)> = ctx.input(|i| {
         i.events
             .iter()
             .filter_map(|e| match e {
@@ -105,21 +104,27 @@ pub fn handle_tool_keys(ctx: &egui::Context, app: &mut AppState) {
                     repeat: false,
                     modifiers,
                     ..
-                } if !modifiers.command && !modifiers.ctrl && !modifiers.alt => Some(*key),
+                } if !modifiers.command && !modifiers.ctrl && !modifiers.alt => {
+                    Some((*key, modifiers.shift))
+                }
                 _ => None,
             })
             .collect()
     });
-    for key in keys {
+    for (key, shift) in keys {
         match key {
-            Key::D => crate::toolbar::reset_colors(app),
-            Key::X => crate::toolbar::swap_colors(app),
+            Key::D if !shift => crate::toolbar::reset_colors(app),
+            Key::X if !shift => crate::toolbar::swap_colors(app),
             _ => {
                 let name = key.name();
-                if name.len() == 1
-                    && let Some(tool) = Tool::from_shortcut(name.chars().next().unwrap())
-                {
-                    app.tool = tool;
+                if name.len() == 1 {
+                    let slots = app.tool_slots.clone();
+                    let key = name.chars().next().unwrap();
+                    if let Some(tool) =
+                        op_tools::tool_for_key(key, shift, app.tool, |slot| slots[slot])
+                    {
+                        app.select_tool(tool);
+                    }
                 }
             }
         }
