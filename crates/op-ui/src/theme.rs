@@ -35,6 +35,19 @@ pub mod color {
     /// Dark separator between sections.
     pub const SEPARATOR: Color32 = gray(0x39);
     pub const SEPARATOR_LIGHT: Color32 = gray(0x44);
+    /// The options bar (Photoshop 2026, measured).
+    pub const OPTIONS_BAR: Color32 = gray(0x53);
+    pub const OPTIONS_SEPARATOR: Color32 = gray(0x3e);
+    pub const OPTIONS_ICON: Color32 = gray(0xdd);
+    pub const OPTIONS_BELL: Color32 = gray(0xb9);
+    /// Disabled options-bar icons, such as the align buttons with one layer.
+    pub const OPTIONS_ICON_DISABLED: Color32 = gray(0x98);
+    /// Options-bar and dialog labels.
+    pub const TEXT_BRIGHT: Color32 = gray(0xf0);
+    pub const CHECKBOX: Color32 = gray(0xd4);
+    pub const CHECK_MARK: Color32 = gray(0x32);
+    pub const DROPDOWN_BORDER: Color32 = gray(0x66);
+    pub const DROPDOWN_BORDER_HOVER: Color32 = gray(0x80);
 
     pub const TEXT: Color32 = gray(0xea);
     pub const TEXT_DIM: Color32 = gray(0xbc);

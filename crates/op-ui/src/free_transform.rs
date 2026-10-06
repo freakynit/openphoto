@@ -296,20 +296,59 @@ pub fn cursor(state: &DocState, p: Pos2, ppp: f32) -> CursorIcon {
     }
 }
 
-/// Draws the transform box: thin outline, square handles and the center
-/// reference point.
-pub fn draw(ui: &Ui, state: &DocState, canvas: Rect, ppp: f32) {
-    let Some(t) = &state.free_transform else {
-        return;
-    };
-    let painter = ui.painter_at(canvas);
-    let quad = corners(t).map(|c| to_screen(state, c, ppp));
+/// The Move tool's handles for an untransformed box, in document pixels.
+fn controls_handles(bounds: (f32, f32, f32, f32)) -> [Pos2; 8] {
+    let (x0, y0, x1, y1) = bounds;
+    let (cx, cy) = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+    [
+        (x0, y0),
+        (cx, y0),
+        (x1, y0),
+        (x1, cy),
+        (x1, y1),
+        (cx, y1),
+        (x0, y1),
+        (x0, cy),
+    ]
+    .map(|(x, y)| Pos2::new(x, y))
+}
+
+/// Whether the screen point `p` grabs a handle of Show Transform Controls'
+/// box around `bounds`.
+pub fn controls_handle_at(
+    state: &DocState,
+    bounds: (f32, f32, f32, f32),
+    p: Pos2,
+    ppp: f32,
+) -> bool {
+    controls_handles(bounds)
+        .iter()
+        .any(|&h| to_screen(state, h, ppp).distance(p) <= GRAB)
+}
+
+/// Draws the Move tool's Show Transform Controls box: the Free Transform
+/// box without the reference point.
+pub fn draw_controls(
+    ui: &Ui,
+    state: &DocState,
+    bounds: (f32, f32, f32, f32),
+    canvas: Rect,
+    ppp: f32,
+) {
+    let (x0, y0, x1, y1) = bounds;
+    let quad = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+        .map(|(x, y)| to_screen(state, Pos2::new(x, y), ppp));
+    let handles = controls_handles(bounds).map(|h| to_screen(state, h, ppp));
+    draw_box(&ui.painter_at(canvas), quad, handles);
+}
+
+fn draw_box(painter: &egui::Painter, quad: [Pos2; 4], handles: [Pos2; 8]) {
     let line = Stroke::new(1.0, Color32::from_rgb(0x2c, 0x8b, 0xe8));
     for i in 0..4 {
         painter.line_segment([quad[i], quad[(i + 1) % 4]], line);
     }
-    for (h, _, _) in handles(t) {
-        let r = Rect::from_center_size(to_screen(state, h, ppp), Vec2::splat(HANDLE));
+    for h in handles {
+        let r = Rect::from_center_size(h, Vec2::splat(HANDLE));
         painter.rect(
             r,
             0,
@@ -318,6 +357,21 @@ pub fn draw(ui: &Ui, state: &DocState, canvas: Rect, ppp: f32) {
             StrokeKind::Inside,
         );
     }
+}
+
+/// Draws the transform box: thin outline, square handles and the center
+/// reference point.
+pub fn draw(ui: &Ui, state: &DocState, canvas: Rect, ppp: f32) {
+    let Some(t) = &state.free_transform else {
+        return;
+    };
+    let painter = ui.painter_at(canvas);
+    let quad = corners(t).map(|c| to_screen(state, c, ppp));
+    draw_box(
+        &painter,
+        quad,
+        handles(t).map(|(h, _, _)| to_screen(state, h, ppp)),
+    );
     let (cx, cy) = t.affine().apply(t.center());
     let c = to_screen(state, Pos2::new(cx, cy), ppp);
     painter.circle_stroke(c, pt(4.0), Stroke::new(1.0, Color32::from_gray(0x40)));

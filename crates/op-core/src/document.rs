@@ -444,6 +444,28 @@ impl Document {
     ///
     /// Blending happens in gamma-encoded space, which is Photoshop's default,
     /// with each layer's blend mode (see [`crate::blend`]).
+    /// The topmost visible layer showing a pixel at (x, y): the Move tool's
+    /// Auto-Select. Pixels hidden by the layer's mask or a zero opacity
+    /// don't count.
+    pub fn layer_at(&self, x: u32, y: u32) -> Option<LayerId> {
+        if x >= self.width || y >= self.height {
+            return None;
+        }
+        self.layers
+            .iter()
+            .rev()
+            .filter(|l| l.visible && l.opacity * l.fill > 0.0)
+            .find(|l| {
+                let LayerKind::Raster(image) = &l.kind;
+                let masked = l
+                    .mask
+                    .as_ref()
+                    .is_some_and(|m| m.enabled && m.value(x, y) == 0);
+                image.pixel(x, y)[3] > 0 && !masked
+            })
+            .map(|l| l.id)
+    }
+
     pub fn composite_rgba8(&self) -> Vec<u8> {
         self.composite_layers_rgba8(&self.layers)
     }
@@ -607,5 +629,24 @@ mod tests {
         doc.layers.push(layer);
         let px = doc.composite_rgba8();
         assert_eq!(&px[0..4], &[128, 128, 128, 255]);
+    }
+
+    #[test]
+    fn layer_at_finds_the_topmost_visible_pixel() {
+        let mut doc = Document::new_with_background("t", 4, 4, Color::WHITE);
+        let bg = doc.layers[0].id;
+        let id = doc.new_layer_id();
+        let mut image = TiledImage::new(4, 4);
+        image.set_pixel(1, 1, [0, 0, 0, 255]);
+        doc.layers.push(Layer::raster(id, "Layer 1", image));
+        assert_eq!(doc.layer_at(1, 1), Some(id));
+        assert_eq!(
+            doc.layer_at(2, 2),
+            Some(bg),
+            "transparent pixels fall through"
+        );
+        doc.layers[1].visible = false;
+        assert_eq!(doc.layer_at(1, 1), Some(bg));
+        assert_eq!(doc.layer_at(9, 9), None);
     }
 }

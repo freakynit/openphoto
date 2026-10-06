@@ -92,14 +92,168 @@ pub fn field(ui: &mut Ui, text: &str, width: f32, enabled: bool) -> Response {
     response
 }
 
-/// Vertical separator (between groups in the options bar).
+/// Vertical separator between groups in the options bar: a 1 pt line in
+/// `#3e3e3e`, as in Photoshop.
 pub fn vseparator(ui: &mut Ui, height: f32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(9.0, height), Sense::hover());
-    let x = rect.center().x.round() + 0.5;
-    ui.painter().line_segment(
-        [egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())],
-        Stroke::new(1.0, color::SEPARATOR_LIGHT),
+    ui.painter().rect_filled(
+        Rect::from_center_size(rect.center(), Vec2::new(theme::pt(1.0), height)),
+        0,
+        color::OPTIONS_SEPARATOR,
     );
+}
+
+/// Photoshop's checkbox: a 10 pt light-gray rounded square with a dark
+/// check mark when on, an outlined square when off, the label 7.5 pt to
+/// its right. Clicking the box or the label toggles it.
+pub fn checkbox(ui: &mut Ui, checked: &mut bool, label: &str) -> Response {
+    use theme::pt;
+    let enabled = ui.is_enabled();
+    let font = theme::body();
+    let text_color = if enabled {
+        color::TEXT_BRIGHT
+    } else {
+        color::TEXT_DISABLED
+    };
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), font, text_color);
+    let gap = if label.is_empty() { 0.0 } else { pt(8.0) };
+    let size = Vec2::new(
+        pt(10.0) + gap + galley.size().x,
+        theme::size::FIELD_HEIGHT.max(galley.size().y),
+    );
+    let (rect, mut response) = ui.allocate_exact_size(size, Sense::click());
+    if response.clicked() {
+        *checked = !*checked;
+        response.mark_changed();
+    }
+    if ui.is_rect_visible(rect) {
+        let painter = ui.painter();
+        let b = Rect::from_min_size(
+            egui::pos2(rect.left(), rect.center().y - pt(5.0)),
+            Vec2::splat(pt(10.0)),
+        );
+        let fill = if !enabled {
+            color::TEXT_DISABLED
+        } else if response.hovered() {
+            Color32::from_gray(0xe6)
+        } else {
+            color::CHECKBOX
+        };
+        if *checked {
+            painter.rect_filled(b, CornerRadius::same(pt(2.5) as u8), fill);
+            let p = |x: f32, y: f32| b.min + Vec2::new(pt(x), pt(y));
+            painter.add(egui::Shape::line(
+                vec![p(2.75, 4.75), p(4.5, 6.75), p(8.0, 2.75)],
+                Stroke::new(pt(1.7), color::CHECK_MARK),
+            ));
+        } else {
+            painter.rect_stroke(
+                b.shrink(pt(0.5)),
+                CornerRadius::same(pt(2.5) as u8),
+                Stroke::new(pt(1.0), fill),
+                StrokeKind::Middle,
+            );
+        }
+        painter.galley(
+            egui::pos2(
+                rect.left() + pt(10.0) + gap,
+                rect.center().y - galley.size().y / 2.0,
+            ),
+            galley,
+            text_color,
+        );
+    }
+    response
+}
+
+/// Photoshop's options-bar dropdown: a dark rounded field with a 1 pt
+/// `#666666` border, the value on the left and a chevron on the right.
+/// `menu` fills the popup.
+pub fn dropdown(
+    ui: &mut Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    width: f32,
+    text: &str,
+    menu: impl FnOnce(&mut Ui),
+) -> Response {
+    use theme::pt;
+    let (rect, response) = ui.allocate_exact_size(Vec2::new(width, pt(18.5)), Sense::click());
+    if ui.is_rect_visible(rect) {
+        let enabled = ui.is_enabled();
+        let painter = ui.painter();
+        painter.rect(
+            rect,
+            CornerRadius::same(pt(2.5) as u8),
+            color::FIELD,
+            Stroke::new(
+                pt(1.0),
+                if response.hovered() && enabled {
+                    color::DROPDOWN_BORDER_HOVER
+                } else {
+                    color::DROPDOWN_BORDER
+                },
+            ),
+            StrokeKind::Inside,
+        );
+        let tint = if enabled {
+            color::TEXT_BRIGHT
+        } else {
+            color::TEXT_DISABLED
+        };
+        painter.text(
+            rect.left_center() + Vec2::new(pt(7.0), 0.0),
+            Align2::LEFT_CENTER,
+            text,
+            theme::body(),
+            tint,
+        );
+        crate::ps_icons::paint(
+            painter,
+            egui::pos2(rect.right() - pt(7.75), rect.center().y + pt(0.25)),
+            crate::ps_icons::Icon::Caret,
+            if enabled {
+                color::OPTIONS_ICON
+            } else {
+                color::TEXT_DISABLED
+            },
+            color::FIELD,
+        );
+    }
+    egui::Popup::menu(&response)
+        .id(egui::Id::new(id))
+        .show(menu);
+    response
+}
+
+/// An options-bar button drawing one of the traced Photoshop icons.
+pub fn ps_icon_button(
+    ui: &mut Ui,
+    size: Vec2,
+    icon: crate::ps_icons::Icon,
+    tint: Color32,
+) -> Response {
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    if ui.is_rect_visible(rect) {
+        let enabled = ui.is_enabled();
+        if enabled && (response.hovered() || response.is_pointer_button_down_on()) {
+            ui.painter()
+                .rect_filled(rect, CornerRadius::same(4), color::HOVER);
+        }
+        crate::ps_icons::paint(
+            ui.painter(),
+            rect.center(),
+            icon,
+            if enabled {
+                tint
+            } else {
+                color::OPTIONS_ICON_DISABLED
+            },
+            color::OPTIONS_BAR,
+        );
+    }
+    response
 }
 
 /// Full-width horizontal separator.

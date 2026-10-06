@@ -1,68 +1,169 @@
 //! Top options bar; its contents depend on the current tool.
 
-use egui::{Align, Layout, Sense, Ui, Vec2};
+use egui::{Align, Color32, Layout, Pos2, Rect, Sense, Ui, Vec2};
 use op_tools::Tool;
 
 use crate::icons;
+use crate::ps_icons::Icon;
 use crate::state::{AppState, MarqueeStyle, SelectionMode};
-use crate::theme::{self, color, size};
+use crate::theme::{self, color, pt, size};
 use crate::widgets;
 
+/// Where the tool's own options start, right of the Tool Presets group.
+const CONTENT_LEFT: f32 = pt(110.0);
+/// The options bar's vertical center, from its top (Photoshop 2026).
+const CENTER_Y: f32 = pt(17.0);
+
 pub fn show(ui: &mut Ui, app: &mut AppState) {
-    let h = size::OPTIONS_BAR;
-    ui.spacing_mut().item_spacing.x = 6.0;
-    ui.allocate_ui_with_layout(
-        Vec2::new(ui.available_width(), h),
-        Layout::left_to_right(Align::Center),
+    let bar = Rect::from_min_size(
+        ui.cursor().min,
+        Vec2::new(ui.available_width(), size::OPTIONS_BAR),
+    );
+    let cy = bar.top() + CENTER_Y;
+    let at = |x: f32, dy: f32| Pos2::new(bar.left() + pt(x), cy + pt(dy));
+    let button = Vec2::splat(pt(24.0));
+    let painter = ui.painter().clone();
+
+    // The grip: a column of ten 2 × 1 pt dots
+    for k in 0..10 {
+        painter.rect_filled(
+            Rect::from_min_size(
+                Pos2::new(bar.left() + pt(5.5), bar.top() + pt(8.0 + 2.0 * k as f32)),
+                Vec2::new(pt(2.0), pt(1.0)),
+            ),
+            0,
+            Color32::from_gray(0x45),
+        );
+    }
+    ps_button(
+        ui,
+        Rect::from_center_size(at(28.0, 0.0), button),
+        Icon::Home,
+    )
+    .on_hover_text("Home");
+    separator(&painter, bar, 53.0);
+
+    // Tool Presets: the current tool's icon and a chevron
+    let preset = Rect::from_center_size(at(68.5, 0.5), button);
+    let response = if app.tool == Tool::Move {
+        ps_button(ui, preset, Icon::Move)
+    } else {
+        let r = ui.interact(preset, ui.id().with("tool-presets"), Sense::click());
+        if r.hovered() {
+            painter.rect_filled(preset, 4, color::HOVER);
+        }
+        painter.text(
+            preset.center(),
+            egui::Align2::CENTER_CENTER,
+            icons::tool(app.tool),
+            theme::tool_icon(pt(17.5)),
+            color::OPTIONS_ICON,
+        );
+        r
+    };
+    response.on_hover_text("Tool Presets");
+    crate::ps_icons::paint(
+        &painter,
+        at(90.25, 1.25),
+        Icon::Caret,
+        color::OPTIONS_ICON,
+        color::OPTIONS_BAR,
+    );
+    separator(&painter, bar, 102.0);
+
+    // The right end: the special buttons of a tool in progress, or the
+    // app-wide buttons
+    let right = Rect::from_min_max(Pos2::new(bar.right() - pt(230.0), bar.top()), bar.max);
+    let special = app.transforming() || app.tool == Tool::Crop || app.typing_text();
+    if special {
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(right.shrink2(Vec2::new(pt(8.0), 0.0)))
+                .layout(Layout::right_to_left(Align::Center)),
+            |ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                if app.transforming() {
+                    transform_buttons(ui, app);
+                } else if app.tool == Tool::Crop {
+                    crop_buttons(ui, app);
+                } else {
+                    type_buttons(ui, app);
+                }
+            },
+        );
+    } else {
+        let from_right = |x: f32, dy: f32| Pos2::new(bar.right() - pt(x), cy + pt(dy));
+        for (x, dy, icon, tip) in [
+            (200.0, 0.0, Icon::Share, "Share"),
+            (163.5, 0.5, Icon::Bell, "Notifications"),
+            (131.0, 0.5, Icon::Search, "Search"),
+            (98.5, -0.25, Icon::Lightbulb, "Discover"),
+            (69.5, 1.0, Icon::Workspace, "Workspace"),
+        ] {
+            let tint = if icon == Icon::Bell {
+                color::OPTIONS_BELL
+            } else {
+                color::OPTIONS_ICON
+            };
+            let rect = Rect::from_center_size(from_right(x, dy), button);
+            ps_button_tinted(ui, rect, icon, tint).on_hover_text(tip);
+        }
+        crate::ps_icons::paint(
+            &painter,
+            from_right(48.0, 1.25),
+            Icon::Caret,
+            color::OPTIONS_ICON,
+            color::OPTIONS_BAR,
+        );
+        // The account avatar (a placeholder)
+        painter.circle_filled(
+            from_right(21.5, 0.5),
+            pt(12.0),
+            Color32::from_rgb(0x4f, 0x8f, 0xd9),
+        );
+    }
+
+    let content = Rect::from_min_max(
+        Pos2::new(bar.left() + CONTENT_LEFT, bar.top()),
+        Pos2::new(right.left(), bar.bottom()),
+    );
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(content)
+            .layout(Layout::left_to_right(Align::Center)),
         |ui| {
-            ui.add_space(14.0);
-            widgets::icon_button(ui, icons::HOUSE, 36.0, false).on_hover_text("Home");
-            widgets::vseparator(ui, 34.0);
-
-            // Tool presets
-            widgets::icon_button(ui, icons::tool(app.tool), 36.0, false)
-                .on_hover_text("Tool Presets");
-            widgets::icon(ui, icons::CARET_DOWN, 13.0, color::ICON);
-            widgets::vseparator(ui, 34.0);
-
+            ui.spacing_mut().item_spacing.x = 6.0;
             if app.transforming() {
                 transform_options(ui, app);
             } else {
                 tool_options(ui, app);
             }
-
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.add_space(12.0);
-                if app.transforming() {
-                    transform_buttons(ui, app);
-                    return;
-                }
-                if app.tool == Tool::Crop {
-                    crop_buttons(ui, app);
-                    return;
-                }
-                if app.typing_text() {
-                    type_buttons(ui, app);
-                    return;
-                }
-                // Avatar placeholder
-                let (r, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
-                ui.painter().circle_filled(
-                    r.center(),
-                    14.0,
-                    egui::Color32::from_rgb(0x4f, 0x8f, 0xd9),
-                );
-                ui.add_space(6.0);
-                widgets::icon(ui, icons::CARET_DOWN, 13.0, color::ICON);
-                widgets::icon_button(ui, icons::SIDEBAR, 34.0, false).on_hover_text("Workspace");
-                widgets::icon_button(ui, icons::LIGHTBULB, 34.0, false).on_hover_text("Discover");
-                widgets::icon_button(ui, icons::MAGNIFYING_GLASS, 34.0, false)
-                    .on_hover_text("Search");
-                widgets::icon_button(ui, icons::BELL, 34.0, false).on_hover_text("Notifications");
-                widgets::icon_button(ui, icons::EXPORT, 34.0, false).on_hover_text("Share");
-            });
         },
     );
+    ui.allocate_rect(bar, Sense::hover());
+}
+
+/// A 1 pt separator at `x` points from the bar's left, as in Photoshop.
+fn separator(painter: &egui::Painter, bar: Rect, x: f32) {
+    painter.rect_filled(
+        Rect::from_min_size(
+            Pos2::new(bar.left() + pt(x), bar.top() + pt(6.0)),
+            Vec2::new(pt(1.0), pt(22.5)),
+        ),
+        0,
+        color::OPTIONS_SEPARATOR,
+    );
+}
+
+fn ps_button(ui: &mut Ui, rect: Rect, icon: Icon) -> egui::Response {
+    ps_button_tinted(ui, rect, icon, color::OPTIONS_ICON)
+}
+
+fn ps_button_tinted(ui: &mut Ui, rect: Rect, icon: Icon, tint: Color32) -> egui::Response {
+    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        widgets::ps_icon_button(ui, rect.size(), icon, tint)
+    })
+    .inner
 }
 
 /// The four combine-mode buttons of the selection tools.
@@ -113,7 +214,7 @@ fn tool_options(ui: &mut Ui, app: &mut AppState) {
         | Tool::Lasso
         | Tool::PolygonalLasso
         | Tool::MagneticLasso => marquee_options(ui, app),
-        Tool::Move => move_options(ui),
+        Tool::Move => move_options(ui, app),
         Tool::Brush
         | Tool::Pencil
         | Tool::Eraser
@@ -286,10 +387,9 @@ fn crop_options(ui: &mut Ui, app: &mut AppState) {
     }
     widgets::vseparator(ui, 34.0);
     let mut delete = true;
-    ui.add_enabled(
-        false,
-        egui::Checkbox::new(&mut delete, "Delete Cropped Pixels"),
-    );
+    ui.add_enabled_ui(false, |ui| {
+        widgets::checkbox(ui, &mut delete, "Delete Cropped Pixels")
+    });
 }
 
 /// Crop's Cancel (reset the box) and Commit buttons.
@@ -368,12 +468,12 @@ fn marquee_options(ui: &mut Ui, app: &mut AppState) {
     ui.add_space(6.0);
     // Anti-alias only applies to curved edges, so it's disabled for the
     // rectangular and single row/column marquees, as in Photoshop
-    ui.add_enabled(
+    ui.add_enabled_ui(
         !matches!(
             app.tool,
             Tool::RectangularMarquee | Tool::SingleRowMarquee | Tool::SingleColumnMarquee
         ),
-        egui::Checkbox::new(&mut opts.anti_alias, "Anti-alias"),
+        |ui| widgets::checkbox(ui, &mut opts.anti_alias, "Anti-alias"),
     );
     ui.add_space(6.0);
     if matches!(
@@ -437,7 +537,9 @@ fn eyedropper_options(ui: &mut Ui, app: &mut AppState) {
         });
     ui.add_space(6.0);
     let mut ring = true;
-    ui.add_enabled(false, egui::Checkbox::new(&mut ring, "Show Sampling Ring"));
+    ui.add_enabled_ui(false, |ui| {
+        widgets::checkbox(ui, &mut ring, "Show Sampling Ring")
+    });
 }
 
 /// Gradient (classic): the gradient swatch (foreground to background), the
@@ -506,7 +608,7 @@ fn gradient_options(ui: &mut Ui, app: &mut AppState) {
     ui.label("Opacity:");
     widgets::percent_drag(ui, &mut opts.opacity);
     ui.add_space(6.0);
-    ui.checkbox(&mut opts.reverse, "Reverse");
+    widgets::checkbox(ui, &mut opts.reverse, "Reverse");
 }
 
 /// Magic Wand: mode, Tolerance, Anti-alias, Contiguous, Sample All Layers.
@@ -519,9 +621,9 @@ fn wand_options(ui: &mut Ui, app: &mut AppState) {
         egui::DragValue::new(&mut opts.region.tolerance).range(0..=255),
     );
     ui.add_space(6.0);
-    ui.checkbox(&mut opts.region.anti_alias, "Anti-alias");
-    ui.checkbox(&mut opts.region.contiguous, "Contiguous");
-    ui.checkbox(&mut opts.region.all_layers, "Sample All Layers");
+    widgets::checkbox(ui, &mut opts.region.anti_alias, "Anti-alias");
+    widgets::checkbox(ui, &mut opts.region.contiguous, "Contiguous");
+    widgets::checkbox(ui, &mut opts.region.all_layers, "Sample All Layers");
     ui.add_space(6.0);
     select_and_mask_button(ui);
 }
@@ -597,7 +699,7 @@ fn retouch_options(
     };
     let disabled_check = |ui: &mut Ui, label: &str, on: bool| {
         let mut on = on;
-        ui.add_enabled(false, egui::Checkbox::new(&mut on, label));
+        ui.add_enabled_ui(false, |ui| widgets::checkbox(ui, &mut on, label));
     };
     match tool {
         Tool::Dodge | Tool::Burn => {
@@ -670,7 +772,7 @@ fn retouch_options(
             }
             if tool == Tool::CloneStamp {
                 ui.add_space(8.0);
-                ui.checkbox(&mut retouch.clone_aligned, "Aligned");
+                widgets::checkbox(ui, &mut retouch.clone_aligned, "Aligned");
                 ui.label("Sample:");
                 disabled_combo(ui, "clone-sample", "Current Layer", 110.0);
             }
@@ -714,18 +816,98 @@ fn bucket_options(ui: &mut Ui, app: &mut AppState) {
         egui::DragValue::new(&mut opts.tolerance).range(0..=255),
     );
     ui.add_space(6.0);
-    ui.checkbox(&mut opts.anti_alias, "Anti-alias");
-    ui.checkbox(&mut opts.contiguous, "Contiguous");
-    ui.checkbox(&mut opts.all_layers, "All Layers");
+    widgets::checkbox(ui, &mut opts.anti_alias, "Anti-alias");
+    widgets::checkbox(ui, &mut opts.contiguous, "Contiguous");
+    widgets::checkbox(ui, &mut opts.all_layers, "All Layers");
 }
 
-fn move_options(ui: &mut Ui) {
-    let mut auto_select = false;
-    let mut show_transform = false;
-    ui.checkbox(&mut auto_select, "Auto-Select:");
-    widgets::field(ui, "Layer", 80.0, true);
-    ui.add_space(8.0);
-    ui.checkbox(&mut show_transform, "Show Transform Controls");
+/// Move: Auto-Select (Layer), Show Transform Controls, and the align and
+/// distribute buttons (disabled: they need two or more layers selected).
+fn move_options(ui: &mut Ui, app: &mut AppState) {
+    let opts = &mut app.move_options;
+    ui.spacing_mut().item_spacing.x = 0.0;
+    widgets::checkbox(ui, &mut opts.auto_select, "Auto-Select:");
+    ui.add_space(pt(8.5));
+    widgets::dropdown(ui, "move-auto-select", pt(55.0), "Layer", |ui| {
+        let _ = ui.selectable_label(true, "Layer");
+    });
+    ui.add_space(pt(4.5));
+    sep(ui);
+    ui.add_space(pt(4.0));
+    widgets::checkbox(
+        ui,
+        &mut opts.show_transform_controls,
+        "Show Transform Controls",
+    );
+    ui.add_space(pt(5.5));
+    sep(ui);
+    // Offsets of the icon centers from the separator before them
+    let start = ui.cursor().left();
+    let groups: [&[(f32, Icon, &str)]; 3] = [
+        &[
+            (17.75, Icon::AlignLeft, "Align left edges"),
+            (
+                44.0,
+                Icon::AlignHorizontalCenter,
+                "Align horizontal centers",
+            ),
+            (69.75, Icon::AlignRight, "Align right edges"),
+            (100.0, Icon::DistributeVertically, "Distribute vertically"),
+        ],
+        &[
+            (135.0, Icon::AlignTop, "Align top edges"),
+            (161.0, Icon::AlignVerticalCenter, "Align vertical centers"),
+            (187.0, Icon::AlignBottom, "Align bottom edges"),
+            (
+                217.0,
+                Icon::DistributeHorizontally,
+                "Distribute horizontally",
+            ),
+        ],
+        &[(252.0, Icon::More, "More options")],
+    ];
+    let cy = ui.max_rect().top() + CENTER_Y;
+    let button = Vec2::new(pt(24.0), pt(24.0));
+    for (g, group) in groups.into_iter().enumerate() {
+        for &(x, icon, tip) in group {
+            let rect = Rect::from_center_size(Pos2::new(start + pt(x), cy), button);
+            let enabled = icon == Icon::More;
+            if enabled {
+                ps_button(ui, rect, icon).on_hover_text(tip);
+            } else {
+                // Drawn directly: a disabled Ui would fade Photoshop's gray
+                crate::ps_icons::paint(
+                    ui.painter(),
+                    rect.center(),
+                    icon,
+                    color::OPTIONS_ICON_DISABLED,
+                    color::OPTIONS_BAR,
+                );
+                ui.interact(rect, ui.id().with(tip), Sense::hover())
+                    .on_hover_text(tip);
+            }
+        }
+        let sep_x = [117.0, 234.0, 269.0][g];
+        ui.painter().rect_filled(
+            Rect::from_min_size(
+                Pos2::new(start + pt(sep_x), ui.max_rect().top() + pt(6.0)),
+                Vec2::new(pt(1.0), pt(22.5)),
+            ),
+            0,
+            color::OPTIONS_SEPARATOR,
+        );
+    }
+    let gear = Rect::from_center_size(Pos2::new(start + pt(291.0), cy), button);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(gear), |ui| {
+        widgets::ps_icon_button(ui, gear.size(), Icon::Gear, color::OPTIONS_ICON)
+            .on_hover_text("Set additional options");
+    });
+}
+
+/// A separator in the tool's options, taking 1 pt of the row.
+fn sep(ui: &mut Ui) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(pt(1.0), pt(22.5)), Sense::hover());
+    ui.painter().rect_filled(rect, 0, color::OPTIONS_SEPARATOR);
 }
 
 fn view_options(ui: &mut Ui, app: &mut AppState) {

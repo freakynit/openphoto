@@ -407,6 +407,41 @@ fn move_tool_drags_and_nudges() {
 }
 
 #[test]
+fn move_auto_select_and_transform_controls() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    // A red square on Layer 1, then an empty Layer 2 on top (active)
+    crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    h.state_mut().state.foreground = Color::from_rgba8([255, 0, 0, 255]);
+    select_rect(&mut h, 100.0, 100.0, 140.0, 140.0);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::D);
+    h.run_steps(2);
+    crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    h.run_steps(2);
+    let square = active(&h).doc.layers[1].id;
+
+    h.key_press(egui::Key::V);
+    h.run_steps(2);
+    // Auto-Select's checkbox in the options bar
+    click(&mut h, at_pt(115.0, 45.0));
+    assert!(h.state().state.move_options.auto_select);
+    let (a, b) = (doc_point(&h, 120.0, 120.0), doc_point(&h, 220.0, 170.0));
+    drag(&mut h, a, b, Modifiers::NONE);
+    assert_eq!(active(&h).doc.active_layer, Some(square));
+    assert_eq!(layer_pixel(&h, 1, 220, 170), [255, 0, 0, 255]);
+
+    // Show Transform Controls: the square (now 200..240 × 150..190) gets a
+    // box, and dragging its corner starts Free Transform
+    click(&mut h, at_pt(264.0, 45.0));
+    assert!(h.state().state.move_options.show_transform_controls);
+    h.run_steps(2);
+    let (a, b) = (doc_point(&h, 240.0, 190.0), doc_point(&h, 260.0, 210.0));
+    drag(&mut h, a, b, Modifiers::NONE);
+    assert!(active(&h).free_transform.is_some());
+}
+
+#[test]
 fn moving_the_background_without_selection_is_refused() {
     let mut h = harness(Vec::new());
     reference_document(&mut h);

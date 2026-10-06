@@ -133,6 +133,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
     let view_options = app.view;
     let retouch = app.retouch;
     let shape_options = app.shape;
+    let move_options = app.move_options;
     let type_options = app.type_options;
     let mut paint_error = None;
     let Some(state) = app.docs.get_mut(&id) else {
@@ -223,6 +224,50 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
             i.smooth_scroll_delta,
         )
     });
+    // Show Transform Controls: dragging a handle of the box starts Free
+    // Transform, which takes the drag from here on
+    let controls = tool == Tool::Move
+        && move_options.show_transform_controls
+        && state.free_transform.is_none()
+        && state.move_drag.is_none()
+        && state.guide_drag.is_none();
+    let controls_bounds = if controls {
+        state.transform_controls_bounds()
+    } else {
+        None
+    };
+    if let Some(bounds) = controls_bounds
+        && !space
+        && response.drag_started_by(PointerButton::Primary)
+        && ui
+            .input(|i| i.pointer.press_origin())
+            .is_some_and(|p| crate::free_transform::controls_handle_at(state, bounds, p, ppp))
+    {
+        let _ = crate::free_transform::start(state);
+    }
+    // Auto-Select (inverted while Cmd is held) picks the layer under the
+    // pointer when the button goes down, except on a transform handle
+    let on_handle = |state: &DocState, p: Pos2| {
+        controls_bounds.is_some_and(|b| crate::free_transform::controls_handle_at(state, b, p, ppp))
+    };
+    if tool == Tool::Move
+        && !space
+        && state.free_transform.is_none()
+        && state.guide_drag.is_none()
+        && move_options.auto_select != cmd
+        && response.is_pointer_button_down_on()
+        && ui.input(|i| i.pointer.primary_pressed())
+        && let Some(p) = ui.input(|i| i.pointer.press_origin())
+        && !on_handle(state, p)
+    {
+        let d = to_doc(state, p, ppp);
+        if d.x >= 0.0
+            && d.y >= 0.0
+            && let Some(id) = state.doc.layer_at(d.x as u32, d.y as u32)
+        {
+            state.doc.active_layer = Some(id);
+        }
+    }
     let hover = response.hover_pos();
     // For the Info panel
     state.pointer = hover.map(|p| to_doc(state, p, ppp));
@@ -491,6 +536,11 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
         crate::rulers::draw_rulers(ui, state, window_rect, pointer, ppp);
     }
     crate::free_transform::draw(ui, state, canvas_rect, ppp);
+    if let Some(bounds) = controls_bounds
+        && view_options.extras
+    {
+        crate::free_transform::draw_controls(ui, state, bounds, canvas_rect, ppp);
+    }
     // The crop box belongs to the Crop tool; picking another tool drops it
     if tool != Tool::Crop {
         state.crop = None;

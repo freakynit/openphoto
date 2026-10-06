@@ -31,6 +31,13 @@ impl Default for View {
     }
 }
 
+/// What the transform controls box depends on: the document revision, the
+/// active layer and the selection revision.
+type ControlsKey = (u64, Option<LayerId>, u64);
+
+/// A box in document pixels: (x0, y0, x1, y1).
+type Bounds = (f32, f32, f32, f32);
+
 pub struct DocState {
     pub doc: Document,
     /// The file the document was opened from or last saved to.
@@ -84,6 +91,10 @@ pub struct DocState {
     pub shape_drag: Option<(egui::Pos2, egui::Pos2)>,
     /// A layer name being edited in the Layers panel, and the text so far.
     pub renaming: Option<(LayerId, String)>,
+    /// The Move tool's transform controls box (document pixels), cached per
+    /// (revision, active layer, selection revision); `None` inside when the
+    /// layer can't be transformed.
+    controls_bounds: Option<(ControlsKey, Option<Bounds>)>,
     /// Marching-ants outline of the selection, cached per selection revision.
     outline: Option<(u64, Arc<Vec<[u32; 4]>>)>,
     canvas: Option<Arc<CanvasImage>>,
@@ -96,6 +107,24 @@ pub struct DocState {
 }
 
 impl DocState {
+    /// The box Show Transform Controls draws around the active layer's
+    /// pixels (or the selection), as Free Transform would start with it.
+    pub fn transform_controls_bounds(&mut self) -> Option<Bounds> {
+        let key = (
+            self.doc.revision(),
+            self.doc.active_layer,
+            self.doc.selection_revision(),
+        );
+        match self.controls_bounds {
+            Some((k, b)) if k == key => b,
+            _ => {
+                let b = op_core::transform::bounds(&self.doc).ok();
+                self.controls_bounds = Some((key, b));
+                b
+            }
+        }
+    }
+
     /// `initial` names the first history state, e.g. "Open" or "New".
     pub fn new(doc: Document, initial: &str) -> Self {
         let snapshot_thumb = Some(composite_thumbnail(&doc, SNAPSHOT_THUMB_PX));
@@ -112,6 +141,7 @@ impl DocState {
             pending_edit: false,
             marquee_drag: None,
             move_drag: None,
+            controls_bounds: None,
             stroke: None,
             last_paint_point: None,
             renaming: None,
@@ -491,6 +521,17 @@ pub struct TextEdit {
     pub shown: String,
 }
 
+/// Move tool options. Both are off by default, as in Photoshop.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MoveOptions {
+    /// Clicking picks the topmost layer with a pixel under the pointer
+    /// (Cmd inverts this while held).
+    pub auto_select: bool,
+    /// Draw the transform box around the active layer; dragging one of its
+    /// handles starts Free Transform.
+    pub show_transform_controls: bool,
+}
+
 /// Shape tool options: the Polygon's sides (5) and the Line's weight
 /// (1 px), Photoshop's defaults.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -854,6 +895,7 @@ pub struct AppState {
     pub history_brush: PaintOptions,
     pub retouch: RetouchOptions,
     pub shape: ShapeOptions,
+    pub move_options: MoveOptions,
     pub type_options: TypeOptions,
     /// Whether the Color panel edits the background or the foreground color.
     pub editing_background: bool,
@@ -938,6 +980,7 @@ impl Default for AppState {
             history_brush: PaintOptions::brush(),
             retouch: RetouchOptions::default(),
             shape: ShapeOptions::default(),
+            move_options: MoveOptions::default(),
             type_options: TypeOptions::default(),
             editing_background: false,
             picker_hsb: Hsb::from_color(foreground),

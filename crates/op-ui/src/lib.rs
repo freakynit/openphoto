@@ -20,6 +20,7 @@ mod icons;
 mod menu;
 mod options_bar;
 mod panels;
+mod ps_icons;
 mod rulers;
 mod state;
 mod theme;
