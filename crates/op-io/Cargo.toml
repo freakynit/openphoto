@@ -1,0 +1,11 @@
+[package]
+name = "op-io"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+op-core.workspace = true
+image.workspace = true
+thiserror.workspace = true

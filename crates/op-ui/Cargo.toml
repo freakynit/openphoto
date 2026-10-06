@@ -1,0 +1,20 @@
+[package]
+name = "op-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+op-core.workspace = true
+op-color.workspace = true
+op-io.workspace = true
+op-render.workspace = true
+op-tools.workspace = true
+
+eframe.workspace = true
+egui.workspace = true
+egui_dock.workspace = true
+egui-phosphor.workspace = true
+rfd.workspace = true
+log.workspace = true

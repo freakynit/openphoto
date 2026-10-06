@@ -1,0 +1,40 @@
+[workspace]
+resolver = "3"
+members = ["app", "crates/*"]
+default-members = ["app"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+op-core = { path = "crates/op-core" }
+op-render = { path = "crates/op-render" }
+op-tools = { path = "crates/op-tools" }
+op-io = { path = "crates/op-io" }
+op-color = { path = "crates/op-color" }
+op-ui = { path = "crates/op-ui" }
+
+eframe = { version = "0.36", default-features = false, features = ["wgpu", "default_fonts", "accesskit"] }
+egui = "0.36"
+egui-wgpu = "0.36"
+egui_dock = "0.21"
+egui-phosphor = "0.14"
+wgpu = "30"
+bytemuck = { version = "1", features = ["derive"] }
+glam = "0.30"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "tiff", "bmp", "gif"] }
+rfd = "0.17"
+thiserror = "2"
+log = "0.4"
+env_logger = "0.11"
+
+# Pixel processing is too slow in plain debug builds: fully optimize
+# dependencies and lightly optimize our own crates.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

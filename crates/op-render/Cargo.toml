@@ -1,0 +1,12 @@
+[package]
+name = "op-render"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+egui.workspace = true
+egui-wgpu.workspace = true
+bytemuck.workspace = true
+log.workspace = true

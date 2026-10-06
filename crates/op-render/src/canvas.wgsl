@@ -1,0 +1,58 @@
+// Canvas: checkerboard transparency + document image + pixel grid at high zoom.
+// All coordinates are physical pixels (framebuffer coordinates), independent
+// of the viewport egui sets.
+
+struct Uniforms {
+    // xy: screen position of the document's top-left; z: zoom (physical px per
+    // document px); w: checkerboard cell size
+    origin_zoom: vec4<f32>,
+    // xy: document size; z: max mip level; w: pixel grid enabled
+    doc: vec4<f32>,
+};
+
+@group(0) @binding(0) var<uniform> u: Uniforms;
+@group(0) @binding(1) var tex: texture_2d<f32>;
+@group(0) @binding(2) var samp: sampler;
+
+@vertex
+fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
+    // A single triangle covering the whole viewport
+    let uv = vec2<f32>(f32((i << 1u) & 2u), f32(i & 2u));
+    return vec4<f32>(uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.0, 1.0);
+}
+
+@fragment
+fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let local = frag.xy - u.origin_zoom.xy;
+    let zoom = u.origin_zoom.z;
+    let d = local / zoom;
+    if d.x < 0.0 || d.y < 0.0 || d.x >= u.doc.x || d.y >= u.doc.y {
+        discard;
+    }
+
+    let cell = vec2<i32>(floor(local / u.origin_zoom.w));
+    let checker = select(1.0, 0.8, ((cell.x + cell.y) & 1) == 1);
+
+    // The texture may have been downscaled to fit the GPU limit, so map proportionally
+    let dims = vec2<f32>(textureDimensions(tex, 0));
+    let uv = d / u.doc.xy;
+    var c: vec4<f32>;
+    if zoom >= 1.0 {
+        c = textureLoad(tex, vec2<i32>(floor(uv * dims)), 0);
+    } else {
+        let lod = clamp(log2(dims.x / u.doc.x / zoom), 0.0, u.doc.z);
+        c = textureSampleLevel(tex, samp, uv, lod);
+    }
+
+    // The texture is premultiplied
+    var rgb = c.rgb + vec3<f32>(checker) * (1.0 - c.a);
+
+    if u.doc.w > 0.5 && zoom >= 6.0 {
+        let f = fract(d);
+        let edge = min(f, vec2<f32>(1.0) - f) * zoom;
+        if min(edge.x, edge.y) < 0.5 {
+            rgb = mix(rgb, vec3<f32>(0.55), 0.35);
+        }
+    }
+    return vec4<f32>(rgb, 1.0);
+}
