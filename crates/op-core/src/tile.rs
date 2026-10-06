@@ -33,6 +33,17 @@ pub struct TiledImage {
     tiles: HashMap<(u32, u32), Arc<Tile>>,
 }
 
+impl std::fmt::Debug for TiledImage {
+    /// Size and allocated tiles only; the pixels would be far too much.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TiledImage")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("tiles", &self.tiles.len())
+            .finish()
+    }
+}
+
 impl TiledImage {
     pub fn new(width: u32, height: u32) -> Self {
         Self {

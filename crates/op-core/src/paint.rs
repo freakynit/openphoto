@@ -1,4 +1,6 @@
-//! Painting strokes for the Brush, Pencil and Eraser tools.
+//! Painting strokes for the Brush, Pencil and Eraser, and the brush-based
+//! retouching tools: Dodge, Burn, Sponge, Blur, Sharpen, Clone Stamp and
+//! History Brush.
 //!
 //! Like Photoshop, Flow builds up within a stroke while Opacity caps it: each
 //! stroke keeps a per-pixel coverage (0..1) accumulated from its dabs, and the
@@ -46,14 +48,64 @@ impl BrushTip {
     }
 }
 
+/// The tones the Dodge and Burn tools work on ("Range").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ToneRange {
+    Shadows,
+    #[default]
+    Midtones,
+    Highlights,
+}
+
+impl ToneRange {
+    pub const ALL: [Self; 3] = [Self::Shadows, Self::Midtones, Self::Highlights];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Shadows => "Shadows",
+            Self::Midtones => "Midtones",
+            Self::Highlights => "Highlights",
+        }
+    }
+
+    /// How strongly a value `v` (0–1) is affected.
+    fn weight(self, v: f32) -> f32 {
+        match self {
+            Self::Shadows => (1.0 - v) * (1.0 - v),
+            Self::Midtones => 4.0 * v * (1.0 - v),
+            Self::Highlights => v * v,
+        }
+    }
+}
+
 /// What a stroke does to the pixels it covers.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum StrokeKind {
     /// Paint a color (Brush, Pencil).
     Paint([u8; 3]),
     /// Remove pixels (Eraser). On the background layer, or with transparent
     /// pixels locked, the eraser paints `background` instead, as in Photoshop.
-    Erase { background: [u8; 3] },
+    Erase {
+        background: [u8; 3],
+    },
+    /// Lighten (Dodge tool).
+    Dodge(ToneRange),
+    /// Darken (Burn tool).
+    Burn(ToneRange),
+    /// Sponge tool: saturate, or desaturate.
+    Sponge {
+        saturate: bool,
+    },
+    Blur,
+    Sharpen,
+    /// Paint pixels of `image` moved by (`dx`, `dy`): the Clone Stamp
+    /// (another spot of the layer) and the History Brush (the layer in an
+    /// earlier state, not moved).
+    Source {
+        image: TiledImage,
+        dx: i64,
+        dy: i64,
+    },
 }
 
 /// Why a stroke can't start; the messages match Photoshop's alerts.
@@ -186,10 +238,71 @@ impl Stroke {
                     .map_or(1.0, |s| s.get(x, y) as f32 / 255.0);
                 let amount = *c * self.opacity * selected;
                 let base = self.base.pixel(x, y);
-                image.set_pixel(x, y, apply(base, amount, self.kind, self.preserve_alpha));
+                let px = match &self.kind {
+                    StrokeKind::Paint(_) | StrokeKind::Erase { .. } => {
+                        apply(base, amount, &self.kind, self.preserve_alpha)
+                    }
+                    other => {
+                        let target = self.target(other, x, y, base);
+                        mix(base, target, amount, self.preserve_alpha)
+                    }
+                };
+                image.set_pixel(x, y, px);
             }
         }
         doc.mark_dirty();
+    }
+
+    /// What the retouching tools turn the pre-stroke pixel at (`x`, `y`)
+    /// into at full strength.
+    fn target(&self, kind: &StrokeKind, x: u32, y: u32, base: [u8; 4]) -> [u8; 4] {
+        let rgb = [base[0], base[1], base[2]].map(|v| v as f32 / 255.0);
+        let out = |c: [f32; 3]| {
+            let [r, g, b] = c.map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u8);
+            [r, g, b, base[3]]
+        };
+        match kind {
+            StrokeKind::Dodge(range) => out(rgb.map(|v| v + range.weight(v) * (1.0 - v))),
+            StrokeKind::Burn(range) => out(rgb.map(|v| v - range.weight(v) * v)),
+            StrokeKind::Sponge { saturate } => {
+                let [h, s, l] = crate::adjust::rgb_to_hsl(rgb);
+                let s = if *saturate { (s * 2.0).min(1.0) } else { 0.0 };
+                out(crate::adjust::hsl_to_rgb([h, s, l]))
+            }
+            StrokeKind::Blur | StrokeKind::Sharpen => {
+                // 3×3 average of the pre-stroke pixels, premultiplied
+                let mut sum = [0f32; 4];
+                for dy in -1i64..=1 {
+                    for dx in -1i64..=1 {
+                        let sx = (x as i64 + dx).clamp(0, self.base.width() as i64 - 1) as u32;
+                        let sy = (y as i64 + dy).clamp(0, self.base.height() as i64 - 1) as u32;
+                        let p = self.base.pixel(sx, sy);
+                        let a = p[3] as f32 / 255.0;
+                        for c in 0..3 {
+                            sum[c] += p[c] as f32 / 255.0 * a;
+                        }
+                        sum[3] += a;
+                    }
+                }
+                if sum[3] <= 0.0 {
+                    return base;
+                }
+                let blurred = [sum[0] / sum[3], sum[1] / sum[3], sum[2] / sum[3]];
+                if matches!(kind, StrokeKind::Blur) {
+                    out(blurred)
+                } else {
+                    out([0, 1, 2].map(|c| rgb[c] + (rgb[c] - blurred[c])))
+                }
+            }
+            StrokeKind::Source { image, dx, dy } => {
+                let (sx, sy) = (x as i64 - dx, y as i64 - dy);
+                if sx < 0 || sy < 0 || sx >= image.width() as i64 || sy >= image.height() as i64 {
+                    return base;
+                }
+                image.pixel(sx as u32, sy as u32)
+            }
+            StrokeKind::Paint(_) | StrokeKind::Erase { .. } => base,
+        }
     }
 
     /// The layer the stroke paints on.
@@ -203,12 +316,38 @@ impl Stroke {
     }
 }
 
+/// `base` moved toward `target` by `amount`, in premultiplied alpha; with
+/// `preserve_alpha` only the color changes.
+fn mix(base: [u8; 4], target: [u8; 4], amount: f32, preserve_alpha: bool) -> [u8; 4] {
+    let (ba, ta) = (base[3] as f32 / 255.0, target[3] as f32 / 255.0);
+    let oa = if preserve_alpha {
+        ba
+    } else {
+        ba + (ta - ba) * amount
+    };
+    if oa <= 0.0 {
+        return [0; 4];
+    }
+    let mut out = [0u8; 4];
+    for c in 0..3 {
+        let v = if preserve_alpha {
+            base[c] as f32 + (target[c] as f32 - base[c] as f32) * amount
+        } else {
+            let (b, t) = (base[c] as f32 * ba, target[c] as f32 * ta);
+            (b + (t - b) * amount) / oa
+        };
+        out[c] = v.round().clamp(0.0, 255.0) as u8;
+    }
+    out[3] = (oa * 255.0).round() as u8;
+    out
+}
+
 /// One pixel of the stroke: the pre-stroke pixel `base` changed by `amount`
 /// (coverage × opacity × selection).
-fn apply(base: [u8; 4], amount: f32, kind: StrokeKind, preserve_alpha: bool) -> [u8; 4] {
+fn apply(base: [u8; 4], amount: f32, kind: &StrokeKind, preserve_alpha: bool) -> [u8; 4] {
     let mix = |a: u8, b: u8, t: f32| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
     match kind {
-        StrokeKind::Erase { background } if preserve_alpha => {
+        &StrokeKind::Erase { background } if preserve_alpha => {
             let [r, g, b, a] = base;
             [
                 mix(r, background[0], amount),
@@ -221,7 +360,7 @@ fn apply(base: [u8; 4], amount: f32, kind: StrokeKind, preserve_alpha: bool) -> 
             let [r, g, b, a] = base;
             [r, g, b, (a as f32 * (1.0 - amount)).round() as u8]
         }
-        StrokeKind::Paint(color) if preserve_alpha => {
+        &StrokeKind::Paint(color) if preserve_alpha => {
             let [r, g, b, a] = base;
             [
                 mix(r, color[0], amount),
@@ -230,7 +369,7 @@ fn apply(base: [u8; 4], amount: f32, kind: StrokeKind, preserve_alpha: bool) -> 
                 a,
             ]
         }
-        StrokeKind::Paint(color) => {
+        &StrokeKind::Paint(color) => {
             // Source-over of `color` at alpha `amount` onto the straight-alpha base
             let ba = base[3] as f32 / 255.0;
             let oa = amount + ba * (1.0 - amount);
@@ -247,6 +386,8 @@ fn apply(base: [u8; 4], amount: f32, kind: StrokeKind, preserve_alpha: bool) -> 
                 (oa * 255.0).round() as u8,
             ]
         }
+        // The retouching tools go through `mix`
+        _ => base,
     }
 }
 
@@ -402,5 +543,76 @@ mod tests {
         for x in 5..35 {
             assert_eq!(pixel(&doc, id, x, 20)[3], 255, "x={x}");
         }
+    }
+
+    /// 40×40 opaque layer filled with `rgb`.
+    fn doc_filled(rgb: [u8; 4]) -> (Document, LayerId) {
+        let mut doc = Document::new_with_background("t", 40, 40, Color::WHITE);
+        let id = doc.new_layer_id();
+        doc.layers.push(Layer::raster(
+            id,
+            "Layer 1",
+            TiledImage::filled(40, 40, rgb),
+        ));
+        doc.active_layer = Some(id);
+        (doc, id)
+    }
+
+    fn one_dab(doc: &mut Document, kind: StrokeKind, strength: f32) {
+        let mut s = Stroke::begin(doc, HARD, kind, strength, 1.0).unwrap();
+        s.add_point(doc, 20.0, 20.0);
+    }
+
+    #[test]
+    fn dodge_burn_and_sponge() {
+        let (mut doc, id) = doc_filled([128, 128, 128, 255]);
+        one_dab(&mut doc, StrokeKind::Dodge(ToneRange::Midtones), 0.5);
+        let lighter = pixel(&doc, id, 20, 20);
+        assert!(lighter[0] > 150 && lighter[0] < 255, "{lighter:?}");
+        let (mut doc, id) = doc_filled([128, 128, 128, 255]);
+        one_dab(&mut doc, StrokeKind::Burn(ToneRange::Midtones), 0.5);
+        assert!(pixel(&doc, id, 20, 20)[0] < 100);
+        // Highlights barely touch dark pixels
+        let (mut doc, id) = doc_filled([20, 20, 20, 255]);
+        one_dab(&mut doc, StrokeKind::Dodge(ToneRange::Highlights), 1.0);
+        assert!(pixel(&doc, id, 20, 20)[0] < 25);
+        let (mut doc, id) = doc_filled([200, 50, 50, 255]);
+        one_dab(&mut doc, StrokeKind::Sponge { saturate: false }, 1.0);
+        let gray = pixel(&doc, id, 20, 20);
+        assert_eq!((gray[0], gray[1]), (gray[1], gray[2]));
+    }
+
+    #[test]
+    fn blur_sharpen_and_clone() {
+        // A vertical edge at x = 20: black left, white right
+        let (mut doc, id) = doc_filled([255, 255, 255, 255]);
+        {
+            let LayerKind::Raster(img) = &mut doc.layer_mut(id).unwrap().kind;
+            for y in 0..40 {
+                for x in 0..20 {
+                    img.set_pixel(x, y, [0, 0, 0, 255]);
+                }
+            }
+        }
+        one_dab(&mut doc, StrokeKind::Blur, 1.0);
+        let edge = pixel(&doc, id, 19, 20)[0];
+        assert!(edge > 0 && edge < 128, "{edge}");
+
+        let (mut doc, id) = doc_filled([100, 100, 100, 255]);
+        {
+            let LayerKind::Raster(img) = &mut doc.layer_mut(id).unwrap().kind;
+            img.set_pixel(5, 5, [255, 0, 0, 255]);
+        }
+        // Clone (5, 5) to (20, 20)
+        let LayerKind::Raster(img) = &doc.layer(id).unwrap().kind;
+        let source = StrokeKind::Source {
+            image: img.clone(),
+            dx: 15,
+            dy: 15,
+        };
+        let mut s = Stroke::begin(&doc, HARD, source, 1.0, 1.0).unwrap();
+        s.add_point(&mut doc, 20.5, 20.5);
+        assert_eq!(pixel(&doc, id, 20, 20), [255, 0, 0, 255]);
+        assert_eq!(pixel(&doc, id, 21, 20), [100, 100, 100, 255]);
     }
 }

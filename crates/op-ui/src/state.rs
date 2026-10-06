@@ -59,6 +59,12 @@ pub struct DocState {
     pub lasso: Option<LassoPath>,
     /// A guide being dragged.
     pub guide_drag: Option<GuideDrag>,
+    /// The Clone Stamp's source point (set with Alt-click), and the offset
+    /// from it to the strokes once painting has started (Aligned).
+    pub clone_source: Option<egui::Pos2>,
+    pub clone_offset: Option<egui::Vec2>,
+    /// The button went down to pick the source; no painting until it's up.
+    pub picking_clone_source: bool,
     /// The Crop tool's box, while the Crop tool is in use.
     pub crop: Option<CropBox>,
     /// Edit > Free Transform, while in progress.
@@ -101,6 +107,9 @@ impl DocState {
             free_transform: None,
             crop: None,
             guide_drag: None,
+            clone_source: None,
+            clone_offset: None,
+            picking_clone_source: false,
             gradient_drag: None,
             outline: None,
             canvas: None,
@@ -337,6 +346,29 @@ pub struct MarqueeDrag {
     /// so they chose the combine mode and don't constrain the shape.
     pub shift_for_op: bool,
     pub alt_for_op: bool,
+}
+
+/// Options of the retouching tools beyond their brushes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RetouchOptions {
+    pub dodge_range: op_core::paint::ToneRange,
+    pub burn_range: op_core::paint::ToneRange,
+    /// Sponge: "Saturate" rather than "Desaturate" (the default).
+    pub sponge_saturate: bool,
+    /// Clone Stamp: "Aligned" (on by default): the offset from the source
+    /// point stays the same from stroke to stroke.
+    pub clone_aligned: bool,
+}
+
+impl Default for RetouchOptions {
+    fn default() -> Self {
+        Self {
+            dodge_range: Default::default(),
+            burn_range: Default::default(),
+            sponge_saturate: false,
+            clone_aligned: true,
+        }
+    }
 }
 
 /// View menu switches. Photoshop's defaults: rulers and grid off, Extras
@@ -608,6 +640,17 @@ impl PaintOptions {
         }
     }
 
+    /// A retouching tool: the round brush with `opacity` as its strength
+    /// (Exposure for Dodge and Burn, Strength for Blur and Sharpen) and
+    /// `flow` (the Sponge's Flow).
+    const fn retouch(opacity: f32, flow: f32) -> Self {
+        Self {
+            opacity,
+            flow,
+            ..Self::brush()
+        }
+    }
+
     /// The `]` step at this size, as in Photoshop.
     pub fn size_step(size: f32) -> f32 {
         match size {
@@ -639,6 +682,17 @@ pub struct AppState {
     pub brush: PaintOptions,
     pub pencil: PaintOptions,
     pub eraser: PaintOptions,
+    /// Each retouching tool keeps its own brush, as in Photoshop. Dodge and
+    /// Burn start at Exposure 50%, Blur and Sharpen at Strength 50%, the
+    /// Sponge at Flow 50%.
+    pub dodge: PaintOptions,
+    pub burn: PaintOptions,
+    pub sponge: PaintOptions,
+    pub blur: PaintOptions,
+    pub sharpen: PaintOptions,
+    pub clone_stamp: PaintOptions,
+    pub history_brush: PaintOptions,
+    pub retouch: RetouchOptions,
     /// Whether the Color panel edits the background or the foreground color.
     pub editing_background: bool,
     /// Cached HSB so the hue doesn't snap back to 0 for grays.
@@ -709,6 +763,14 @@ impl Default for AppState {
             brush: PaintOptions::brush(),
             pencil: PaintOptions::pencil(),
             eraser: PaintOptions::brush(),
+            dodge: PaintOptions::retouch(0.5, 1.0),
+            burn: PaintOptions::retouch(0.5, 1.0),
+            sponge: PaintOptions::retouch(1.0, 0.5),
+            blur: PaintOptions::retouch(0.5, 1.0),
+            sharpen: PaintOptions::retouch(0.5, 1.0),
+            clone_stamp: PaintOptions::brush(),
+            history_brush: PaintOptions::brush(),
+            retouch: RetouchOptions::default(),
             editing_background: false,
             picker_hsb: Hsb::from_color(foreground),
             untitled_counter: 0,
@@ -750,6 +812,13 @@ impl AppState {
             Tool::Brush => Some(&mut self.brush),
             Tool::Pencil => Some(&mut self.pencil),
             Tool::Eraser => Some(&mut self.eraser),
+            Tool::Dodge => Some(&mut self.dodge),
+            Tool::Burn => Some(&mut self.burn),
+            Tool::Sponge => Some(&mut self.sponge),
+            Tool::Blur => Some(&mut self.blur),
+            Tool::Sharpen => Some(&mut self.sharpen),
+            Tool::CloneStamp => Some(&mut self.clone_stamp),
+            Tool::HistoryBrush => Some(&mut self.history_brush),
             _ => None,
         }
     }

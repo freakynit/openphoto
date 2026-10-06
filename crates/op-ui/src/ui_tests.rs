@@ -1186,3 +1186,73 @@ fn modify_selection_and_grow() {
     );
     assert_eq!(last_history(&h), "Similar");
 }
+
+fn alt_click(h: &mut Harness<'_, OpenPhotoApp>, pos: Pos2) {
+    h.hover_at(pos);
+    for pressed in [true, false] {
+        h.event_modifiers(
+            egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::ALT,
+            },
+            Modifiers::ALT,
+        );
+        h.step();
+    }
+    h.run_steps(2);
+}
+
+#[test]
+fn retouching_tools() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    // A red square at 100..140 to clone, then fill the rest gray
+    h.state_mut().state.foreground = Color::from_rgba8([255, 0, 0, 255]);
+    select_rect(&mut h, 100.0, 100.0, 140.0, 140.0);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::D);
+    h.run_steps(2);
+
+    // Dodge (O) lightens the dark gray background
+    h.key_press(egui::Key::O);
+    h.run_steps(2);
+    assert_eq!(h.state().state.tool, op_tools::Tool::Dodge);
+    let p = doc_point(&h, 300.0, 300.0);
+    click(&mut h, p);
+    assert_eq!(last_history(&h), "Dodge Tool");
+    assert!(composite_pixel(&mut h, 300, 300)[0] > 0x14);
+
+    // Clone Stamp (S) without a source point refuses, like Photoshop
+    h.key_press(egui::Key::S);
+    h.run_steps(2);
+    let target = doc_point(&h, 400.0, 400.0);
+    click(&mut h, target);
+    assert!(
+        h.state()
+            .state
+            .alert
+            .as_deref()
+            .unwrap()
+            .contains("area to clone has not been defined")
+    );
+    h.state_mut().state.alert = None;
+    // Alt-click the square's center, then paint at (400, 400)
+    let source = doc_point(&h, 120.0, 120.0);
+    alt_click(&mut h, source);
+    assert!(active(&h).clone_source.is_some());
+    click(&mut h, target);
+    assert_eq!(last_history(&h), "Clone Stamp");
+    // A soft brush: nearly full strength at its center
+    let cloned = composite_pixel(&mut h, 400, 400);
+    assert!(cloned[0] >= 250 && cloned[1] <= 5, "{cloned:?}");
+
+    // History Brush (Y) paints the document back as it was opened
+    h.key_press(egui::Key::Y);
+    h.run_steps(2);
+    click(&mut h, target);
+    assert_eq!(last_history(&h), "History Brush");
+    let restored = composite_pixel(&mut h, 400, 400);
+    assert!(restored[0] <= 0x18 && restored[1] == 0x14, "{restored:?}");
+}

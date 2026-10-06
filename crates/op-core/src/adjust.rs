@@ -114,7 +114,7 @@ fn linear_to_srgb(v: f32) -> f32 {
 }
 
 /// RGB (0–1) to hue (0–360), saturation and lightness (0–1).
-fn rgb_to_hsl([r, g, b]: [f32; 3]) -> [f32; 3] {
+pub(crate) fn rgb_to_hsl([r, g, b]: [f32; 3]) -> [f32; 3] {
     let max = r.max(g).max(b);
     let min = r.min(g).min(b);
     let l = (max + min) / 2.0;
@@ -137,7 +137,7 @@ fn rgb_to_hsl([r, g, b]: [f32; 3]) -> [f32; 3] {
     [h * 60.0, s, l]
 }
 
-fn hsl_to_rgb([h, s, l]: [f32; 3]) -> [f32; 3] {
+pub(crate) fn hsl_to_rgb([h, s, l]: [f32; 3]) -> [f32; 3] {
     if s == 0.0 {
         return [l; 3];
     }

@@ -68,6 +68,11 @@ impl History {
         &self.states
     }
 
+    /// The document as it was in state `index`.
+    pub fn snapshot(&self, index: usize) -> Option<&Snapshot> {
+        self.states.get(index).map(|s| &s.snapshot)
+    }
+
     /// Id of the current state; compared with the id saved to tell whether
     /// the document has unsaved changes.
     pub fn current_id(&self) -> u64 {

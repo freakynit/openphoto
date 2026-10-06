@@ -110,7 +110,16 @@ fn tool_options(ui: &mut Ui, app: &mut AppState) {
         | Tool::PolygonalLasso
         | Tool::MagneticLasso => marquee_options(ui, app),
         Tool::Move => move_options(ui),
-        Tool::Brush | Tool::Pencil | Tool::Eraser => paint_options(ui, app),
+        Tool::Brush
+        | Tool::Pencil
+        | Tool::Eraser
+        | Tool::Dodge
+        | Tool::Burn
+        | Tool::Sponge
+        | Tool::Blur
+        | Tool::Sharpen
+        | Tool::CloneStamp
+        | Tool::HistoryBrush => paint_options(ui, app),
         Tool::PaintBucket => bucket_options(ui, app),
         Tool::Eyedropper => eyedropper_options(ui, app),
         Tool::Gradient => gradient_options(ui, app),
@@ -385,6 +394,7 @@ fn wand_options(ui: &mut Ui, app: &mut AppState) {
 /// below it; clicking opens Size and Hardness), Mode, Opacity and Flow.
 fn paint_options(ui: &mut Ui, app: &mut AppState) {
     let tool = app.tool;
+    let mut retouch = app.retouch;
     let Some(opts) = app.paint_options(tool) else {
         return;
     };
@@ -428,26 +438,107 @@ fn paint_options(ui: &mut Ui, app: &mut AppState) {
             }
         });
     widgets::vseparator(ui, 34.0);
+    retouch_options(ui, tool, opts, &mut retouch);
+    app.retouch = retouch;
+}
 
-    ui.label("Mode:");
-    let mode = if tool == Tool::Eraser {
-        "Brush"
-    } else {
-        "Normal"
+/// The options after the brush picker, per tool, as in Photoshop. Disabled
+/// controls are shown for what isn't implemented.
+fn retouch_options(
+    ui: &mut Ui,
+    tool: Tool,
+    opts: &mut crate::state::PaintOptions,
+    retouch: &mut crate::state::RetouchOptions,
+) {
+    use op_core::paint::ToneRange;
+    let disabled_combo = |ui: &mut Ui, id: &str, text: &str, width: f32| {
+        ui.add_enabled_ui(false, |ui| {
+            egui::ComboBox::from_id_salt(id)
+                .width(width)
+                .selected_text(text)
+                .show_ui(ui, |_| {});
+        });
     };
-    ui.add_enabled_ui(false, |ui| {
-        egui::ComboBox::from_id_salt("paint-mode")
-            .width(110.0)
-            .selected_text(mode)
-            .show_ui(ui, |_| {});
-    });
-    ui.add_space(8.0);
-    ui.label("Opacity:");
-    widgets::percent_drag(ui, &mut opts.opacity);
-    if tool != Tool::Pencil {
-        ui.add_space(8.0);
-        ui.label("Flow:");
-        widgets::percent_drag(ui, &mut opts.flow);
+    let disabled_check = |ui: &mut Ui, label: &str, on: bool| {
+        let mut on = on;
+        ui.add_enabled(false, egui::Checkbox::new(&mut on, label));
+    };
+    match tool {
+        Tool::Dodge | Tool::Burn => {
+            let range = if tool == Tool::Dodge {
+                &mut retouch.dodge_range
+            } else {
+                &mut retouch.burn_range
+            };
+            ui.label("Range:");
+            egui::ComboBox::from_id_salt("tone-range")
+                .width(100.0)
+                .selected_text(range.label())
+                .show_ui(ui, |ui| {
+                    for r in ToneRange::ALL {
+                        ui.selectable_value(range, r, r.label());
+                    }
+                });
+            ui.add_space(8.0);
+            ui.label("Exposure:");
+            widgets::percent_drag(ui, &mut opts.opacity);
+            ui.add_space(8.0);
+            disabled_check(ui, "Protect Tones", true);
+        }
+        Tool::Sponge => {
+            ui.label("Mode:");
+            egui::ComboBox::from_id_salt("sponge-mode")
+                .width(110.0)
+                .selected_text(if retouch.sponge_saturate {
+                    "Saturate"
+                } else {
+                    "Desaturate"
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut retouch.sponge_saturate, false, "Desaturate");
+                    ui.selectable_value(&mut retouch.sponge_saturate, true, "Saturate");
+                });
+            ui.add_space(8.0);
+            ui.label("Flow:");
+            widgets::percent_drag(ui, &mut opts.flow);
+            ui.add_space(8.0);
+            disabled_check(ui, "Vibrance", true);
+        }
+        Tool::Blur | Tool::Sharpen => {
+            ui.label("Mode:");
+            disabled_combo(ui, "retouch-mode", "Normal", 110.0);
+            ui.add_space(8.0);
+            ui.label("Strength:");
+            widgets::percent_drag(ui, &mut opts.opacity);
+            ui.add_space(8.0);
+            disabled_check(ui, "Sample All Layers", false);
+            if tool == Tool::Sharpen {
+                disabled_check(ui, "Protect Detail", true);
+            }
+        }
+        _ => {
+            ui.label("Mode:");
+            let mode = if tool == Tool::Eraser {
+                "Brush"
+            } else {
+                "Normal"
+            };
+            disabled_combo(ui, "paint-mode", mode, 110.0);
+            ui.add_space(8.0);
+            ui.label("Opacity:");
+            widgets::percent_drag(ui, &mut opts.opacity);
+            if tool != Tool::Pencil {
+                ui.add_space(8.0);
+                ui.label("Flow:");
+                widgets::percent_drag(ui, &mut opts.flow);
+            }
+            if tool == Tool::CloneStamp {
+                ui.add_space(8.0);
+                ui.checkbox(&mut retouch.clone_aligned, "Aligned");
+                ui.label("Sample:");
+                disabled_combo(ui, "clone-sample", "Current Layer", 110.0);
+            }
+        }
     }
 }
 

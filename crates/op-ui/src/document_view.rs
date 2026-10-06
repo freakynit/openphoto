@@ -124,6 +124,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
     let (foreground, background) = (app.foreground, app.background);
     let bucket = app.bucket;
     let view_options = app.view;
+    let retouch = app.retouch;
     let mut paint_error = None;
     let Some(state) = app.docs.get_mut(&id) else {
         return;
@@ -326,17 +327,42 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
                     }
                 }
             }
-            Tool::Brush | Tool::Pencil | Tool::Eraser => {
+            // Alt-click with the Clone Stamp picks its source point
+            Tool::CloneStamp
+                if alt && response.is_pointer_button_down_on() && state.stroke.is_none() =>
+            {
+                if ui.input(|i| i.pointer.primary_pressed())
+                    && let Some(p) = response.interact_pointer_pos()
+                {
+                    state.clone_source = Some(to_doc(state, p, ppp));
+                    state.clone_offset = None;
+                    state.picking_clone_source = true;
+                }
+            }
+            // The press that picked the source doesn't paint, even if Alt
+            // is let go first
+            Tool::CloneStamp if state.picking_clone_source => {
+                if !ui.input(|i| i.pointer.primary_down()) {
+                    state.picking_clone_source = false;
+                }
+            }
+            Tool::Brush
+            | Tool::Pencil
+            | Tool::Eraser
+            | Tool::Dodge
+            | Tool::Burn
+            | Tool::Sponge
+            | Tool::Blur
+            | Tool::Sharpen
+            | Tool::CloneStamp
+            | Tool::HistoryBrush => {
                 if let Some(opts) = paint {
-                    paint_error = paint_input(
-                        ui,
-                        &response,
-                        state,
-                        tool,
+                    let settings = StrokeSettings {
                         opts,
-                        (foreground, background),
-                        ppp,
-                    );
+                        colors: (foreground, background),
+                        retouch,
+                    };
+                    paint_error = paint_input(ui, &response, state, tool, settings, ppp);
                 }
             }
             Tool::RectangularMarquee
@@ -379,9 +405,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
                 Tool::Zoom if alt => CursorIcon::ZoomOut,
                 Tool::Zoom => CursorIcon::ZoomIn,
                 // Painting tools draw their own brush outline instead
-                Tool::Brush | Tool::Pencil | Tool::Eraser
-                    if paint.is_some_and(|p| p.size * state.view.zoom / ppp >= 4.0) =>
-                {
+                _ if paint.is_some_and(|p| p.size * state.view.zoom / ppp >= 4.0) => {
                     CursorIcon::None
                 }
                 Tool::Eyedropper
@@ -393,6 +417,13 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
                 | Tool::Brush
                 | Tool::Pencil
                 | Tool::Eraser
+                | Tool::Dodge
+                | Tool::Burn
+                | Tool::Sponge
+                | Tool::Blur
+                | Tool::Sharpen
+                | Tool::CloneStamp
+                | Tool::HistoryBrush
                 | Tool::RectangularMarquee
                 | Tool::EllipticalMarquee
                 | Tool::SingleRowMarquee
@@ -832,44 +863,148 @@ pub fn nudge(state: &mut DocState, dx: i64, dy: i64, background: [u8; 3]) -> Res
 /// release to finish (one history state). Shift-click strokes a straight
 /// line from where the last stroke ended. Returns Photoshop's alert text when
 /// the layer can't be painted.
+/// The tool's name in Photoshop's "Could not use the …" alerts, and its
+/// history state.
+fn stroke_names(tool: Tool) -> (&'static str, &'static str) {
+    match tool {
+        Tool::Pencil => ("pencil", "Pencil"),
+        Tool::Eraser => ("eraser", "Eraser"),
+        Tool::Dodge => ("dodge tool", "Dodge Tool"),
+        Tool::Burn => ("burn tool", "Burn Tool"),
+        Tool::Sponge => ("sponge tool", "Sponge Tool"),
+        Tool::Blur => ("blur tool", "Blur Tool"),
+        Tool::Sharpen => ("sharpen tool", "Sharpen Tool"),
+        Tool::CloneStamp => ("clone stamp", "Clone Stamp"),
+        Tool::HistoryBrush => ("history brush", "History Brush"),
+        _ => ("brush tool", "Brush Tool"),
+    }
+}
+
+/// What a stroke of `tool` does, decided when the button goes down at
+/// `start` (document pixels). Errors are Photoshop's alerts.
+fn stroke_kind(
+    tool: Tool,
+    state: &mut DocState,
+    start: Pos2,
+    (foreground, background): (op_core::Color, op_core::Color),
+    retouch: crate::state::RetouchOptions,
+) -> Result<op_core::paint::StrokeKind, String> {
+    use op_core::paint::StrokeKind;
+    let rgb = |c: op_core::Color| {
+        let [r, g, b, _] = c.to_rgba8();
+        [r, g, b]
+    };
+    let active_image = |state: &DocState| {
+        let layer = state.doc.active_layer.and_then(|id| state.doc.layer(id))?;
+        let op_core::LayerKind::Raster(image) = &layer.kind;
+        Some(image.clone())
+    };
+    Ok(match tool {
+        Tool::Eraser => StrokeKind::Erase {
+            background: rgb(background),
+        },
+        Tool::Dodge => StrokeKind::Dodge(retouch.dodge_range),
+        Tool::Burn => StrokeKind::Burn(retouch.burn_range),
+        Tool::Sponge => StrokeKind::Sponge {
+            saturate: retouch.sponge_saturate,
+        },
+        Tool::Blur => StrokeKind::Blur,
+        Tool::Sharpen => StrokeKind::Sharpen,
+        Tool::CloneStamp => {
+            let source = state.clone_source.ok_or_else(|| {
+                "Could not use the clone stamp because the area to clone has not been defined \
+                 (option-click to define a source point)."
+                    .to_string()
+            })?;
+            // Aligned keeps the offset of the first stroke after picking
+            // the source; otherwise every stroke starts from the source
+            let offset = match state.clone_offset {
+                Some(o) if retouch.clone_aligned => o,
+                _ => start - source,
+            };
+            state.clone_offset = Some(offset);
+            let image = active_image(state).ok_or("")?;
+            StrokeKind::Source {
+                image,
+                dx: offset.x.round() as i64,
+                dy: offset.y.round() as i64,
+            }
+        }
+        Tool::HistoryBrush => {
+            // Paints from the document as it was opened (the History
+            // Brush's default source)
+            let id = state.doc.active_layer.ok_or("")?;
+            let snapshot = state.history.snapshot(0).ok_or("")?;
+            let layer = op_core::Document::snapshot_layer(snapshot, id).ok_or_else(|| {
+                "Could not use the history brush because the history state does not contain \
+                 a corresponding layer."
+                    .to_string()
+            })?;
+            let op_core::LayerKind::Raster(image) = &layer.kind;
+            if (image.width(), image.height()) != (state.doc.width, state.doc.height) {
+                return Err("Could not use the history brush because the history state \
+                            does not contain a corresponding layer."
+                    .into());
+            }
+            StrokeKind::Source {
+                image: image.clone(),
+                dx: 0,
+                dy: 0,
+            }
+        }
+        _ => StrokeKind::Paint(rgb(foreground)),
+    })
+}
+
+/// Everything a stroke needs besides the document: the tool's brush, the
+/// foreground and background colors, and the retouching options.
+#[derive(Clone, Copy)]
+struct StrokeSettings {
+    opts: crate::state::PaintOptions,
+    colors: (op_core::Color, op_core::Color),
+    retouch: crate::state::RetouchOptions,
+}
+
 fn paint_input(
     ui: &Ui,
     response: &egui::Response,
     state: &mut DocState,
     tool: Tool,
-    opts: crate::state::PaintOptions,
-    (foreground, background): (op_core::Color, op_core::Color),
+    settings: StrokeSettings,
     ppp: f32,
 ) -> Option<String> {
-    use op_core::paint::{BrushTip, Stroke, StrokeKind};
+    let StrokeSettings {
+        opts,
+        colors,
+        retouch,
+    } = settings;
+    use op_core::paint::{BrushTip, Stroke};
     let pointer = ui
         .input(|i| i.pointer.interact_pos())
         .map(|p| to_doc(state, p, ppp));
     let pressed = response.is_pointer_button_down_on() && ui.input(|i| i.pointer.primary_down());
 
     if pressed && state.stroke.is_none() {
-        let rgb = |c: op_core::Color| {
-            let [r, g, b, _] = c.to_rgba8();
-            [r, g, b]
-        };
         let tip = BrushTip {
             diameter: opts.size,
             hardness: opts.hardness,
             aliased: tool == Tool::Pencil,
         };
-        let kind = if tool == Tool::Eraser {
-            StrokeKind::Erase {
-                background: rgb(background),
+        let just_pressed = ui.input(|i| i.pointer.primary_pressed());
+        let start = ui
+            .input(|i| i.pointer.press_origin())
+            .map(|p| to_doc(state, p, ppp))
+            .or(pointer)
+            .unwrap_or_default();
+        let kind = match stroke_kind(tool, state, start, colors, retouch) {
+            Ok(kind) => kind,
+            Err(message) => {
+                // Only once per press, and never an empty message
+                return (just_pressed && !message.is_empty()).then_some(message);
             }
-        } else {
-            StrokeKind::Paint(rgb(foreground))
         };
         let flow = if tool == Tool::Pencil { 1.0 } else { opts.flow };
-        let label = match tool {
-            Tool::Pencil => "pencil",
-            Tool::Eraser => "eraser",
-            _ => "brush tool",
-        };
+        let (label, _) = stroke_names(tool);
         match Stroke::begin(&state.doc, tip, kind, opts.opacity, flow) {
             Ok(mut stroke) => {
                 let start = ui
@@ -900,11 +1035,7 @@ fn paint_input(
             stroke.add_point(&mut state.doc, p.x, p.y);
         }
         if !ui.input(|i| i.pointer.primary_down()) {
-            let name = match stroke_tool {
-                Tool::Pencil => "Pencil",
-                Tool::Eraser => "Eraser",
-                _ => "Brush Tool",
-            };
+            let (_, name) = stroke_names(*stroke_tool);
             state.last_paint_point = stroke.last_point();
             state.stroke = None;
             state.record(name);

@@ -175,6 +175,11 @@ impl Document {
         self.revision += 1;
     }
 
+    /// A layer as it is in `snapshot` (the History Brush paints from it).
+    pub fn snapshot_layer(snapshot: &Snapshot, id: LayerId) -> Option<&Layer> {
+        snapshot.layers.iter().find(|l| l.id == id)
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
             guides: self.guides.clone(),
