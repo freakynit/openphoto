@@ -654,6 +654,22 @@ pub struct TransformDrag {
     pub offset: (f32, f32),
     pub scale: (f32, f32),
     pub angle: f32,
+    /// The box's corners at mouse-down, when it has free corners.
+    pub quad: Option<[egui::Pos2; 4]>,
+}
+
+/// Edit > Transform's modes: what dragging a handle does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TransformMode {
+    /// Free Transform, Scale and Rotate: handles scale.
+    #[default]
+    Free,
+    /// Handles slide along the box's sides.
+    Skew,
+    /// Corners move freely.
+    Distort,
+    /// A corner and its neighbor move apart or together.
+    Perspective,
 }
 
 /// Edit > Free Transform in progress: the box over the original bounds,
@@ -665,9 +681,14 @@ pub struct FreeTransform {
     pub offset: (f32, f32),
     pub scale: (f32, f32),
     pub angle: f32,
+    /// Free corners (top left, top right, bottom right, bottom left, in
+    /// document pixels) once the box is skewed, distorted or put in
+    /// perspective; then they describe the box instead of the above.
+    pub quad: Option<[egui::Pos2; 4]>,
+    pub mode: TransformMode,
     pub drag: Option<TransformDrag>,
     /// The transform the document currently shows.
-    pub applied: op_core::transform::Affine,
+    pub applied: op_core::transform::Projective,
 }
 
 impl FreeTransform {
@@ -678,14 +699,26 @@ impl FreeTransform {
             offset: (0.0, 0.0),
             scale: (1.0, 1.0),
             angle: 0.0,
+            quad: None,
+            mode: TransformMode::Free,
             drag: None,
-            applied: op_core::transform::Affine::IDENTITY,
+            applied: op_core::transform::Projective::IDENTITY,
         }
     }
 
     pub fn center(&self) -> (f32, f32) {
         let (x0, y0, x1, y1) = self.bounds;
         ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+    }
+
+    /// The box's map: the free corners' when there are some.
+    pub fn mapping(&self) -> op_core::transform::Projective {
+        match self.quad {
+            Some(q) => {
+                op_core::transform::Projective::rect_to_quad(self.bounds, q.map(|p| (p.x, p.y)))
+            }
+            None => op_core::transform::Projective::from_affine(self.affine()),
+        }
     }
 
     pub fn affine(&self) -> op_core::transform::Affine {
@@ -939,7 +972,7 @@ pub struct AppState {
     /// Edit > Fill, while open.
     pub fill_dialog: Option<crate::dialogs::FillDialog>,
     /// The last transform applied, for Edit > Transform > Again.
-    pub last_transform: Option<op_core::transform::Affine>,
+    pub last_transform: Option<op_core::transform::Projective>,
     /// The last filter applied, for Filter > Last Filter.
     pub last_filter: Option<op_core::filter::Filter>,
     /// An adjustment or filter dialog, while open.

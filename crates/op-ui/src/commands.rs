@@ -140,6 +140,9 @@ pub enum Command {
     /// Edit > Clear (Delete).
     Clear,
     FreeTransform,
+    /// Edit > Transform > Scale, Rotate, Skew, Distort, Perspective: a
+    /// transform whose handles do that.
+    TransformIn(crate::state::TransformMode, &'static str),
     /// Edit > Transform > Again: the last transform once more.
     TransformAgain,
     TransformRotate180,
@@ -409,6 +412,7 @@ impl Command {
             | Self::TransformRotate90CounterClockwise
             | Self::TransformFlipHorizontal
             | Self::TransformFlipVertical
+            | Self::TransformIn(..)
             | Self::RenameLayer
             | Self::RotateArbitrary
             | Self::DeselectLayers
@@ -686,6 +690,7 @@ impl Command {
             | Self::FillBackground
             | Self::Clear
             | Self::FreeTransform
+            | Self::TransformIn(..)
             | Self::TransformRotate180
             | Self::TransformRotate90Clockwise
             | Self::TransformRotate90CounterClockwise
@@ -1095,6 +1100,13 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 }
             }
         }
+        Command::TransformIn(mode, name) => {
+            if let Some(state) = app.active_doc.and_then(|id| app.docs.get_mut(&id))
+                && let Err(e) = crate::free_transform::start_in(state, mode)
+            {
+                app.alert = Some(e.message(name));
+            }
+        }
         Command::FreeTransform
         | Command::TransformAgain
         | Command::TransformRotate180
@@ -1125,7 +1137,7 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
             };
             let (name, affine) = match (fixed, last) {
                 (Some(f), _) => match transform::bounds(&state.doc) {
-                    Ok(b) => (f.name(), f.affine(b)),
+                    Ok(b) => (f.name(), transform::Projective::from_affine(f.affine(b))),
                     Err(e) => {
                         app.alert = Some(e.message(f.name()));
                         return;

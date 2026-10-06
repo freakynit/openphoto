@@ -1064,6 +1064,38 @@ fn gradient_tool_paints_foreground_to_background() {
 }
 
 #[test]
+fn transform_distort_from_the_menu() {
+    use crate::commands::Command;
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    h.state_mut().state.foreground = Color::from_rgba8([255, 0, 0, 255]);
+    select_rect(&mut h, 100.0, 100.0, 140.0, 140.0);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::D);
+    h.run_steps(2);
+    // Edit > Transform > Distort: the bottom-right corner alone goes out
+    run_command(&mut h, crate::menu::TRANSFORM_MODES[3]);
+    assert_eq!(
+        active(&h).free_transform.as_ref().unwrap().mode,
+        crate::state::TransformMode::Distort
+    );
+    let (a, b) = (doc_point(&h, 140.0, 140.0), doc_point(&h, 200.0, 200.0));
+    drag(&mut h, a, b, Modifiers::NONE);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(active(&h).free_transform.is_none());
+    assert_eq!(last_history(&h), "Free Transform");
+    // The far corner is red now; the top-left one hasn't moved
+    assert_eq!(layer_pixel(&h, 1, 185, 185)[0], 255);
+    assert!(layer_pixel(&h, 1, 185, 185)[3] > 200);
+    assert_eq!(layer_pixel(&h, 1, 101, 101), [255, 0, 0, 255]);
+    assert_eq!(layer_pixel(&h, 1, 180, 105)[3], 0);
+    // Transform Again repeats it
+    assert!(Command::TransformAgain.enabled(&h.state().state));
+}
+
+#[test]
 fn free_transform_moves_scales_and_cancels() {
     let mut h = harness(Vec::new());
     reference_document(&mut h);

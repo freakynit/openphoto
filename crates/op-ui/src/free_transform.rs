@@ -5,14 +5,17 @@
 //! Like Photoshop: dragging inside the box moves; a handle scales,
 //! proportionally by default (Shift scales freely; side handles always
 //! scale one axis), from the opposite handle (Alt: from the center);
-//! dragging outside the box rotates (Shift: 15° steps). Enter or a
+//! dragging outside the box rotates (Shift: 15° steps). Cmd-dragging a
+//! corner distorts it, Cmd-Shift a side skews, Cmd-Alt-Shift a corner puts
+//! it in perspective; Edit > Transform > Skew, Distort and Perspective (and
+//! the right-click menu) make those the plain drags. Enter or a
 //! double-click inside commits, Escape cancels.
 
 use egui::{Color32, CursorIcon, Key, Modifiers, Pos2, Rect, Stroke, StrokeKind, Ui, Vec2};
-use op_core::transform::{self, Affine, TransformError};
+use op_core::transform::{self, Projective, TransformError};
 
 use crate::document_view::{to_doc, to_screen};
-use crate::state::{DocState, FreeTransform, TransformDrag, TransformHandle};
+use crate::state::{DocState, FreeTransform, TransformDrag, TransformHandle, TransformMode};
 use crate::theme::pt;
 
 /// Handles closer than this to the pointer (in points) are grabbed.
@@ -21,19 +24,34 @@ const HANDLE: f32 = pt(7.0);
 
 /// How a Free Transform session ended.
 pub enum Outcome {
-    Committed(Affine),
+    Committed(Projective),
     Cancelled,
 }
 
 /// Starts Free Transform on the active layer (or the selected pixels).
 pub fn start(state: &mut DocState) -> Result<(), TransformError> {
+    start_in(state, TransformMode::Free)
+}
+
+/// Starts a transform in one of Edit > Transform's modes (or switches the
+/// running one to it, keeping the box).
+pub fn start_in(state: &mut DocState, mode: TransformMode) -> Result<(), TransformError> {
+    if let Some(t) = &mut state.free_transform {
+        t.mode = mode;
+        return Ok(());
+    }
     let bounds = transform::bounds(&state.doc)?;
-    state.free_transform = Some(FreeTransform::new(state.doc.snapshot(), bounds));
+    let mut t = FreeTransform::new(state.doc.snapshot(), bounds);
+    t.mode = mode;
+    state.free_transform = Some(t);
     Ok(())
 }
 
 /// The box's corners in document pixels, clockwise from the top left.
 fn corners(t: &FreeTransform) -> [Pos2; 4] {
+    if let Some(q) = t.quad {
+        return q;
+    }
     let (x0, y0, x1, y1) = t.bounds;
     let m = t.affine();
     [(x0, y0), (x1, y0), (x1, y1), (x0, y1)].map(|p| {
@@ -46,7 +64,7 @@ fn corners(t: &FreeTransform) -> [Pos2; 4] {
 fn handles(t: &FreeTransform) -> [(Pos2, i8, i8); 8] {
     let (x0, y0, x1, y1) = t.bounds;
     let (cx, cy) = t.center();
-    let m = t.affine();
+    let m = t.mapping();
     let at = |x: f32, y: f32| {
         let (x, y) = m.apply((x, y));
         Pos2::new(x, y)
@@ -94,8 +112,114 @@ fn hit(state: &DocState, t: &FreeTransform, p: Pos2, ppp: f32) -> TransformHandl
     }
 }
 
+/// What a handle drag does with the box's corners, from the mode and the
+/// modifiers (Photoshop's: Cmd distorts, Cmd-Shift skews a side,
+/// Cmd-Alt-Shift puts a corner in perspective).
+fn corner_mode(mode: TransformMode, mods: Modifiers) -> Option<TransformMode> {
+    if mods.command && mods.alt && mods.shift {
+        return Some(TransformMode::Perspective);
+    }
+    if mods.command && mods.shift {
+        return Some(TransformMode::Skew);
+    }
+    if mods.command {
+        return Some(TransformMode::Distort);
+    }
+    (mode != TransformMode::Free).then_some(mode)
+}
+
+/// Moves corners of `q` for a handle drag by `d` (document pixels).
+fn reshape(q: [Pos2; 4], (hx, hy): (i8, i8), d: Vec2, mode: TransformMode) -> [Pos2; 4] {
+    // Corner indices: 0 top left, 1 top right, 2 bottom right, 3 bottom left
+    let corner = |hx: i8, hy: i8| match (hx, hy) {
+        (-1, -1) => 0,
+        (1, -1) => 1,
+        (1, 1) => 2,
+        _ => 3,
+    };
+    let mut out = q;
+    if hx != 0 && hy != 0 {
+        let i = corner(hx, hy);
+        match mode {
+            TransformMode::Perspective => {
+                // Along the stronger direction; the neighbor on that side
+                // goes the other way
+                if d.x.abs() >= d.y.abs() {
+                    let j = corner(-hx, hy);
+                    out[i].x += d.x;
+                    out[j].x -= d.x;
+                } else {
+                    let j = corner(hx, -hy);
+                    out[i].y += d.y;
+                    out[j].y -= d.y;
+                }
+            }
+            TransformMode::Skew => {
+                // Along one axis only
+                if d.x.abs() >= d.y.abs() {
+                    out[i].x += d.x;
+                } else {
+                    out[i].y += d.y;
+                }
+            }
+            _ => out[i] += d,
+        }
+    } else {
+        // A side: its two corners
+        let (i, j) = if hx == 0 {
+            (corner(-1, hy), corner(1, hy))
+        } else {
+            (corner(hx, -1), corner(hx, 1))
+        };
+        let d = match mode {
+            // Along the side
+            TransformMode::Skew | TransformMode::Perspective => {
+                let along = (q[j] - q[i]).normalized();
+                along * d.dot(along)
+            }
+            _ => d,
+        };
+        out[i] += d;
+        out[j] += d;
+    }
+    out
+}
+
 /// Updates the box for a drag to `p` (document pixels).
 fn drag_to(t: &mut FreeTransform, drag: TransformDrag, p: Pos2, mods: Modifiers) {
+    // Free corners (or a drag that makes them): reshape, move or turn them
+    let reshaping = match drag.handle {
+        TransformHandle::Scale(..) => corner_mode(t.mode, mods),
+        _ => None,
+    };
+    if let (Some(q), TransformHandle::Move | TransformHandle::Rotate) = (drag.quad, drag.handle) {
+        let c = q.iter().fold(Vec2::ZERO, |a, p| a + p.to_vec2()) / 4.0;
+        let c = c.to_pos2();
+        t.quad = Some(match drag.handle {
+            TransformHandle::Move => q.map(|v| v + (p - drag.start)),
+            _ => {
+                let mut a = (p - c).angle() - (drag.start - c).angle();
+                if mods.shift {
+                    let step = 15f32.to_radians();
+                    a = (a / step).round() * step;
+                }
+                let (s, co) = a.sin_cos();
+                q.map(|v| {
+                    let r = v - c;
+                    c + Vec2::new(r.x * co - r.y * s, r.x * s + r.y * co)
+                })
+            }
+        });
+        return;
+    }
+    if let TransformHandle::Scale(hx, hy) = drag.handle
+        && (reshaping.is_some() || drag.quad.is_some())
+    {
+        let start = drag.quad.unwrap_or_else(|| corners(t));
+        let mode = reshaping.unwrap_or(TransformMode::Distort);
+        t.quad = Some(reshape(start, (hx, hy), p - drag.start, mode));
+        return;
+    }
     let center0 = t.center();
     let (x0, y0, x1, y1) = t.bounds;
     let (ow, oh) = ((x1 - x0) / 2.0, (y1 - y0) / 2.0);
@@ -209,6 +333,7 @@ pub fn input(
     {
         let handle = hit(state, t, p, ppp);
         let start = to_doc(state, p, ppp);
+        let quad = t.quad;
         let t = state.free_transform.as_mut()?;
         t.drag = Some(TransformDrag {
             handle,
@@ -216,6 +341,7 @@ pub fn input(
             offset: t.offset,
             scale: t.scale,
             angle: t.angle,
+            quad,
         });
     }
     let pointer = ui
@@ -239,7 +365,7 @@ pub fn preview(state: &mut DocState, background: [u8; 3]) {
     let Some(t) = &state.free_transform else {
         return;
     };
-    let m = t.affine();
+    let m = t.mapping();
     if m == t.applied {
         return;
     }
@@ -254,7 +380,7 @@ pub fn preview(state: &mut DocState, background: [u8; 3]) {
 /// Ends the session keeping the result ("Free Transform" in the history).
 pub fn commit(state: &mut DocState) -> Option<Outcome> {
     let t = state.free_transform.take()?;
-    if t.applied == Affine::IDENTITY {
+    if t.applied == Projective::IDENTITY {
         return Some(Outcome::Cancelled);
     }
     state.record("Free Transform");
@@ -264,11 +390,85 @@ pub fn commit(state: &mut DocState) -> Option<Outcome> {
 /// Ends the session putting the document back as it was.
 pub fn cancel(state: &mut DocState) -> Outcome {
     if let Some(t) = state.free_transform.take()
-        && t.applied != Affine::IDENTITY
+        && t.applied != Projective::IDENTITY
     {
         state.doc.restore(&t.before);
     }
     Outcome::Cancelled
+}
+
+/// Turns or flips the box itself (the right-click menu's Rotate 180°,
+/// Rotate 90°... and Flip while transforming).
+pub fn turn_box(t: &mut FreeTransform, how: transform::FixedTransform) {
+    use transform::FixedTransform as F;
+    if let Some(q) = t.quad {
+        let c = (q.iter().fold(Vec2::ZERO, |a, p| a + p.to_vec2()) / 4.0).to_pos2();
+        let f = |v: Pos2| -> Pos2 {
+            let r = v - c;
+            c + match how {
+                F::Rotate180 => -r,
+                F::Rotate90Clockwise => Vec2::new(-r.y, r.x),
+                F::Rotate90CounterClockwise => Vec2::new(r.y, -r.x),
+                F::FlipHorizontal => Vec2::new(-r.x, r.y),
+                F::FlipVertical => Vec2::new(r.x, -r.y),
+            }
+        };
+        t.quad = Some(q.map(f));
+        return;
+    }
+    let quarter = std::f32::consts::FRAC_PI_2;
+    match how {
+        F::Rotate180 => t.angle += 2.0 * quarter,
+        F::Rotate90Clockwise => t.angle += quarter,
+        F::Rotate90CounterClockwise => t.angle -= quarter,
+        F::FlipHorizontal => t.scale.0 = -t.scale.0,
+        F::FlipVertical => t.scale.1 = -t.scale.1,
+    }
+}
+
+/// The right-click menu while transforming, as in Photoshop: the modes,
+/// then turning and flipping the box.
+pub fn context_menu(ui: &mut Ui, t: &mut FreeTransform) {
+    let modes = [
+        ("Free Transform", TransformMode::Free),
+        ("Scale", TransformMode::Free),
+        ("Rotate", TransformMode::Free),
+        ("Skew", TransformMode::Skew),
+        ("Distort", TransformMode::Distort),
+        ("Perspective", TransformMode::Perspective),
+    ];
+    for (label, mode) in modes {
+        if ui.button(label).clicked() {
+            t.mode = mode;
+            ui.close();
+        }
+    }
+    ui.add_enabled(false, egui::Button::new("Warp"));
+    ui.separator();
+    ui.add_enabled(false, egui::Button::new("Content-Aware Scale"));
+    ui.add_enabled(false, egui::Button::new("Puppet Warp"));
+    ui.separator();
+    use transform::FixedTransform as F;
+    for (label, how) in [
+        ("Rotate 180°", F::Rotate180),
+        ("Rotate 90° Clockwise", F::Rotate90Clockwise),
+        ("Rotate 90° Counter Clockwise", F::Rotate90CounterClockwise),
+    ] {
+        if ui.button(label).clicked() {
+            turn_box(t, how);
+            ui.close();
+        }
+    }
+    ui.separator();
+    for (label, how) in [
+        ("Flip Horizontal", F::FlipHorizontal),
+        ("Flip Vertical", F::FlipVertical),
+    ] {
+        if ui.button(label).clicked() {
+            turn_box(t, how);
+            ui.close();
+        }
+    }
 }
 
 /// The cursor over the canvas while transforming.
@@ -372,7 +572,7 @@ pub fn draw(ui: &Ui, state: &DocState, canvas: Rect, ppp: f32) {
         quad,
         handles(t).map(|(h, _, _)| to_screen(state, h, ppp)),
     );
-    let (cx, cy) = t.affine().apply(t.center());
+    let (cx, cy) = t.mapping().apply(t.center());
     let c = to_screen(state, Pos2::new(cx, cy), ppp);
     painter.circle_stroke(c, pt(4.0), Stroke::new(1.0, Color32::from_gray(0x40)));
     painter.line_segment(
@@ -401,6 +601,7 @@ mod tests {
             offset: t.offset,
             scale: t.scale,
             angle: t.angle,
+            quad: t.quad,
         }
     }
 
@@ -446,6 +647,69 @@ mod tests {
             "{}",
             t.angle
         );
+    }
+
+    #[test]
+    fn distort_skew_and_perspective() {
+        let p = |x: f32, y: f32| Pos2::new(x, y);
+        // Cmd-dragging the bottom-right corner moves only it
+        let mut t = session();
+        let d = drag(&t, TransformHandle::Scale(1, 1), p(4.0, 2.0));
+        drag_to(&mut t, d, p(5.0, 4.0), Modifiers::COMMAND);
+        assert_eq!(
+            t.quad,
+            Some([p(0.0, 0.0), p(4.0, 0.0), p(5.0, 4.0), p(0.0, 2.0)])
+        );
+        // A second drag goes on from those corners, a plain one too
+        let d = drag(&t, TransformHandle::Scale(-1, -1), p(0.0, 0.0));
+        drag_to(&mut t, d, p(1.0, 1.0), Modifiers::NONE);
+        assert_eq!(t.quad.unwrap()[0], p(1.0, 1.0));
+        assert_eq!(t.quad.unwrap()[2], p(5.0, 4.0));
+        // Perspective: the top-right corner out, the top-left in
+        let mut t = session();
+        t.mode = TransformMode::Perspective;
+        let d = drag(&t, TransformHandle::Scale(1, -1), p(4.0, 0.0));
+        drag_to(&mut t, d, p(5.0, 0.2), Modifiers::NONE);
+        assert_eq!(
+            t.quad,
+            Some([p(-1.0, 0.0), p(5.0, 0.0), p(4.0, 2.0), p(0.0, 2.0)])
+        );
+        // Skew a side: Cmd-Shift on the right side slides it along itself
+        let mut t = session();
+        let d = drag(&t, TransformHandle::Scale(1, 0), p(4.0, 1.0));
+        drag_to(
+            &mut t,
+            d,
+            p(6.0, 2.0),
+            Modifiers::COMMAND | Modifiers::SHIFT,
+        );
+        assert_eq!(
+            t.quad,
+            Some([p(0.0, 0.0), p(4.0, 1.0), p(4.0, 3.0), p(0.0, 2.0)])
+        );
+        // The map follows the corners
+        let (x, y) = t.mapping().apply((4.0, 0.0));
+        assert!((x - 4.0).abs() < 1e-4 && (y - 1.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn turning_and_flipping_the_box() {
+        use transform::FixedTransform as F;
+        let mut t = session();
+        turn_box(&mut t, F::Rotate90Clockwise);
+        assert!((t.angle - std::f32::consts::FRAC_PI_2).abs() < 1e-6);
+        turn_box(&mut t, F::FlipHorizontal);
+        assert_eq!(t.scale, (-1.0, 1.0));
+        // Free corners turn about their middle
+        let mut t = session();
+        t.quad = Some([
+            Pos2::new(0.0, 0.0),
+            Pos2::new(4.0, 0.0),
+            Pos2::new(4.0, 2.0),
+            Pos2::new(0.0, 2.0),
+        ]);
+        turn_box(&mut t, F::Rotate180);
+        assert_eq!(t.quad.unwrap()[0], Pos2::new(4.0, 2.0));
     }
 
     #[test]

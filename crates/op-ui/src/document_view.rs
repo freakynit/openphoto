@@ -296,6 +296,11 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
     } else if !space && state.free_transform.is_some() {
         let [r, g, b, _] = background.to_rgba8();
         let outcome = crate::free_transform::input(ui, &response, state, [r, g, b], ppp);
+        response.context_menu(|ui| {
+            if let Some(t) = &mut state.free_transform {
+                crate::free_transform::context_menu(ui, t);
+            }
+        });
         if let Some(crate::free_transform::Outcome::Committed(m)) = outcome {
             app.last_transform = Some(m);
         }

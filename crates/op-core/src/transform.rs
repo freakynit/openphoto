@@ -101,6 +101,162 @@ impl Affine {
     }
 }
 
+/// A 2-D projective map (a homography), for Distort and Perspective:
+/// `(x, y) -> ((m0 x + m1 y + m2) / w, (m3 x + m4 y + m5) / w)` with
+/// `w = m6 x + m7 y + m8`. Computed in doubles.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Projective {
+    pub m: [f64; 9],
+}
+
+impl Projective {
+    pub const IDENTITY: Self = Self {
+        m: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+    };
+
+    pub fn from_affine(a: Affine) -> Self {
+        let f = |v: f32| v as f64;
+        Self {
+            m: [
+                f(a.a),
+                f(a.b),
+                f(a.c),
+                f(a.d),
+                f(a.e),
+                f(a.f),
+                0.0,
+                0.0,
+                1.0,
+            ],
+        }
+    }
+
+    /// `self` applied after `first`.
+    pub fn after(self, first: Self) -> Self {
+        let (a, b) = (self.m, first.m);
+        let mut m = [0.0; 9];
+        for r in 0..3 {
+            for c in 0..3 {
+                m[r * 3 + c] = (0..3).map(|k| a[r * 3 + k] * b[k * 3 + c]).sum();
+            }
+        }
+        Self { m }
+    }
+
+    pub fn apply(self, (x, y): (f32, f32)) -> (f32, f32) {
+        let m = self.m;
+        let (x, y) = (x as f64, y as f64);
+        let w = m[6] * x + m[7] * y + m[8];
+        (
+            ((m[0] * x + m[1] * y + m[2]) / w) as f32,
+            ((m[3] * x + m[4] * y + m[5]) / w) as f32,
+        )
+    }
+
+    pub fn inverse(self) -> Option<Self> {
+        let m = self.m;
+        let det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6])
+            + m[2] * (m[3] * m[7] - m[4] * m[6]);
+        if det.abs() < 1e-12 {
+            return None;
+        }
+        let adj = [
+            m[4] * m[8] - m[5] * m[7],
+            m[2] * m[7] - m[1] * m[8],
+            m[1] * m[5] - m[2] * m[4],
+            m[5] * m[6] - m[3] * m[8],
+            m[0] * m[8] - m[2] * m[6],
+            m[2] * m[3] - m[0] * m[5],
+            m[3] * m[7] - m[4] * m[6],
+            m[1] * m[6] - m[0] * m[7],
+            m[0] * m[4] - m[1] * m[3],
+        ];
+        Some(Self {
+            m: adj.map(|v| v / det),
+        })
+    }
+
+    /// The unit square's corners (0,0), (1,0), (1,1), (0,1) to `quad`
+    /// (Heckbert's construction).
+    fn square_to_quad(q: [(f64, f64); 4]) -> Self {
+        let [(x0, y0), (x1, y1), (x2, y2), (x3, y3)] = q;
+        let (dx3, dy3) = (x0 - x1 + x2 - x3, y0 - y1 + y2 - y3);
+        if dx3.abs() < 1e-12 && dy3.abs() < 1e-12 {
+            return Self {
+                m: [x1 - x0, x3 - x0, x0, y1 - y0, y3 - y0, y0, 0.0, 0.0, 1.0],
+            };
+        }
+        let (dx1, dx2, dy1, dy2) = (x1 - x2, x3 - x2, y1 - y2, y3 - y2);
+        let det = dx1 * dy2 - dx2 * dy1;
+        let g = (dx3 * dy2 - dx2 * dy3) / det;
+        let h = (dx1 * dy3 - dx3 * dy1) / det;
+        Self {
+            m: [
+                x1 - x0 + g * x1,
+                x3 - x0 + h * x3,
+                x0,
+                y1 - y0 + g * y1,
+                y3 - y0 + h * y3,
+                y0,
+                g,
+                h,
+                1.0,
+            ],
+        }
+    }
+
+    /// The box (x0, y0, x1, y1) to `quad` (top-left, top-right,
+    /// bottom-right, bottom-left): what a distorted Free Transform box
+    /// describes.
+    pub fn rect_to_quad(rect: (f32, f32, f32, f32), quad: [(f32, f32); 4]) -> Self {
+        let (x0, y0, x1, y1) = rect;
+        let (w, h) = (((x1 - x0) as f64).max(1e-9), ((y1 - y0) as f64).max(1e-9));
+        let to_unit = Self {
+            m: [
+                1.0 / w,
+                0.0,
+                -x0 as f64 / w,
+                0.0,
+                1.0 / h,
+                -y0 as f64 / h,
+                0.0,
+                0.0,
+                1.0,
+            ],
+        };
+        Self::square_to_quad(quad.map(|(x, y)| (x as f64, y as f64))).after(to_unit)
+    }
+
+    /// Whether it keeps lines parallel (an affine map).
+    pub fn is_affine(self) -> bool {
+        self.m[6].abs() < 1e-12 && self.m[7].abs() < 1e-12
+    }
+}
+
+/// A map `transform` can apply.
+pub trait Mapping: Copy {
+    fn map(self, p: (f32, f32)) -> (f32, f32);
+    fn inverted(self) -> Option<Self>;
+}
+
+impl Mapping for Affine {
+    fn map(self, p: (f32, f32)) -> (f32, f32) {
+        self.apply(p)
+    }
+    fn inverted(self) -> Option<Self> {
+        self.inverse()
+    }
+}
+
+impl Mapping for Projective {
+    fn map(self, p: (f32, f32)) -> (f32, f32) {
+        self.apply(p)
+    }
+    fn inverted(self) -> Option<Self> {
+        self.inverse()
+    }
+}
+
 /// Why a transform can't be done; the messages match Photoshop's alerts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransformError {
@@ -241,9 +397,13 @@ fn sample(px: &[[f32; 4]], w: usize, h: usize, x: f32, y: f32) -> [f32; 4] {
 /// layer), and the selection moves with them. Pixels outside the canvas
 /// move too and stay on the layer, as in Photoshop; the background layer
 /// ends at the canvas.
-pub fn transform(doc: &mut Document, m: Affine, background: [u8; 3]) -> Result<(), TransformError> {
+pub fn transform<M: Mapping>(
+    doc: &mut Document,
+    m: M,
+    background: [u8; 3],
+) -> Result<(), TransformError> {
     let src_box = bounds(doc)?;
-    let inverse = m.inverse().ok_or(TransformError::Empty)?;
+    let inverse = m.inverted().ok_or(TransformError::Empty)?;
     let selection = doc.selection().cloned();
     let (cw, ch) = (doc.width as i64, doc.height as i64);
     // Every target layer, with the same map
@@ -257,7 +417,7 @@ pub fn transform(doc: &mut Document, m: Affine, background: [u8; 3]) -> Result<(
         // The region worked on: the canvas, the layer's pixels and where the
         // box lands
         let (bx0, by0, bx1, by1) = src_box;
-        let corners = [(bx0, by0), (bx1, by0), (bx1, by1), (bx0, by1)].map(|p| m.apply(p));
+        let corners = [(bx0, by0), (bx1, by0), (bx1, by1), (bx0, by1)].map(|p| m.map(p));
         let fx0 = corners.iter().map(|c| c.0).fold(f32::MAX, f32::min).floor() as i64;
         let fy0 = corners.iter().map(|c| c.1).fold(f32::MAX, f32::min).floor() as i64;
         let fx1 = corners.iter().map(|c| c.0).fold(f32::MIN, f32::max).ceil() as i64;
@@ -301,7 +461,7 @@ pub fn transform(doc: &mut Document, m: Affine, background: [u8; 3]) -> Result<(
         for y in 0..h {
             for x in 0..w {
                 let (dx, dy) = ((ux0 + x as i64) as f32 + 0.5, (uy0 + y as i64) as f32 + 0.5);
-                let (sx, sy) = inverse.apply((dx, dy));
+                let (sx, sy) = inverse.map((dx, dy));
                 let s = sample(&moving, w, h, sx - ux0 as f32, sy - uy0 as f32);
                 let sa = s[3] / 255.0;
                 if sa <= 0.0 {
@@ -335,7 +495,7 @@ pub fn transform(doc: &mut Document, m: Affine, background: [u8; 3]) -> Result<(
             .collect();
         for y in 0..h {
             for x in 0..w {
-                let (sx, sy) = inverse.apply((x as f32 + 0.5, y as f32 + 0.5));
+                let (sx, sy) = inverse.map((x as f32 + 0.5, y as f32 + 0.5));
                 mask[y * w + x] = sample(&src, w, h, sx, sy)[0].round().clamp(0.0, 255.0) as u8;
             }
         }
@@ -403,6 +563,48 @@ mod tests {
     fn layer_px(doc: &Document, x: u32, y: u32) -> [u8; 4] {
         let image = doc.layers[1].image().unwrap();
         image.pixel(x, y)
+    }
+
+    #[test]
+    fn projective_maps_the_box_onto_any_quad() {
+        let close =
+            |a: (f32, f32), b: (f32, f32)| (a.0 - b.0).abs() < 1e-3 && (a.1 - b.1).abs() < 1e-3;
+        let rect = (10.0, 20.0, 110.0, 70.0);
+        // A trapezoid: the top pulled in (Perspective)
+        let quad = [(30.0, 20.0), (90.0, 20.0), (110.0, 70.0), (10.0, 70.0)];
+        let m = Projective::rect_to_quad(rect, quad);
+        for (src, dst) in [(10.0, 20.0), (110.0, 20.0), (110.0, 70.0), (10.0, 70.0)]
+            .into_iter()
+            .zip(quad)
+        {
+            assert!(close(m.apply(src), dst), "{src:?}");
+        }
+        assert!(!m.is_affine());
+        let back = m.inverse().unwrap();
+        assert!(close(back.apply((90.0, 20.0)), (110.0, 20.0)));
+        // A parallelogram is affine, and matches the affine map
+        let skew = [(20.0, 20.0), (120.0, 20.0), (110.0, 70.0), (10.0, 70.0)];
+        let m = Projective::rect_to_quad(rect, skew);
+        assert!(m.is_affine());
+        assert!(close(m.apply((60.0, 45.0)), (65.0, 45.0)));
+        let a = Affine::around((5.0, 5.0), 2.0, 1.0, 0.3, (1.0, 2.0));
+        assert!(close(
+            Projective::from_affine(a).apply((3.0, 4.0)),
+            a.apply((3.0, 4.0))
+        ));
+    }
+
+    #[test]
+    fn distorting_the_layer() {
+        // The 2×2 square at (1, 1) on 6×6: its box's top corners squeezed
+        // together, so the top row narrows and the bottom stays
+        let mut d = doc();
+        let b = bounds(&d).unwrap();
+        let quad = [(1.5, 1.0), (2.5, 1.0), (3.0, 3.0), (1.0, 3.0)];
+        transform(&mut d, Projective::rect_to_quad(b, quad), [255; 3]).unwrap();
+        let row = |y| (0..6).map(|x| layer_px(&d, x, y)[3] as u32).sum::<u32>();
+        assert!(row(1) < row(2), "{} {}", row(1), row(2));
+        assert!(row(2) > 255);
     }
 
     #[test]

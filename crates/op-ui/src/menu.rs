@@ -89,6 +89,11 @@ const ALL_COMMANDS: &[Command] = &[
     Command::Fill,
     Command::Clear,
     Command::FreeTransform,
+    TRANSFORM_MODES[0],
+    TRANSFORM_MODES[1],
+    TRANSFORM_MODES[2],
+    TRANSFORM_MODES[3],
+    TRANSFORM_MODES[4],
     Command::TransformAgain,
     Command::TransformRotate180,
     Command::TransformRotate90Clockwise,
@@ -166,6 +171,18 @@ const ALL_COMMANDS: &[Command] = &[
     Command::NewGroupFromLayers,
     Command::ArrangeReverse,
 ];
+
+/// Edit > Transform's modes, as commands.
+pub const TRANSFORM_MODES: [Command; 5] = {
+    use crate::state::TransformMode::*;
+    [
+        Command::TransformIn(Free, "Scale"),
+        Command::TransformIn(Free, "Rotate"),
+        Command::TransformIn(Skew, "Skew"),
+        Command::TransformIn(Distort, "Distort"),
+        Command::TransformIn(Perspective, "Perspective"),
+    ]
+};
 
 fn id(command: Command) -> String {
     format!("{command:?}")
@@ -341,11 +358,11 @@ impl NativeMenu {
                     &[
                         &item("Again", Command::TransformAgain) as &dyn IsMenuItem,
                         &sep(),
-                        &todo("Scale", None),
-                        &todo("Rotate", None),
-                        &todo("Skew", None),
-                        &todo("Distort", None),
-                        &todo("Perspective", None),
+                        &item("Scale", TRANSFORM_MODES[0]),
+                        &item("Rotate", TRANSFORM_MODES[1]),
+                        &item("Skew", TRANSFORM_MODES[2]),
+                        &item("Distort", TRANSFORM_MODES[3]),
+                        &item("Perspective", TRANSFORM_MODES[4]),
                         &sep(),
                         &todo("Warp", None),
                         &todo("Split Warp Horizontally", None),
