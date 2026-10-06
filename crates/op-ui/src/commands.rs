@@ -73,6 +73,11 @@ pub enum Command {
     LastFilter,
     Average,
     Solarize,
+    Blur,
+    BlurMore,
+    Sharpen,
+    SharpenMore,
+    FindEdges,
     GaussianBlur,
     BoxBlur,
     UnsharpMask,
@@ -83,6 +88,8 @@ pub enum Command {
     HighPass,
     Offset,
     Mosaic,
+    MotionBlur,
+    Emboss,
     /// Layer > New > Layer... (Shift+Cmd+N): opens the New Layer dialog.
     NewLayer,
     /// Alt+Shift+Cmd+N: a new layer without the dialog.
@@ -449,6 +456,13 @@ impl Command {
             | Self::Exposure
             | Self::Average
             | Self::Solarize
+            | Self::Blur
+            | Self::BlurMore
+            | Self::Sharpen
+            | Self::SharpenMore
+            | Self::FindEdges
+            | Self::MotionBlur
+            | Self::Emboss
             | Self::GaussianBlur
             | Self::BoxBlur
             | Self::UnsharpMask
@@ -748,6 +762,13 @@ impl Command {
             | Self::AutoColor
             | Self::Average
             | Self::Solarize
+            | Self::Blur
+            | Self::BlurMore
+            | Self::Sharpen
+            | Self::SharpenMore
+            | Self::FindEdges
+            | Self::MotionBlur
+            | Self::Emboss
             | Self::GaussianBlur
             | Self::BoxBlur
             | Self::UnsharpMask
@@ -1032,10 +1053,22 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 }
             }
         }
-        Command::Average | Command::Solarize | Command::LastFilter => {
+        Command::Average
+        | Command::Solarize
+        | Command::Blur
+        | Command::BlurMore
+        | Command::Sharpen
+        | Command::SharpenMore
+        | Command::FindEdges
+        | Command::LastFilter => {
             let filter = match command {
                 Command::Average => Some(Filter::Average),
                 Command::Solarize => Some(Filter::Solarize),
+                Command::Blur => Some(Filter::Blur),
+                Command::BlurMore => Some(Filter::BlurMore),
+                Command::Sharpen => Some(Filter::Sharpen),
+                Command::SharpenMore => Some(Filter::SharpenMore),
+                Command::FindEdges => Some(Filter::FindEdges),
                 _ => app.last_filter,
             };
             let [r, g, b, _] = app.background.to_rgba8();
@@ -1074,7 +1107,9 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
         | Command::Maximum
         | Command::HighPass
         | Command::Offset
-        | Command::Mosaic => {
+        | Command::Mosaic
+        | Command::MotionBlur
+        | Command::Emboss => {
             let (kind, name) = match command {
                 Command::Threshold => (AdjustKind::Threshold, "Threshold"),
                 Command::Posterize => (AdjustKind::Posterize, "Posterize"),
@@ -1101,6 +1136,8 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 Command::Maximum => (AdjustKind::Maximum, "Maximum"),
                 Command::HighPass => (AdjustKind::HighPass, "High Pass"),
                 Command::Offset => (AdjustKind::Offset, "Offset"),
+                Command::MotionBlur => (AdjustKind::MotionBlur, "Motion Blur"),
+                Command::Emboss => (AdjustKind::Emboss, "Emboss"),
                 _ => (AdjustKind::Mosaic, "Mosaic"),
             };
             let rgb = |c: op_core::Color| {

@@ -3267,3 +3267,39 @@ fn equalize_asks_about_the_selection() {
     assert!(h.state().state.equalize_dialog.is_none());
     assert_eq!(last_history(&h), "Equalize");
 }
+
+#[test]
+fn more_filters_from_the_menu() {
+    use crate::commands::Command;
+    use op_core::filter::Filter;
+    let mut h = harness(Vec::new());
+    color_document(&mut h, [200, 100, 50]);
+    // A dark dot to blur and sharpen
+    select_rect(&mut h, 10.0, 10.0, 12.0, 12.0);
+    h.state_mut().state.foreground = Color::from_rgba8([0, 0, 0, 255]);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::D);
+    h.run_steps(2);
+    for (command, name) in [
+        (Command::Blur, "Blur"),
+        (Command::BlurMore, "Blur More"),
+        (Command::Sharpen, "Sharpen"),
+        (Command::SharpenMore, "Sharpen More"),
+        (Command::FindEdges, "Find Edges"),
+    ] {
+        run_command(&mut h, command);
+        assert_eq!(last_history(&h), name);
+        assert_eq!(h.state().state.last_filter.map(Filter::name), Some(name));
+    }
+    // Motion Blur and Emboss open their dialogs; Enter applies the defaults
+    for (command, filter) in [
+        (Command::MotionBlur, Filter::MotionBlur { angle: 0, distance: 10 }),
+        (Command::Emboss, Filter::Emboss { angle: 135, height: 3, amount: 100 }),
+    ] {
+        run_command(&mut h, command);
+        assert!(h.state().state.adjust_dialog.is_some());
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert_eq!(h.state().state.last_filter, Some(filter));
+    }
+}

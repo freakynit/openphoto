@@ -45,10 +45,30 @@ pub enum Filter {
     },
     /// Noise > Median over a (2r + 1)² square, per channel.
     Median { radius: u32 },
-    /// Other > Minimum: each channel's smallest value in a (2r + 1)² square.
-    Minimum { radius: u32 },
+    /// Other > Minimum: each channel's smallest value within `radius`
+    /// (Preserve: Squareness, or Roundness when `round`).
+    Minimum { radius: f32, round: bool },
     /// Other > Maximum: the largest value.
-    Maximum { radius: u32 },
+    Maximum { radius: f32, round: bool },
+    /// Blur > Blur: a light 3 × 3 blur.
+    Blur,
+    /// Blur > Blur More: a stronger 3 × 3 blur.
+    BlurMore,
+    /// Sharpen > Sharpen.
+    Sharpen,
+    /// Sharpen > Sharpen More.
+    SharpenMore,
+    /// Stylize > Find Edges: white where flat, darker the steeper the edge.
+    FindEdges,
+    /// Blur > Motion Blur: `distance` pixels along `angle` degrees.
+    MotionBlur { angle: i32, distance: u32 },
+    /// Stylize > Emboss: angle in degrees, height in pixels (1–10), amount
+    /// in percent (1–500).
+    Emboss {
+        angle: i32,
+        height: u32,
+        amount: u32,
+    },
     /// Other > High Pass: the image minus its Gaussian blur, around gray.
     HighPass { radius: f32 },
     /// Other > Offset: shifts the layer by (dx, dy) pixels.
@@ -75,9 +95,75 @@ impl Filter {
             Self::Offset { .. } => "Offset",
             Self::Mosaic { .. } => "Mosaic",
             Self::Solarize => "Solarize",
+            Self::Blur => "Blur",
+            Self::BlurMore => "Blur More",
+            Self::Sharpen => "Sharpen",
+            Self::SharpenMore => "Sharpen More",
+            Self::FindEdges => "Find Edges",
+            Self::MotionBlur { .. } => "Motion Blur",
+            Self::Emboss { .. } => "Emboss",
         }
     }
 }
+
+/// Photoshop's Gaussian Blur kernels for radii 0.1–2.0 pixels (the center
+/// weight, then each side's, out of 256), measured from Photoshop 2026.
+const SMALL_KERNELS: [&[u16]; 20] = [
+    &[256],
+    &[236, 10],
+    &[182, 37],
+    &[158, 49],
+    &[144, 55, 1],
+    &[134, 58, 3],
+    &[122, 60, 7],
+    &[112, 61, 11],
+    &[102, 61, 15, 1],
+    &[96, 60, 18, 2],
+    &[88, 59, 21, 4],
+    &[80, 58, 24, 5, 1],
+    &[76, 56, 26, 7, 1],
+    &[70, 54, 28, 9, 2],
+    &[66, 52, 29, 11, 3],
+    &[60, 51, 30, 12, 4, 1],
+    &[60, 49, 30, 14, 4, 1],
+    &[54, 47, 31, 15, 6, 2],
+    &[54, 45, 31, 16, 7, 2],
+    &[48, 44, 31, 17, 8, 3, 1],
+];
+
+/// Photoshop's kernels for radii 2.1–2.9 (center weight, then each side's),
+/// measured from Photoshop 2026 at 16 bits; 2.2–2.4 and 2.5–2.6 share one.
+const MID_KERNELS: [&[f32]; 9] = [
+    &[
+        0.175297, 0.160498, 0.123455, 0.076526, 0.037043, 0.012358, 0.002472,
+    ],
+    &[
+        0.165436, 0.153079, 0.120156, 0.078996, 0.041984, 0.017300, 0.004943, 0.000824,
+    ],
+    &[
+        0.165436, 0.153079, 0.120156, 0.078996, 0.041984, 0.017300, 0.004943, 0.000824,
+    ],
+    &[
+        0.165436, 0.153079, 0.120156, 0.078996, 0.041984, 0.017300, 0.004943, 0.000824,
+    ],
+    &[
+        0.148638, 0.139269, 0.114553, 0.081963, 0.050380, 0.025693, 0.010375, 0.002960, 0.000488,
+    ],
+    &[
+        0.148638, 0.139269, 0.114553, 0.081963, 0.050380, 0.025693, 0.010375, 0.002960, 0.000488,
+    ],
+    &[
+        0.141314, 0.133319, 0.111989, 0.082665, 0.053340, 0.029355, 0.013335, 0.004455, 0.000885,
+    ],
+    &[
+        0.135978, 0.128868, 0.109338, 0.082667, 0.055111, 0.032011, 0.015716, 0.006225, 0.001770,
+        0.000305,
+    ],
+    &[
+        0.130676, 0.124268, 0.106689, 0.082672, 0.057068, 0.034668, 0.018127, 0.007996, 0.002655,
+        0.000519,
+    ],
+];
 
 /// A layer as premultiplied RGBA floats (0–255).
 struct Buffer {
@@ -156,21 +242,162 @@ impl Buffer {
         pass(&pass(self, true), false)
     }
 
+    /// Photoshop's Gaussian Blur (measured from Photoshop 2026): radii up
+    /// to 2 pixels (in Photoshop's 0.1 steps) use its own 8-bit kernels,
+    /// 2.1–2.9 its measured kernels, larger ones five extended boxes whose
+    /// variance is exactly radius² (within a hundredth of a level of
+    /// Photoshop's at radius 8).
     fn gaussian(&self, sigma: f32) -> Self {
-        if sigma <= 0.0 {
+        let tenths = (sigma * 10.0).round() as usize;
+        if tenths == 0 {
             return Self {
                 w: self.w,
                 h: self.h,
                 px: self.px.clone(),
             };
         }
-        let r = (sigma * 3.0).ceil() as isize;
-        let mut kernel: Vec<f32> = (-r..=r)
-            .map(|i| (-(i * i) as f32 / (2.0 * sigma * sigma)).exp())
-            .collect();
-        let sum: f32 = kernel.iter().sum();
-        kernel.iter_mut().for_each(|k| *k /= sum);
+        if tenths <= SMALL_KERNELS.len() {
+            let half = SMALL_KERNELS[tenths - 1];
+            let kernel: Vec<f32> = half[1..]
+                .iter()
+                .rev()
+                .chain(half)
+                .map(|&w| w as f32 / 256.0)
+                .collect();
+            return self.separable(&kernel);
+        }
+        if tenths < 30 {
+            let half = MID_KERNELS[tenths - 21];
+            let kernel: Vec<f32> = half[1..].iter().rev().chain(half).copied().collect();
+            return self.separable(&kernel);
+        }
+        // Five extended boxes (Gwosdek et al.), each of variance sigma² / 5:
+        // radius l plus fractional end taps alpha, convolved into one
+        // kernel that is applied once with the edges repeated (as
+        // Photoshop does)
+        let v = (sigma * sigma / 5.0) as f64;
+        let l = ((0.5 * (12.0 * v + 1.0).sqrt() - 0.5).floor()).max(0.0);
+        let alpha =
+            (2.0 * l + 1.0) * (l * (l + 1.0) - 3.0 * v) / (6.0 * (v - (l + 1.0) * (l + 1.0)));
+        let mut boxed = vec![1.0f64; 2 * l as usize + 3];
+        let last = boxed.len() - 1;
+        boxed[0] = alpha;
+        boxed[last] = alpha;
+        let total: f64 = boxed.iter().sum();
+        boxed.iter_mut().for_each(|w| *w /= total);
+        let mut kernel = vec![1.0f64];
+        for _ in 0..5 {
+            let mut next = vec![0.0; kernel.len() + boxed.len() - 1];
+            for (i, a) in kernel.iter().enumerate() {
+                for (j, b) in boxed.iter().enumerate() {
+                    next[i + j] += a * b;
+                }
+            }
+            kernel = next;
+        }
+        let kernel: Vec<f32> = kernel.into_iter().map(|w| w as f32).collect();
         self.separable(&kernel)
+    }
+
+    /// The sum of the pixels at `taps` (offset, weight) around each pixel,
+    /// edges repeated.
+    fn taps(&self, taps: &[((isize, isize), f32)]) -> Self {
+        let mut out = vec![[0f32; 4]; self.w * self.h];
+        for y in 0..self.h as isize {
+            for x in 0..self.w as isize {
+                let mut acc = [0f32; 4];
+                for &((dx, dy), wgt) in taps {
+                    let p = self.at(x + dx, y + dy);
+                    for c in 0..4 {
+                        acc[c] += p[c] * wgt;
+                    }
+                }
+                out[y as usize * self.w + x as usize] = acc;
+            }
+        }
+        Self {
+            w: self.w,
+            h: self.h,
+            px: out,
+        }
+    }
+
+    /// A 3 × 3 kernel (rows top to bottom) as taps.
+    fn kernel3(&self, k: [[f32; 3]; 3]) -> Self {
+        let mut taps = Vec::new();
+        for (dy, row) in k.iter().enumerate() {
+            for (dx, &w) in row.iter().enumerate() {
+                if w != 0.0 {
+                    taps.push(((dx as isize - 1, dy as isize - 1), w));
+                }
+            }
+        }
+        self.taps(&taps)
+    }
+
+    /// The bilinearly interpolated pixel at (`x`, `y`), edges repeated.
+    fn sample(&self, x: f32, y: f32) -> [f32; 4] {
+        let (x0, y0) = (x.floor(), y.floor());
+        let (fx, fy) = (x - x0, y - y0);
+        let (x0, y0) = (x0 as isize, y0 as isize);
+        let mut acc = [0f32; 4];
+        for (dx, dy, w) in [
+            (0, 0, (1.0 - fx) * (1.0 - fy)),
+            (1, 0, fx * (1.0 - fy)),
+            (0, 1, (1.0 - fx) * fy),
+            (1, 1, fx * fy),
+        ] {
+            let p = self.at(x0 + dx, y0 + dy);
+            for c in 0..4 {
+                acc[c] += p[c] * w;
+            }
+        }
+        acc
+    }
+
+    /// Minimum or Maximum (`max`) within `radius`: a square of the radius
+    /// rounded half up, or a disc whose edge pixels count by how much of
+    /// them it covers (1 − (distance − radius), measured from Photoshop).
+    fn extreme(&self, radius: f32, round: bool, max: bool) -> Self {
+        let reach = radius.ceil() as isize + 1;
+        let mut window = Vec::new();
+        for dy in -reach..=reach {
+            for dx in -reach..=reach {
+                let cover = if round {
+                    (1.0 - (((dx * dx + dy * dy) as f32).sqrt() - radius)).clamp(0.0, 1.0)
+                } else {
+                    let r = (radius + 0.5).floor() as isize;
+                    if dx.abs() <= r && dy.abs() <= r {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                };
+                if cover > 0.0 {
+                    window.push(((dx, dy), cover));
+                }
+            }
+        }
+        let mut out = vec![[0f32; 4]; self.w * self.h];
+        for y in 0..self.h as isize {
+            for x in 0..self.w as isize {
+                let here = self.at(x, y);
+                let mut best = here;
+                for &((dx, dy), cover) in &window {
+                    let p = self.at(x + dx, y + dy);
+                    for c in 0..4 {
+                        let v = here[c] + (p[c] - here[c]) * cover;
+                        best[c] = if max { best[c].max(v) } else { best[c].min(v) };
+                    }
+                }
+                out[y as usize * self.w + x as usize] = best;
+            }
+        }
+        Self {
+            w: self.w,
+            h: self.h,
+            px: out,
+        }
     }
 
     /// Applies `f` to each channel's values in the (2r + 1)² square.
@@ -269,13 +496,12 @@ fn filtered(
                     let orig = Buffer::straight(src.px[i]);
                     let blur = Buffer::straight(blurred.px[i]);
                     let mut out = orig;
+                    // The sharpening, less the threshold (Photoshop's
+                    // threshold eases in rather than cutting off)
                     for c in 0..3 {
-                        let diff = orig[c] as f32 - blur[c] as f32;
-                        if diff.abs() > threshold as f32 {
-                            out[c] = (orig[c] as f32 + diff * amount / 100.0)
-                                .round()
-                                .clamp(0.0, 255.0) as u8;
-                        }
+                        let delta = (orig[c] as f32 - blur[c] as f32) * amount / 100.0;
+                        let eased = delta.signum() * (delta.abs() - threshold as f32).max(0.0);
+                        out[c] = (orig[c] as f32 + eased).round().clamp(0.0, 255.0) as u8;
                     }
                     out
                 })
@@ -311,18 +537,119 @@ fn filtered(
             .into_iter()
             .map(Buffer::straight)
             .collect(),
-        Filter::Minimum { radius } => src
-            .rank(radius, |v| v.iter().copied().fold(f32::MAX, f32::min))
+        Filter::Minimum { radius, round } => src
+            .extreme(radius, round, false)
             .px
             .into_iter()
             .map(Buffer::straight)
             .collect(),
-        Filter::Maximum { radius } => src
-            .rank(radius, |v| v.iter().copied().fold(f32::MIN, f32::max))
+        Filter::Maximum { radius, round } => src
+            .extreme(radius, round, true)
             .px
             .into_iter()
             .map(Buffer::straight)
             .collect(),
+        // The 3 × 3 blurs and sharpens measured from Photoshop 2026
+        Filter::Blur | Filter::BlurMore | Filter::Sharpen | Filter::SharpenMore => {
+            let k =
+                match filter {
+                    Filter::Blur => [[0.0, 1.0, 0.0], [1.0, 4.0, 1.0], [0.0, 1.0, 0.0]]
+                        .map(|r| r.map(|v| v / 8.0)),
+                    Filter::BlurMore => [[1.0, 2.0, 1.0], [2.0, 2.0, 2.0], [1.0, 2.0, 1.0]]
+                        .map(|r| r.map(|v| v / 14.0)),
+                    Filter::Sharpen => [[0.0, -0.25, 0.0], [-0.25, 2.0, -0.25], [0.0, -0.25, 0.0]],
+                    _ => [
+                        [-0.25, -0.25, -0.25],
+                        [-0.25, 3.0, -0.25],
+                        [-0.25, -0.25, -0.25],
+                    ],
+                };
+            src.kernel3(k)
+                .px
+                .into_iter()
+                .map(Buffer::straight)
+                .collect()
+        }
+        Filter::FindEdges => {
+            // 255 less the Sobel gradient's length, per channel
+            let gx = src.kernel3([[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]]);
+            let gy = src.kernel3([[-1.0, -2.0, -1.0], [0.0, 0.0, 0.0], [1.0, 2.0, 1.0]]);
+            (0..w * h)
+                .map(|i| {
+                    let orig = Buffer::straight(src.px[i]);
+                    let mut out = orig;
+                    for (c, v) in out.iter_mut().take(3).enumerate() {
+                        let (a, b) = (gx.px[i][c], gy.px[i][c]);
+                        *v = (255.0 - (a * a + b * b).sqrt()).round().clamp(0.0, 255.0) as u8;
+                    }
+                    out
+                })
+                .collect()
+        }
+        Filter::MotionBlur { angle, distance } => {
+            // distance + 1 samples one pixel apart along the angle, each
+            // spread bilinearly (exact for horizontal blurs)
+            let (sin, cos) = (angle as f32).to_radians().sin_cos();
+            let n = distance as usize + 1;
+            let start = -((distance as f32) / 2.0).ceil();
+            let mut weights: std::collections::BTreeMap<(isize, isize), f32> = Default::default();
+            for i in 0..n {
+                let t = start + i as f32;
+                let (x, y) = (t * cos, -t * sin);
+                let (x0, y0) = (x.floor(), y.floor());
+                let (fx, fy) = (x - x0, y - y0);
+                for (dx, dy, wgt) in [
+                    (0, 0, (1.0 - fx) * (1.0 - fy)),
+                    (1, 0, fx * (1.0 - fy)),
+                    (0, 1, (1.0 - fx) * fy),
+                    (1, 1, fx * fy),
+                ] {
+                    if wgt > 0.0 {
+                        *weights
+                            .entry((x0 as isize + dx, y0 as isize + dy))
+                            .or_default() += wgt / n as f32;
+                    }
+                }
+            }
+            // The points traced are where a pixel's light lands (the
+            // impulse response), so the taps read the opposite way
+            let taps: Vec<_> = weights
+                .into_iter()
+                .map(|((dx, dy), w)| ((-dx, -dy), w))
+                .collect();
+            src.taps(&taps)
+                .px
+                .into_iter()
+                .map(Buffer::straight)
+                .collect()
+        }
+        Filter::Emboss {
+            angle,
+            height,
+            amount,
+        } => {
+            // Gray plus the difference between samples half the height away
+            // on either side along the angle (bilinear; Photoshop's own
+            // sampling is a little sharper off the axes)
+            let (sin, cos) = (angle as f32).to_radians().sin_cos();
+            let reach = height as f32 / 2.0;
+            let (dx, dy) = (reach * cos, -reach * sin);
+            let k = amount as f32 / 100.0;
+            (0..w * h)
+                .map(|i| {
+                    let (x, y) = ((i % w) as f32, (i / w) as f32);
+                    let a = Buffer::straight(src.sample(x + dx, y + dy));
+                    let b = Buffer::straight(src.sample(x - dx, y - dy));
+                    let mut out = Buffer::straight(src.px[i]);
+                    for c in 0..3 {
+                        out[c] = (128.0 + (a[c] as f32 - b[c] as f32) * k)
+                            .round()
+                            .clamp(0.0, 255.0) as u8;
+                    }
+                    out
+                })
+                .collect()
+        }
         Filter::HighPass { radius } => {
             let blurred = src.gaussian(radius);
             (0..w * h)
@@ -470,8 +797,20 @@ mod tests {
     #[test]
     fn rank_filters() {
         assert_eq!(run(Filter::Median { radius: 1 }), [255; 5]);
-        assert_eq!(run(Filter::Minimum { radius: 1 }), [255, 0, 0, 0, 255]);
-        assert_eq!(run(Filter::Maximum { radius: 1 }), [255; 5]);
+        assert_eq!(
+            run(Filter::Minimum {
+                radius: 1.0,
+                round: false
+            }),
+            [255, 0, 0, 0, 255]
+        );
+        assert_eq!(
+            run(Filter::Maximum {
+                radius: 1.0,
+                round: false
+            }),
+            [255; 5]
+        );
     }
 
     #[test]
@@ -536,5 +875,69 @@ mod tests {
         apply(&mut d, Filter::BoxBlur { radius: 1 }, [255; 3]).unwrap();
         let image = d.layers[1].image().unwrap();
         assert_eq!(image.pixel(0, 0), [255, 0, 0, 85]);
+    }
+
+    /// Comparisons with Photoshop 2026's own results (fixtures/filter):
+    /// probe.rgb is a 64 × 64 image (a red–green ramp, a white square, a
+    /// black line, scattered dots); the other files are Photoshop's output.
+    mod photoshop {
+        use super::*;
+        use crate::color::Color;
+
+        const FIXTURES: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/fixtures/filter/");
+
+        /// Applies `filter` to the probe and returns the largest channel
+        /// difference from Photoshop's `expected` output and how many
+        /// channels differ by more than 2.
+        pub fn compare(filter: Filter, expected: &str) -> (u8, usize) {
+            let probe = std::fs::read(format!("{FIXTURES}probe.rgb")).unwrap();
+            let want = std::fs::read(format!("{FIXTURES}{expected}")).unwrap();
+            let mut doc = Document::new_with_background("t", 64, 64, Color::WHITE);
+            let id = doc.active_layer.unwrap();
+            let image = doc.layer_mut(id).unwrap().image_mut().unwrap();
+            for (i, px) in probe.chunks(3).enumerate() {
+                image.set_pixel(i as u32 % 64, i as u32 / 64, [px[0], px[1], px[2], 255]);
+            }
+            apply(&mut doc, filter, [255; 3]).unwrap();
+            let got = doc.composite_rgba8();
+            let (mut worst, mut off) = (0u8, 0);
+            for (i, w) in want.chunks(3).enumerate() {
+                for c in 0..3 {
+                    let d = got[i * 4 + c].abs_diff(w[c]);
+                    worst = worst.max(d);
+                    off += (d > 2) as usize;
+                }
+            }
+            (worst, off)
+        }
+
+        /// Each filter against Photoshop: the largest difference allowed
+        /// (1 level where the algorithm is Photoshop's; Minimum/Maximum's
+        /// roundness, angled Motion Blur and Emboss are approximations).
+        #[test]
+        fn filters_match_photoshop() {
+            for (name, filter, allowed) in [
+                ("f_g03.rgb", Filter::GaussianBlur { radius: 0.3 }, 1),
+                ("f_g1.rgb", Filter::GaussianBlur { radius: 1.0 }, 1),
+                ("f_g25.rgb", Filter::GaussianBlur { radius: 2.5 }, 1),
+                ("f_g10.rgb", Filter::GaussianBlur { radius: 10.0 }, 1),
+                ("f_box1.rgb", Filter::BoxBlur { radius: 1 }, 1),
+                ("f_box3.rgb", Filter::BoxBlur { radius: 3 }, 1),
+                ("f_med1.rgb", Filter::Median { radius: 1 }, 1),
+                ("f_med3.rgb", Filter::Median { radius: 3 }, 1),
+                ("f_blur.rgb", Filter::Blur, 1),
+                ("f_blurm.rgb", Filter::BlurMore, 1),
+                ("f_shrp.rgb", Filter::Sharpen, 1),
+                ("f_shrpm.rgb", Filter::SharpenMore, 1),
+                ("f_fnde.rgb", Filter::FindEdges, 1),
+                ("f_hp10.rgb", Filter::HighPass { radius: 10.0 }, 1),
+                ("f_hp2.rgb", Filter::HighPass { radius: 2.0 }, 1),
+                ("f_mos5.rgb", Filter::Mosaic { cell: 5 }, 1),
+                ("f_sol.rgb", Filter::Solarize, 1),
+            ] {
+                let (worst, _) = compare(filter, name);
+                assert!(worst <= allowed, "{name}: off by {worst}");
+            }
+        }
     }
 }

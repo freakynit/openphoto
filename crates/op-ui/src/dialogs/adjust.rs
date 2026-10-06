@@ -122,6 +122,20 @@ const ADD_NOISE: &[Param] = &[
     check("Monochromatic", false),
 ];
 const RADIUS: &[Param] = &[param("Radius (pixels):", 1.0, 500.0, 1.0, 0)];
+/// Minimum and Maximum: a fractional radius and Preserve.
+const RANK_RADIUS: &[Param] = &[
+    param("Radius (pixels):", 0.2, 500.0, 1.0, 1),
+    choice("Preserve", &["Squareness", "Roundness"], 0),
+];
+const MOTION_BLUR: &[Param] = &[
+    param("Angle (°):", -360.0, 360.0, 0.0, 0),
+    param("Distance (pixels):", 1.0, 2000.0, 10.0, 0),
+];
+const EMBOSS: &[Param] = &[
+    param("Angle (°):", -180.0, 180.0, 135.0, 0),
+    param("Height (pixels):", 1.0, 10.0, 3.0, 0),
+    param("Amount (%):", 1.0, 500.0, 100.0, 0),
+];
 const HIGH_PASS: &[Param] = &[param("Radius (pixels):", 0.1, 1000.0, 10.0, 1)];
 const OFFSET: &[Param] = &[
     param("Horizontal (pixels right):", -30000.0, 30000.0, 0.0, 0),
@@ -160,6 +174,8 @@ pub enum Kind {
     HighPass,
     Offset,
     Mosaic,
+    MotionBlur,
+    Emboss,
 }
 
 impl Kind {
@@ -189,6 +205,8 @@ impl Kind {
             Self::HighPass => "High Pass",
             Self::Offset => "Offset",
             Self::Mosaic => "Mosaic",
+            Self::MotionBlur => "Motion Blur",
+            Self::Emboss => "Emboss",
         }
     }
 
@@ -213,10 +231,13 @@ impl Kind {
             Self::BoxBlur => BOX_BLUR,
             Self::UnsharpMask => UNSHARP_MASK,
             Self::AddNoise => ADD_NOISE,
-            Self::Median | Self::Minimum | Self::Maximum => RADIUS,
+            Self::Median => RADIUS,
+            Self::Minimum | Self::Maximum => RANK_RADIUS,
             Self::HighPass => HIGH_PASS,
             Self::Offset => OFFSET,
             Self::Mosaic => MOSAIC,
+            Self::MotionBlur => MOTION_BLUR,
+            Self::Emboss => EMBOSS,
         }
     }
 
@@ -402,10 +423,12 @@ impl AdjustDialog {
                 radius: v[0] as u32,
             },
             Kind::Minimum => Filter::Minimum {
-                radius: v[0] as u32,
+                radius: v[0],
+                round: v[1] == 1.0,
             },
             Kind::Maximum => Filter::Maximum {
-                radius: v[0] as u32,
+                radius: v[0],
+                round: v[1] == 1.0,
             },
             Kind::HighPass => Filter::HighPass { radius: v[0] },
             Kind::Offset => Filter::Offset {
@@ -418,6 +441,15 @@ impl AdjustDialog {
                 ][v[2] as usize],
             },
             Kind::Mosaic => Filter::Mosaic { cell: v[0] as u32 },
+            Kind::MotionBlur => Filter::MotionBlur {
+                angle: v[0] as i32,
+                distance: v[1] as u32,
+            },
+            Kind::Emboss => Filter::Emboss {
+                angle: v[0] as i32,
+                height: v[1] as u32,
+                amount: v[2] as u32,
+            },
             // Every adjustment has its own dialog
             _ => return None,
         };
