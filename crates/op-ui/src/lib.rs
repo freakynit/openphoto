@@ -5,6 +5,8 @@
 
 mod actions;
 mod commands;
+#[cfg(target_os = "macos")]
+mod color_management;
 mod dialogs;
 mod doc_tabs;
 mod document_view;
@@ -43,6 +45,9 @@ impl OpenPhotoApp {
         #[cfg(target_os = "macos")]
         {
             app.menu = Some(menu::NativeMenu::install(&cc.egui_ctx));
+            if let Some(window) = cc.winit_window() {
+                color_management::use_srgb(window.as_ref());
+            }
         }
         app
     }
