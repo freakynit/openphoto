@@ -8,4 +8,4 @@
 
 mod canvas;
 
-pub use canvas::{CanvasImage, CanvasView, install, paint_callback};
+pub use canvas::{CanvasImage, CanvasView, Shield, install, paint_callback};

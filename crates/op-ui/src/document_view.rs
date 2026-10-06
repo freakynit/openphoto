@@ -137,6 +137,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
     let shape_options = app.shape;
     let move_options = app.move_options;
     let type_options = app.type_options;
+    let crop_options = app.crop_options.clone();
     let mut paint_error = None;
     let Some(state) = app.docs.get_mut(&id) else {
         return;
@@ -346,7 +347,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
                 }
             }
             Tool::Crop => {
-                crate::crop_tool::input(ui, &response, state, ppp);
+                crate::crop_tool::input(ui, &response, state, &crop_options, background, ppp);
             }
             Tool::HorizontalType => {
                 let [r, g, b, _] = foreground.to_rgba8();
@@ -517,6 +518,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
     let view = op_render::CanvasView {
         origin: [origin.x, origin.y],
         zoom: state.view.zoom,
+        shield: crate::crop_tool::shield(state, &crop_options),
         pixel_grid: true,
     };
     ui.painter()
@@ -552,7 +554,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
         crate::type_tool::commit(state);
     }
     crate::type_tool::draw_caret(ui, state, type_options, canvas_rect, ppp);
-    crate::crop_tool::draw(ui, state, canvas_rect, ppp);
+    crate::crop_tool::draw(ui, state, &crop_options, canvas_rect, ppp);
     let transforming = state.free_transform.is_some();
     if let (Some(opts), Some(p), false) = (paint, response.hover_pos(), transforming) {
         brush_cursor(ui, canvas_rect, p, opts.size * state.view.zoom / ppp);

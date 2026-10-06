@@ -312,3 +312,47 @@ pub fn percent_drag(ui: &mut Ui, value: &mut f32) -> Response {
     }
     response
 }
+
+/// An editable options-bar field at `rect`: Photoshop's `#454545` box with
+/// a `#666666` border (dimmed when disabled), the value in the panel font,
+/// 6 pt from the left. Returns the text edit's response.
+pub fn text_box(
+    ui: &mut Ui,
+    rect: egui::Rect,
+    text: &mut String,
+    id: impl egui::AsIdSalt,
+    enabled: bool,
+) -> Response {
+    use theme::pt;
+    let (fill, border, value) = if enabled {
+        (color::FIELD, Color32::from_gray(0x66), color::TEXT)
+    } else {
+        (
+            Color32::from_gray(0x4d),
+            Color32::from_gray(0x5e),
+            Color32::from_gray(0x87),
+        )
+    };
+    ui.painter().rect(
+        rect,
+        CornerRadius::same(pt(2.0) as u8),
+        fill,
+        Stroke::new(pt(1.0), border),
+        StrokeKind::Inside,
+    );
+    let inner = rect.shrink2(Vec2::new(pt(6.0), pt(1.0)));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
+        ui.add_enabled(
+            enabled,
+            egui::TextEdit::singleline(text)
+                .id_salt(id)
+                .frame(egui::Frame::NONE)
+                .font(theme::body())
+                .text_color(value)
+                .desired_width(inner.width())
+                .vertical_align(egui::Align::Center)
+                .min_size(inner.size()),
+        )
+    })
+    .inner
+}

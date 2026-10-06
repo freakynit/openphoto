@@ -27,6 +27,15 @@ pub enum Icon {
     DistributeHorizontally,
     More,
     Gear,
+    /// The Crop tool's options bar.
+    Straighten,
+    CropOverlay,
+    Info,
+    CropReset,
+    CropCancel,
+    CropCommit,
+    /// Swap width and height: two solid arrows.
+    Swap,
     /// The toolbar's collapse "»": pixel-aligned and bold.
     CollapseToolbar,
     /// The panel column's thin collapse "»".
@@ -603,6 +612,79 @@ pub fn paint_scaled(
             pen.rect(-8.0, 10.0, 8.0, 12.0);
             pen.rect(-3.0, -3.0, -1.0, 8.0);
             pen.rect(1.0, -3.0, 3.0, 8.0);
+        }
+        Icon::Straighten => {
+            // A level: the bubble's dots above, two blocks and a cup
+            for (x, y) in [
+                (0.0, -11.5),
+                (-6.0, -9.5),
+                (6.0, -9.5),
+                (-10.0, -5.5),
+                (10.0, -5.5),
+            ] {
+                pen.rect(x - 1.0, y - 1.0, x + 1.0, y + 1.0);
+            }
+            pen.rect(-17.0, -0.5, -11.0, 12.5);
+            pen.rect(11.0, -0.5, 17.0, 12.5);
+            pen.rect(-9.0, -0.5, 9.0, 12.5);
+            Pen {
+                color: background,
+                ..pen
+            }
+            .dot(0.0, -0.5, 6.5);
+            pen.painter.rect_filled(
+                Rect::from_min_max(pen.p(-5.0, -0.5), pen.p(5.0, 3.5)),
+                pen.w(2.0),
+                color,
+            );
+        }
+        Icon::CropOverlay => {
+            // A 3 × 3 grid with crop marks, and a menu triangle
+            for x in [-11.5f32, -3.5, 4.5, 11.5] {
+                pen.rect(x - 1.0, -12.5, x + 1.0, 12.5);
+            }
+            for y in [-11.5f32, -3.5, 4.5, 11.5] {
+                pen.rect(-12.5, y - 1.0, 12.5, y + 1.0);
+            }
+            for x in [-6.0f32, 6.0] {
+                pen.rect(x - 1.0, -16.5, x + 1.0, -12.5);
+                pen.rect(x - 1.0, 12.5, x + 1.0, 16.5);
+            }
+            for y in [-6.0f32, 6.0] {
+                pen.rect(-16.5, y - 1.0, -12.5, y + 1.0);
+                pen.rect(12.5, y - 1.0, 16.5, y + 1.0);
+            }
+            pen.poly(&[(10.5, 15.5), (18.0, 15.5), (14.25, 19.0)]);
+        }
+        Icon::Info => {
+            pen.ring(0.0, 0.0, 11.0, 2.5);
+            pen.dot(0.0, -5.0, 1.75);
+            pen.rect(-1.5, -1.0, 1.5, 7.5);
+        }
+        Icon::CropReset => {
+            // A turning arrow over a bar
+            let arc: Vec<(f32, f32)> = (0..=16)
+                .map(|k| {
+                    let a = (170.0 + 230.0 * k as f32 / 16.0f32).to_radians();
+                    (1.0 + 8.5 * a.cos(), -0.5 + 8.5 * a.sin())
+                })
+                .collect();
+            pen.line(&arc, 4.5);
+            pen.poly(&[(-16.5, 1.5), (-1.5, 1.5), (-9.0, 10.0)]);
+            pen.rect(-16.5, 15.0, 16.5, 17.0);
+        }
+        Icon::CropCancel => {
+            pen.ring(0.0, 0.0, 13.0, 4.0);
+            pen.line(&[(-9.0, -9.0), (9.0, 9.0)], 4.0);
+        }
+        Icon::Swap => {
+            pen.rect(-7.5, -7.0, 4.0, -5.0);
+            pen.poly(&[(3.5, -12.5), (14.5, -6.0), (3.5, 0.5)]);
+            pen.rect(-3.0, 5.0, 7.5, 7.0);
+            pen.poly(&[(-2.5, -0.5), (-2.5, 12.5), (-13.5, 6.0)]);
+        }
+        Icon::CropCommit => {
+            pen.line(&[(-14.0, -0.5), (-5.5, 9.0), (13.0, -12.5)], 4.5);
         }
         Icon::Gear => {
             pen.dot(0.0, 0.0, 10.0);

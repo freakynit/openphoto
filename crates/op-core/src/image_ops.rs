@@ -283,6 +283,41 @@ pub fn crop(doc: &mut Document, x0: u32, y0: u32, x1: u32, y1: u32) {
     });
 }
 
+/// The Crop tool's crop to x0..x1 × y0..y1 (exclusive ends), which may
+/// reach past the canvas: the canvas grows there, as in Photoshop, the
+/// background with `background` (Fill: Background) and other layers
+/// transparent. With `delete_cropped` (Delete Cropped Pixels) the pixels
+/// outside the new canvas are deleted; without it they stay on the
+/// layers, the background becoming a regular "Layer 0" so it can keep
+/// them. Returns false for an empty box.
+pub fn crop_extended(
+    doc: &mut Document,
+    (x0, y0, x1, y1): (i64, i64, i64, i64),
+    delete_cropped: bool,
+    background: crate::Color,
+) -> bool {
+    if x1 <= x0 || y1 <= y0 {
+        return false;
+    }
+    let (w, h) = ((x1 - x0) as u32, (y1 - y0) as u32);
+    let keeps_background_pixels =
+        !delete_cropped && (x0 > 0 || y0 > 0 || x1 < doc.width as i64 || y1 < doc.height as i64);
+    if keeps_background_pixels && let Some(bg) = doc.layers.iter_mut().find(|l| l.is_background) {
+        bg.is_background = false;
+        bg.name = "Layer 0".into();
+        bg.set_locks(crate::Locks::default());
+    }
+    doc.place_canvas(w, h, -x0, -y0, background);
+    if delete_cropped {
+        for layer in &mut doc.layers {
+            if let Some(image) = layer.image_mut() {
+                *image = image.clipped();
+            }
+        }
+    }
+    true
+}
+
 /// Image > Crop: crops to the selection's bounding box. Returns false
 /// without a selection.
 pub fn crop_to_selection(doc: &mut Document) -> bool {
@@ -778,6 +813,37 @@ mod tests {
         );
         assert!(rotate_arbitrary(&mut doc, -45.0, Color::BLACK));
         assert_eq!((doc.width, doc.height), (291, 291));
+    }
+
+    #[test]
+    fn crop_tool_crops_past_the_canvas_and_can_keep_pixels() {
+        let mut doc = Document::new_with_background("t", 10, 10, Color::WHITE);
+        let mut image = crate::tile::TiledImage::new(10, 10);
+        image.set_pixel(1, 1, [255, 0, 0, 255]);
+        let id = doc.new_layer_id();
+        doc.layers.push(crate::Layer::raster(id, "L", image));
+        // Past the right and bottom edges: the background grows with the
+        // background color, the layer stays transparent there
+        assert!(crop_extended(&mut doc, (5, 5, 15, 12), true, Color::BLACK));
+        assert_eq!((doc.width, doc.height), (10, 7));
+        let bg = doc.layers[0].image().unwrap();
+        assert_eq!(bg.pixel(0, 0), [255, 255, 255, 255]);
+        assert_eq!(bg.pixel(9, 6), [0, 0, 0, 255]);
+        assert!(!doc.layer(id).unwrap().image().unwrap().has_pixels_outside());
+        // Without deleting: the dot stays outside, the background becomes
+        // a layer
+        let mut doc = Document::new_with_background("t", 10, 10, Color::WHITE);
+        let mut image = crate::tile::TiledImage::new(10, 10);
+        image.set_pixel(1, 1, [255, 0, 0, 255]);
+        doc.layers.push(crate::Layer::raster(id, "L", image));
+        assert!(crop_extended(&mut doc, (4, 4, 8, 8), false, Color::BLACK));
+        assert!(!doc.layers[0].is_background);
+        assert_eq!(doc.layers[0].name, "Layer 0");
+        assert_eq!(
+            doc.layer(id).unwrap().image().unwrap().pixel_at(-3, -3),
+            [255, 0, 0, 255]
+        );
+        assert!(!crop_extended(&mut doc, (4, 4, 4, 8), false, Color::BLACK));
     }
 
     /// 3×2 white background with red at (0, 0) and blue at (2, 1).

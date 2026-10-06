@@ -75,7 +75,8 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
     // The right end: the special buttons of a tool in progress, or the
     // app-wide buttons
     let right = Rect::from_min_max(Pos2::new(bar.right() - pt(230.0), bar.top()), bar.max);
-    let special = app.transforming() || app.tool == Tool::Crop || app.typing_text();
+    let special = app.transforming() || app.typing_text();
+    let cropping = app.tool == Tool::Crop && !app.transforming();
     if special {
         ui.scope_builder(
             egui::UiBuilder::new()
@@ -85,15 +86,20 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 if app.transforming() {
                     transform_buttons(ui, app);
-                } else if app.tool == Tool::Crop {
-                    crop_buttons(ui, app);
                 } else {
                     type_buttons(ui, app);
                 }
             },
         );
     } else {
-        let from_right = |x: f32, dy: f32| Pos2::new(bar.right() - pt(x), cy + pt(dy));
+        // The Crop tool's bar is wider than the window: like Photoshop's, it
+        // pushes these right (the avatar is cut off at 1350 pt)
+        let push = if cropping {
+            (pt(CROP_BAR_END) - bar.width()).max(0.0)
+        } else {
+            0.0
+        };
+        let from_right = |x: f32, dy: f32| Pos2::new(bar.right() + push - pt(x), cy + pt(dy));
         for (x, dy, icon, tip) in [
             (200.0, 0.0, Icon::Share, "Share"),
             (163.5, 0.5, Icon::Bell, "Notifications"),
@@ -124,6 +130,11 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
         );
     }
 
+    if cropping {
+        crop_bar(ui, app, bar);
+        ui.allocate_rect(bar, Sense::hover());
+        return;
+    }
     let content = Rect::from_min_max(
         Pos2::new(bar.left() + CONTENT_LEFT, bar.top()),
         Pos2::new(right.left(), bar.bottom()),
@@ -229,7 +240,6 @@ fn tool_options(ui: &mut Ui, app: &mut AppState) {
         Tool::PaintBucket => bucket_options(ui, app),
         Tool::Eyedropper => eyedropper_options(ui, app),
         Tool::Gradient => gradient_options(ui, app),
-        Tool::Crop => crop_options(ui, app),
         Tool::HorizontalType => type_options(ui, app),
         Tool::Rectangle | Tool::Ellipse | Tool::Triangle | Tool::Polygon | Tool::Line => {
             shape_options(ui, app)
@@ -368,49 +378,309 @@ fn shape_options(ui: &mut Ui, app: &mut AppState) {
     }
 }
 
-/// Crop: the box's size and Clear (back to the whole canvas); Delete
-/// Cropped Pixels is always on.
-fn crop_options(ui: &mut Ui, app: &mut AppState) {
-    let Some(state) = app.active() else {
-        return;
-    };
-    let size = state.crop.map(|c| c.rect.size());
-    ui.label("W:");
-    let w = size.map_or(String::new(), |s| format!("{} px", s.x.round()));
-    widgets::field(ui, &w, 76.0, true);
-    widgets::icon(ui, icons::ARROWS_LEFT_RIGHT, 16.0, color::TEXT_DISABLED);
-    ui.label("H:");
-    let h = size.map_or(String::new(), |s| format!("{} px", s.y.round()));
-    widgets::field(ui, &h, 76.0, true);
-    ui.add_space(6.0);
-    if ui.button("Clear").clicked() {
-        state.crop = Some(crate::crop_tool::full(state));
-    }
-    widgets::vseparator(ui, 34.0);
-    let mut delete = true;
-    ui.add_enabled_ui(false, |ui| {
-        widgets::checkbox(ui, &mut delete, "Delete Cropped Pixels")
-    });
-}
+/// Where the Crop tool's bar would need the window to end so the app's
+/// buttons sit at their usual place (Photoshop 2026: Share lands at
+/// 1166.5 pt in a 1350 pt window).
+const CROP_BAR_END: f32 = 1366.5;
 
-/// Crop's Cancel (reset the box) and Commit buttons.
-fn crop_buttons(ui: &mut Ui, app: &mut AppState) {
+/// The Crop tool's options, at Photoshop 2026's positions (points from the
+/// bar's left): the ratio menu, Width, swap, Height (and in W x H x
+/// Resolution the resolution with its unit), Clear, Straighten, the
+/// overlay and gear menus, Delete Cropped Pixels, Fill, info and reset;
+/// Cancel and Commit once the box changed.
+fn crop_bar(ui: &mut Ui, app: &mut AppState, bar: Rect) {
+    let cy = bar.top() + CENTER_Y;
+    let at = |x: f32| bar.left() + pt(x);
+    let span = |x0: f32, x1: f32, h: f32| {
+        Rect::from_min_max(
+            Pos2::new(at(x0), cy - pt(h / 2.0)),
+            Pos2::new(at(x1), cy + pt(h / 2.0)),
+        )
+    };
+    let painter = ui.painter().clone();
+    let background = app.background;
+    let mut options = app.crop_options.clone();
+    let sized = options.preset.sized();
+    let label = if options.preset == crate::crop_tool::CropPreset::SizeResolution {
+        "W x H x Reso..."
+    } else {
+        options.preset.label()
+    };
+    let mut chosen = None;
+    ui.scope_builder(
+        egui::UiBuilder::new().max_rect(span(110.0, 201.0, 17.0)),
+        |ui| {
+            widgets::dropdown_with(ui, "crop-preset", pt(91.0), label, true, |ui| {
+                for (g, group) in crate::crop_tool::PRESET_GROUPS.into_iter().enumerate() {
+                    if g > 0 {
+                        ui.separator();
+                    }
+                    for &p in group {
+                        let enabled = p != crate::crop_tool::CropPreset::FrontImage;
+                        let item = egui::Button::new(p.label()).selected(p == options.preset);
+                        if ui.add_enabled(enabled, item).clicked() {
+                            chosen = Some(p);
+                        }
+                    }
+                }
+                ui.separator();
+                ui.add_enabled(false, egui::Button::new("New Crop Preset..."));
+                ui.add_enabled(false, egui::Button::new("Delete Crop Preset..."));
+            });
+        },
+    );
+    // Width, swap, Height
+    let w = widgets::text_box(
+        ui,
+        span(205.0, 272.5, 17.0),
+        &mut options.width,
+        "crop-w",
+        true,
+    );
+    let swap = Rect::from_center_size(Pos2::new(at(290.25), cy - pt(0.75)), Vec2::splat(pt(24.0)));
+    let swapped = ps_button(ui, swap, Icon::Swap)
+        .on_hover_text("Swap height and width")
+        .clicked();
+    let h = widgets::text_box(
+        ui,
+        span(310.0, 376.0, 17.0),
+        &mut options.height,
+        "crop-h",
+        true,
+    );
+    // The rest moves left when there's no resolution
+    let dx = if sized { 0.0 } else { -121.0 };
+    let mut res_changed = false;
+    if sized {
+        separator(&painter, bar, 380.0);
+        res_changed = widgets::text_box(
+            ui,
+            span(385.0, 439.5, 17.0),
+            &mut options.resolution,
+            "crop-res",
+            true,
+        )
+        .changed();
+        let unit = if options.per_cm { "px/cm" } else { "px/in" };
+        let mut per_cm = options.per_cm;
+        ui.scope_builder(
+            egui::UiBuilder::new().max_rect(span(442.5, 496.5, 17.0)),
+            |ui| {
+                widgets::dropdown_with(ui, "crop-res-unit", pt(54.0), unit, true, |ui| {
+                    ui.selectable_value(&mut per_cm, false, "px/in");
+                    ui.selectable_value(&mut per_cm, true, "px/cm");
+                });
+            },
+        );
+        options.per_cm = per_cm;
+        separator(&painter, bar, 500.5);
+    }
+    let edited = w.changed() || h.changed() || res_changed;
+    // Clear: a field-like button (#454545, a #666666 border)
+    let clear_rect = span(506.0 + dx, 552.5 + dx, 24.0);
+    let clear_response = ui.interact(clear_rect, ui.id().with("crop-clear"), Sense::click());
+    let fill = if clear_response.is_pointer_button_down_on() {
+        color::TOOL_ACTIVE
+    } else if clear_response.hovered() {
+        color::HOVER
+    } else {
+        color::FIELD
+    };
+    painter.rect(
+        clear_rect,
+        egui::CornerRadius::same(pt(2.0) as u8),
+        fill,
+        egui::Stroke::new(pt(1.0), Color32::from_gray(0x66)),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        clear_rect.center() - Vec2::new(0.0, pt(0.5)),
+        egui::Align2::CENTER_CENTER,
+        "Clear",
+        theme::body(),
+        color::TEXT,
+    );
+    let clear = clear_response.clicked();
+
+    // Straighten, overlay, gear
+    let icon_button = |ui: &mut Ui, x: f32, dy: f32, icon: Icon, tip: &str| {
+        let rect =
+            Rect::from_center_size(Pos2::new(at(x + dx), cy + pt(dy)), Vec2::splat(pt(24.0)));
+        ps_button(ui, rect, icon).on_hover_text(tip)
+    };
+    icon_button(ui, 574.0, -1.75, Icon::Straighten, "Straighten");
+    painter.text(
+        Pos2::new(at(592.0 + dx), cy - pt(0.5)),
+        egui::Align2::LEFT_CENTER,
+        "Straighten",
+        theme::body(),
+        color::TEXT,
+    );
+    separator(&painter, bar, 649.5 + dx);
+    let overlay = icon_button(
+        ui,
+        670.75,
+        -0.25,
+        Icon::CropOverlay,
+        "Set the overlay options for the Crop Tool",
+    );
+    egui::Popup::menu(&overlay)
+        .id(ui.id().with("crop-overlay-menu"))
+        .show(|ui| {
+            use crate::crop_tool::{Overlay, OverlayShow};
+            for o in Overlay::ALL {
+                ui.selectable_value(&mut options.overlay, o, o.label());
+            }
+            ui.separator();
+            for (s, label) in [
+                (OverlayShow::Auto, "Auto Show Overlay"),
+                (OverlayShow::Always, "Always Show Overlay"),
+                (OverlayShow::Never, "Never Show Overlay"),
+            ] {
+                ui.selectable_value(&mut options.overlay_show, s, label);
+            }
+            ui.separator();
+            if ui.button("Cycle Overlay").clicked() {
+                let k = Overlay::ALL
+                    .iter()
+                    .position(|&o| o == options.overlay)
+                    .unwrap_or(0);
+                options.overlay = Overlay::ALL[(k + 1) % Overlay::ALL.len()];
+            }
+            ui.add_enabled(false, egui::Button::new("Cycle Orientation"));
+        });
+    let gear = icon_button(ui, 705.0, -0.75, Icon::Gear, "Set additional Crop options");
+    egui::Popup::menu(&gear)
+        .id(ui.id().with("crop-gear-menu"))
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show(|ui| {
+            ui.checkbox(&mut options.classic, "Use Classic Mode");
+            ui.checkbox(&mut options.show_cropped_area, "Show Cropped Area");
+            ui.add_enabled(
+                !options.classic,
+                egui::Checkbox::new(&mut options.auto_center, "Auto Center Preview"),
+            );
+            ui.separator();
+            ui.checkbox(&mut options.shield, "Enable Crop Shield");
+            ui.add_enabled_ui(options.shield, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Opacity:");
+                    let mut percent = (options.shield_opacity * 100.0).round();
+                    ui.add(
+                        egui::DragValue::new(&mut percent)
+                            .range(0.0..=100.0)
+                            .suffix("%"),
+                    );
+                    options.shield_opacity = percent / 100.0;
+                });
+                ui.checkbox(&mut options.auto_adjust_opacity, "Auto Adjust Opacity");
+            });
+        });
+    separator(&painter, bar, 726.5 + dx);
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(span(735.0 + dx, 870.0 + dx, 20.0).translate(Vec2::new(0.0, pt(1.5)))),
+        |ui| {
+            ui.spacing_mut().item_spacing.x = 0.0;
+            widgets::checkbox(ui, &mut options.delete_cropped, "Delete Cropped Pixels")
+        },
+    );
+    painter.text(
+        Pos2::new(at(870.5 + dx), cy),
+        egui::Align2::LEFT_CENTER,
+        "Fill:",
+        theme::body(),
+        color::TEXT,
+    );
+    let mut fill = options.fill;
+    ui.scope_builder(
+        egui::UiBuilder::new().max_rect(span(892.0 + dx, 1023.5 + dx, 17.0)),
+        |ui| {
+            use crate::crop_tool::CropFill;
+            widgets::dropdown_with(ui, "crop-fill", pt(131.5), fill.label(), true, |ui| {
+                ui.selectable_value(
+                    &mut fill,
+                    CropFill::Background,
+                    CropFill::Background.label(),
+                );
+                // Both need Adobe's services or a content-aware engine
+                for f in [CropFill::GenerativeExpand, CropFill::ContentAware] {
+                    ui.add_enabled(false, egui::Button::new(f.label()));
+                }
+            });
+        },
+    );
+    options.fill = fill;
+    icon_button(
+        ui,
+        1042.0,
+        -0.5,
+        Icon::Info,
+        "Learn more about the Crop tool",
+    );
+
     let Some(state) = app.active() else {
+        app.crop_options = options;
         return;
     };
-    if widgets::icon_button(ui, icons::CHECK, 34.0, false)
-        .on_hover_text("Commit current crop operation (Return)")
-        .clicked()
-    {
-        crate::crop_tool::commit(state);
-        return;
+    if let Some(p) = chosen {
+        options.choose(p);
     }
-    if widgets::icon_button(ui, icons::PROHIBIT, 34.0, false)
-        .on_hover_text("Cancel current crop operation (Esc)")
-        .clicked()
-    {
-        state.crop = Some(crate::crop_tool::full(state));
+    if swapped {
+        options.swap();
     }
+    if clear {
+        options.clear();
+    }
+    // A new ratio or size refits the box to the image
+    if (chosen.is_some() || swapped || edited)
+        && let Some(a) = options.aspect((state.doc.width, state.doc.height))
+    {
+        state.crop = Some(crate::crop_tool::fitted(state, a));
+    }
+    let modified = crate::crop_tool::modified(state);
+    let reset = Rect::from_center_size(Pos2::new(at(1070.5), cy - pt(1.5)), Vec2::splat(pt(24.0)));
+    if modified {
+        if ps_button(ui, reset, Icon::CropReset)
+            .on_hover_text("Reset crop box, image rotation and aspect ratio settings")
+            .clicked()
+        {
+            state.crop = Some(crate::crop_tool::full(state));
+            crate::crop_tool::center_on_box(state, ui.ctx().pixels_per_point());
+            options = crate::crop_tool::CropOptions {
+                preset: crate::crop_tool::CropPreset::SizeResolution,
+                width: String::new(),
+                height: String::new(),
+                resolution: String::new(),
+                ..options
+            };
+        }
+        let cancel = Rect::from_center_size(Pos2::new(at(1103.75), cy), Vec2::splat(pt(24.0)));
+        if ps_button(ui, cancel, Icon::CropCancel)
+            .on_hover_text("Cancel current crop operation (Esc)")
+            .clicked()
+        {
+            state.crop = Some(crate::crop_tool::full(state));
+            crate::crop_tool::center_on_box(state, ui.ctx().pixels_per_point());
+        }
+        let commit = Rect::from_center_size(Pos2::new(at(1138.5), cy), Vec2::splat(pt(24.0)));
+        if ps_button(ui, commit, Icon::CropCommit)
+            .on_hover_text("Commit current crop operation (Return)")
+            .clicked()
+        {
+            crate::crop_tool::commit(state, &options, background);
+            crate::crop_tool::center_on_box(state, ui.ctx().pixels_per_point());
+        }
+    } else {
+        crate::ps_icons::paint(
+            &painter,
+            reset.center(),
+            Icon::CropReset,
+            color::OPTIONS_ICON_DISABLED,
+            color::OPTIONS_BAR,
+        );
+    }
+    app.crop_options = options;
 }
 
 /// Free Transform: the box's size (W, H in percent) and angle.

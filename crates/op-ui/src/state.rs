@@ -611,7 +611,7 @@ pub struct CropBox {
 }
 
 /// A crop box drag: the handle (−1, 0 or 1 per axis; `None` moves the
-/// box), where it started and the box at that time.
+/// box), where the pointer was pressed (screen) and the box at that time.
 #[derive(Clone, Copy, Debug)]
 pub struct CropDrag {
     pub handle: Option<(i8, i8)>,
@@ -895,6 +895,8 @@ pub struct AppState {
     pub retouch: RetouchOptions,
     pub shape: ShapeOptions,
     pub move_options: MoveOptions,
+    /// The Crop tool's options.
+    pub crop_options: crate::crop_tool::CropOptions,
     pub type_options: TypeOptions,
     /// Whether the Color panel edits the background or the foreground color.
     pub editing_background: bool,
@@ -995,6 +997,7 @@ impl Default for AppState {
             retouch: RetouchOptions::default(),
             shape: ShapeOptions::default(),
             move_options: MoveOptions::default(),
+            crop_options: Default::default(),
             type_options: TypeOptions::default(),
             editing_background: false,
             picker_hsb: Hsb::from_color(foreground),

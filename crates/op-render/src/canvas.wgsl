@@ -8,7 +8,20 @@ struct Uniforms {
     origin_zoom: vec4<f32>,
     // xy: document size; z: max mip level; w: pixel grid enabled
     doc: vec4<f32>,
+    // The crop shield: box center and half size (document px), its color
+    // (sRGB) and angle (clockwise radians), opacity and whether it's on
+    shield_box: vec4<f32>,
+    shield_color: vec4<f32>,
+    shield_params: vec4<f32>,
 };
+
+fn to_linear(c: vec3<f32>) -> vec3<f32> {
+    return select(pow((c + 0.055) / 1.055, vec3<f32>(2.4)), c / 12.92, c <= vec3<f32>(0.04045));
+}
+
+fn to_srgb(c: vec3<f32>) -> vec3<f32> {
+    return select(1.055 * pow(c, vec3<f32>(1.0 / 2.4)) - 0.055, c * 12.92, c <= vec3<f32>(0.0031308));
+}
 
 @group(0) @binding(0) var<uniform> u: Uniforms;
 @group(0) @binding(1) var tex: texture_2d<f32>;
@@ -46,6 +59,18 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
 
     // The texture is premultiplied
     var rgb = c.rgb + vec3<f32>(checker) * (1.0 - c.a);
+
+    // The crop shield, mixed in linear light like Photoshop's
+    if u.shield_params.y > 0.5 {
+        let a = u.shield_color.w;
+        let p = d - u.shield_box.xy;
+        // Into the box's own axes (it turns clockwise by a)
+        let q = vec2<f32>(p.x * cos(a) + p.y * sin(a), -p.x * sin(a) + p.y * cos(a));
+        if abs(q.x) > u.shield_box.z || abs(q.y) > u.shield_box.w {
+            let lin = mix(to_linear(rgb), to_linear(u.shield_color.rgb), u.shield_params.x);
+            rgb = to_srgb(lin);
+        }
+    }
 
     if u.doc.w > 0.5 && zoom >= 6.0 {
         let f = fract(d);

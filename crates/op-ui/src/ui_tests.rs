@@ -1130,7 +1130,26 @@ fn crop_tool_crops_to_the_box() {
     // The box starts on the whole canvas
     let full = active(&h).crop.unwrap().rect;
     assert_eq!(full.size(), egui::vec2(734.0, 811.0));
-    // Pull the bottom-right handle in by (234, 311)
+    // Pull the bottom-right handle in by (234, 311). By default (not
+    // Classic Mode) the box stays in the middle of the view and the top
+    // left corner stays on the image, so the corner moves twice as far
+    // on the image, as in Photoshop: 266 × 189
+    let (a, b) = (doc_point(&h, 734.0, 811.0), doc_point(&h, 500.0, 500.0));
+    drag(&mut h, a, b, Modifiers::NONE);
+    let r = active(&h).crop.unwrap().rect;
+    assert!(
+        (r.width() - 266.0).abs() < 2.0 && (r.height() - 189.0).abs() < 2.0,
+        "{r:?}"
+    );
+    assert_eq!(r.min, egui::Pos2::ZERO);
+    // ...and the view follows: the box is centered
+    let state = active(&h);
+    let center = crate::document_view::to_screen(state, r.center(), 2.0 * crate::theme::UI_SCALE);
+    assert!((center - state.view.viewport.center()).length() < 1.0);
+    // In Classic Mode the box itself moves
+    h.key_press(egui::Key::Escape);
+    h.state_mut().state.crop_options.classic = true;
+    h.run_steps(2);
     let (a, b) = (doc_point(&h, 734.0, 811.0), doc_point(&h, 500.0, 500.0));
     drag(&mut h, a, b, Modifiers::NONE);
     shot(&mut h, "crop");
@@ -1151,6 +1170,55 @@ fn crop_tool_crops_to_the_box() {
     h.key_press(egui::Key::M);
     h.run_steps(2);
     assert!(active(&h).crop.is_none());
+}
+
+#[test]
+fn crop_shield_presets_and_growing_the_canvas() {
+    let mut h = harness(Vec::new());
+    let app = &mut h.state_mut().state;
+    crate::actions::close_all(app);
+    let doc = op_core::Document::new_with_background("white", 400, 300, Color::WHITE);
+    app.add_document(doc, "New");
+    app.background = Color::from_rgba8([0, 0, 255, 255]);
+    h.run_steps(6);
+    h.key_press(egui::Key::C);
+    h.run_steps(2);
+    // 1 : 1 (Square): the largest centered square
+    h.state_mut()
+        .state
+        .crop_options
+        .choose(crate::crop_tool::PRESET_GROUPS[2][0]);
+    let state = h.state_mut().state.active().unwrap();
+    let aspect = 1.0;
+    state.crop = Some(crate::crop_tool::fitted(state, aspect));
+    h.run_steps(3);
+    let r = active(&h).crop.unwrap().rect;
+    assert_eq!(r, egui::Rect::from_min_max(egui::pos2(50.0, 0.0), egui::pos2(350.0, 300.0)));
+    // The shield over white, outside the box: 75% of the pasteboard gray
+    // mixed in linear light is 141 (Photoshop 2026, measured)
+    let image = h.render().expect("render frame");
+    let px = |p: egui::Pos2| ((p.x * 2.0 * UI_SCALE) as u32, (p.y * 2.0 * UI_SCALE) as u32);
+    let p = px(doc_point(&h, 20.0, 150.0));
+    let gray = image.get_pixel(p.0, p.1).0[0];
+    assert!(gray.abs_diff(141) <= 2, "{gray}");
+    let p = px(doc_point(&h, 200.0, 150.0));
+    assert_eq!(image.get_pixel(p.0, p.1).0[0], 255);
+    // A box past the right edge grows the canvas, the new part in the
+    // background color
+    let state = h.state_mut().state.active().unwrap();
+    state.crop = Some(crate::state::CropBox {
+        rect: egui::Rect::from_min_max(egui::pos2(300.0, 0.0), egui::pos2(500.0, 300.0)),
+        drag: None,
+    });
+    h.state_mut().state.crop_options.choose(crate::crop_tool::CropPreset::SizeResolution);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    let d = &active(&h).doc;
+    assert_eq!((d.width, d.height), (200, 300));
+    let bg = d.layers[0].image().unwrap();
+    assert_eq!(bg.pixel(50, 10), [255, 255, 255, 255]);
+    assert_eq!(bg.pixel(150, 10), [0, 0, 255, 255]);
+    assert_eq!(last_history(&h), "Crop");
 }
 
 #[test]
@@ -1900,6 +1968,16 @@ fn screenshot_rotate_canvas_dialog() {
     run_command(&mut h, crate::commands::Command::RotateArbitrary);
     h.run_steps(3);
     shot(&mut h, "rotate_canvas");
+}
+
+#[test]
+#[ignore]
+fn screenshot_crop_tool() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.key_press(egui::Key::C);
+    h.run_steps(3);
+    shot(&mut h, "crop_tool");
 }
 
 #[test]

@@ -25,6 +25,23 @@ pub struct CanvasView {
     /// As in Photoshop, 100% means one image pixel per screen pixel.
     pub zoom: f32,
     pub pixel_grid: bool,
+    /// The Crop tool's shield over the image outside the crop box.
+    pub shield: Option<Shield>,
+}
+
+/// The crop shield: everything outside a (possibly turned) box is mixed
+/// with `color` at `opacity`, in linear light as Photoshop does it (75% of
+/// the canvas gray over white gives 141, not 94).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shield {
+    /// The box's center and half size, in document pixels.
+    pub center: [f32; 2],
+    pub half: [f32; 2],
+    /// Clockwise, in radians.
+    pub angle: f32,
+    /// sRGB, 0..1.
+    pub color: [f32; 3],
+    pub opacity: f32,
 }
 
 #[repr(C)]
@@ -32,6 +49,9 @@ pub struct CanvasView {
 struct Uniforms {
     origin_zoom: [f32; 4],
     doc: [f32; 4],
+    shield_box: [f32; 4],
+    shield_color: [f32; 4],
+    shield_params: [f32; 4],
 }
 
 struct Slot {
@@ -187,6 +207,19 @@ impl CallbackTrait for CanvasCallback {
                 img.height as f32,
                 (slot.mip_count - 1) as f32,
                 self.view.pixel_grid as u32 as f32,
+            ],
+            shield_box: self.view.shield.map_or([0.0; 4], |s| {
+                [s.center[0], s.center[1], s.half[0], s.half[1]]
+            }),
+            shield_color: self
+                .view
+                .shield
+                .map_or([0.0; 4], |s| [s.color[0], s.color[1], s.color[2], s.angle]),
+            shield_params: [
+                self.view.shield.map_or(0.0, |s| s.opacity),
+                self.view.shield.is_some() as u32 as f32,
+                0.0,
+                0.0,
             ],
         };
         queue.write_buffer(&slot.uniforms, 0, bytemuck::bytes_of(&u));
