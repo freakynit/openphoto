@@ -3,6 +3,8 @@
 
 use egui::{Key, Modifiers};
 
+use op_core::layer_ops::{self, Arrange};
+
 use crate::actions;
 use crate::document_view;
 use crate::state::AppState;
@@ -23,6 +25,18 @@ pub enum Command {
     DeleteLayer,
     /// Layer > Hide Layers / Show Layers for the active layer.
     ToggleLayerVisibility,
+    DuplicateLayer,
+    LayerViaCopy,
+    LayerViaCut,
+    LayerFromBackground,
+    DeleteHiddenLayers,
+    BringToFront,
+    BringForward,
+    SendBackward,
+    SendToBack,
+    MergeDown,
+    MergeVisible,
+    FlattenImage,
     /// Edit > Fill... (opens the dialog).
     Fill,
     /// Option+Delete: fill with the foreground color.
@@ -101,7 +115,12 @@ impl Shortcut {
         if self.alt {
             s.push_str("Alt+");
         }
-        s.push_str(self.key.name());
+        // muda knows the bracket keys by their symbols
+        s.push_str(match self.key {
+            Key::OpenBracket => "[",
+            Key::CloseBracket => "]",
+            key => key.name(),
+        });
         s
     }
 }
@@ -125,6 +144,14 @@ impl Command {
             Self::CanvasSize => alt_cmd(Key::C),
             Self::NewLayer => shift_cmd(Key::N),
             Self::ToggleLayerVisibility => cmd(Key::Comma),
+            Self::LayerViaCopy => cmd(Key::J),
+            Self::LayerViaCut => shift_cmd(Key::J),
+            Self::BringToFront => shift_cmd(Key::CloseBracket),
+            Self::BringForward => cmd(Key::CloseBracket),
+            Self::SendBackward => cmd(Key::OpenBracket),
+            Self::SendToBack => shift_cmd(Key::OpenBracket),
+            Self::MergeDown => cmd(Key::E),
+            Self::MergeVisible => shift_cmd(Key::E),
             Self::Fill => Shortcut {
                 cmd: false,
                 shift: true,
@@ -158,7 +185,22 @@ impl Command {
             Self::ZoomOut => cmd(Key::Minus),
             Self::FitOnScreen => cmd(Key::Num0),
             Self::ActualPixels => cmd(Key::Num1),
-            Self::DeleteLayer | Self::ToggleHistory => return None,
+            Self::DeleteLayer
+            | Self::ToggleHistory
+            | Self::DuplicateLayer
+            | Self::LayerFromBackground
+            | Self::DeleteHiddenLayers
+            | Self::FlattenImage => return None,
+        })
+    }
+
+    fn arrange(self) -> Option<Arrange> {
+        Some(match self {
+            Self::BringToFront => Arrange::BringToFront,
+            Self::BringForward => Arrange::BringForward,
+            Self::SendBackward => Arrange::SendBackward,
+            Self::SendToBack => Arrange::SendToBack,
+            _ => return None,
         })
     }
 
@@ -192,9 +234,28 @@ impl Command {
                 doc.is_some_and(|d| d.doc.selection().is_some())
             }
             Self::Reselect => doc.is_some_and(|d| d.doc.can_reselect()),
-            Self::ToggleLayerVisibility => doc
+            Self::ToggleLayerVisibility | Self::DuplicateLayer | Self::LayerViaCopy => doc
                 .and_then(|d| d.doc.active_layer.and_then(|id| d.doc.layer(id)))
                 .is_some(),
+            Self::LayerViaCut => {
+                doc.is_some_and(|d| d.doc.selection().is_some() && d.doc.active_layer.is_some())
+            }
+            Self::LayerFromBackground => doc.is_some_and(|d| d.doc.has_background()),
+            Self::DeleteHiddenLayers => doc.is_some_and(|d| {
+                let layers = &d.doc.layers;
+                layers.iter().any(|l| !l.visible) && layers.iter().any(|l| l.visible)
+            }),
+            Self::BringToFront | Self::BringForward | Self::SendBackward | Self::SendToBack => doc
+                .is_some_and(|d| {
+                    let arrange = self.arrange().expect("arrange command");
+                    layer_ops::arrange_target(&d.doc, arrange).is_some()
+                }),
+            Self::MergeDown => doc.is_some_and(|d| layer_ops::can_merge_down(&d.doc)),
+            Self::MergeVisible => doc.is_some_and(|d| layer_ops::can_merge_visible(&d.doc)),
+            Self::FlattenImage => doc.is_some_and(|d| {
+                let layers = &d.doc.layers;
+                !(layers.len() == 1 && layers[0].is_background)
+            }),
             Self::Close
             | Self::Fill
             | Self::FillForeground
@@ -224,6 +285,10 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::ExportAs,
     Command::CopyMerged,
     Command::PasteInPlace,
+    Command::LayerViaCut,
+    Command::BringToFront,
+    Command::SendToBack,
+    Command::MergeVisible,
     Command::Fill,
     Command::FillForeground,
     Command::FillBackground,
@@ -236,6 +301,10 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::CloseAll,
     Command::CloseOthers,
     Command::Undo,
+    Command::LayerViaCopy,
+    Command::BringForward,
+    Command::SendBackward,
+    Command::MergeDown,
     Command::Cut,
     Command::Copy,
     Command::Paste,
@@ -364,6 +433,24 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
         | Command::CopyMerged
         | Command::Paste
         | Command::PasteInPlace => actions::clipboard(command, app, ppp),
+        Command::LayerViaCopy | Command::LayerViaCut => {
+            let [r, g, b, _] = app.background.to_rgba8();
+            let Some(state) = app.active_doc.and_then(|id| app.docs.get_mut(&id)) else {
+                return;
+            };
+            let (name, result) = if command == Command::LayerViaCopy {
+                ("Layer Via Copy", layer_ops::via_copy(&mut state.doc))
+            } else {
+                (
+                    "Layer Via Cut",
+                    layer_ops::via_cut(&mut state.doc, [r, g, b]),
+                )
+            };
+            match result {
+                Ok(_) => state.record(name),
+                Err(e) => app.alert = Some(e.message(name)),
+            }
+        }
         Command::CanvasSize => {
             if let Some(state) = app.active() {
                 let dialog = crate::dialogs::CanvasSizeDialog::new(&state.doc);
@@ -404,6 +491,44 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                     state.record("Select Inverse");
                 }
                 Command::NewLayer => crate::panels::new_layer(state),
+                Command::DuplicateLayer => {
+                    if layer_ops::duplicate(&mut state.doc).is_some() {
+                        state.record("Duplicate Layer");
+                    }
+                }
+                Command::LayerFromBackground => {
+                    if layer_ops::layer_from_background(&mut state.doc) {
+                        state.record("Layer From Background");
+                    }
+                }
+                Command::DeleteHiddenLayers => {
+                    if layer_ops::delete_hidden(&mut state.doc) {
+                        state.record("Delete Hidden Layers");
+                    }
+                }
+                Command::BringToFront
+                | Command::BringForward
+                | Command::SendBackward
+                | Command::SendToBack => {
+                    let arrange = command.arrange().expect("arrange command");
+                    if layer_ops::arrange(&mut state.doc, arrange) {
+                        state.record("Layer Order");
+                    }
+                }
+                Command::MergeDown => {
+                    if layer_ops::merge_down(&mut state.doc) {
+                        state.record("Merge Down");
+                    }
+                }
+                Command::MergeVisible => {
+                    if layer_ops::merge_visible(&mut state.doc) {
+                        state.record("Merge Visible");
+                    }
+                }
+                Command::FlattenImage => {
+                    layer_ops::flatten(&mut state.doc);
+                    state.record("Flatten Image");
+                }
                 Command::DeleteLayer => crate::panels::delete_active_layer(state),
                 Command::ZoomIn => document_view::zoom_step(state, true, ppp),
                 Command::ZoomOut => document_view::zoom_step(state, false, ppp),

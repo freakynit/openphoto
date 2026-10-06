@@ -269,10 +269,16 @@ impl Document {
     /// Blending happens in gamma-encoded space, which is Photoshop's default,
     /// with each layer's blend mode (see [`crate::blend`]).
     pub fn composite_rgba8(&self) -> Vec<u8> {
+        self.composite_layers_rgba8(&self.layers)
+    }
+
+    /// Like [`Self::composite_rgba8`] for a given list of layers (bottom to
+    /// top, each the size of the document), e.g. the layers a merge combines.
+    pub fn composite_layers_rgba8(&self, layers: &[Layer]) -> Vec<u8> {
         let (w, h) = (self.width as usize, self.height as usize);
         let mut out = vec![0f32; w * h * 4];
 
-        for layer in self.layers.iter().filter(|l| l.visible) {
+        for layer in layers.iter().filter(|l| l.visible) {
             let LayerKind::Raster(image) = &layer.kind;
             let layer_alpha = layer.opacity * layer.fill;
             if layer_alpha <= 0.0 {

@@ -24,6 +24,8 @@ pub fn harness(files: Vec<PathBuf>) -> Harness<'static, OpenPhotoApp> {
     let mut harness = Harness::builder()
         .with_size(WINDOW_PT / UI_SCALE)
         .with_pixels_per_point(2.0)
+        // Real frame times, so a double click fits in egui's 0.3 s window
+        .with_step_dt(1.0 / 60.0)
         .wgpu()
         .build_eframe(|cc| OpenPhotoApp::new_headless(cc, files));
     // The app sets egui's zoom factor on the first frame
@@ -68,6 +70,22 @@ pub fn click(harness: &mut Harness<'_, OpenPhotoApp>, pos: Pos2) {
         pressed: false,
         modifiers: Modifiers::NONE,
     });
+    harness.run_steps(3);
+}
+
+pub fn double_click(harness: &mut Harness<'_, OpenPhotoApp>, pos: Pos2) {
+    harness.hover_at(pos);
+    for _ in 0..2 {
+        for pressed in [true, false] {
+            harness.event(egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: Modifiers::NONE,
+            });
+            harness.step();
+        }
+    }
     harness.run_steps(3);
 }
 
@@ -504,4 +522,103 @@ fn copy_and_paste_stack_a_new_layer() {
         h.state().state.alert.as_deref(),
         Some("Could not complete the Copy command because the selected area is empty.")
     );
+}
+
+fn layer_names(h: &Harness<'_, OpenPhotoApp>) -> Vec<String> {
+    active(h)
+        .doc
+        .layers
+        .iter()
+        .map(|l| l.name.clone())
+        .collect()
+}
+
+fn last_history(h: &Harness<'_, OpenPhotoApp>) -> String {
+    active(h).history.states().last().unwrap().name.clone()
+}
+
+#[test]
+fn layer_shortcuts_copy_arrange_and_merge() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    // Cmd+J on the background without a selection: "Layer 1"
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::J);
+    h.run_steps(2);
+    assert_eq!(layer_names(&h), ["Background", "Layer 1"]);
+    assert_eq!(last_history(&h), "Layer Via Copy");
+    // ...and on a regular layer: "Layer 1 copy"
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::J);
+    h.run_steps(2);
+    assert_eq!(layer_names(&h), ["Background", "Layer 1", "Layer 1 copy"]);
+    // Cmd+[ sends it backward
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::OpenBracket);
+    h.run_steps(2);
+    assert_eq!(layer_names(&h), ["Background", "Layer 1 copy", "Layer 1"]);
+    assert_eq!(last_history(&h), "Layer Order");
+    // Cmd+E merges it down into the background
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::E);
+    h.run_steps(2);
+    assert_eq!(layer_names(&h), ["Background", "Layer 1"]);
+    assert_eq!(last_history(&h), "Merge Down");
+    // Shift+Cmd+E merges everything visible
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::E);
+    h.run_steps(2);
+    assert_eq!(layer_names(&h), ["Background"]);
+    assert_eq!(last_history(&h), "Merge Visible");
+}
+
+#[test]
+fn layers_panel_drag_and_rename() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::J);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::J);
+    h.run_steps(3);
+    // Rows (top to bottom): "Layer 1 copy", "Layer 1", "Background", each
+    // 40.5 pt tall starting at 634 pt. Drag the top row below "Layer 1".
+    drag(
+        &mut h,
+        at_pt(1130.0, 654.0),
+        at_pt(1130.0, 716.0),
+        Modifiers::NONE,
+    );
+    assert_eq!(layer_names(&h), ["Background", "Layer 1 copy", "Layer 1"]);
+    assert_eq!(last_history(&h), "Layer Order");
+    // Nothing goes below the background
+    drag(
+        &mut h,
+        at_pt(1130.0, 654.0),
+        at_pt(1130.0, 760.0),
+        Modifiers::NONE,
+    );
+    assert_eq!(layer_names(&h), ["Background", "Layer 1 copy", "Layer 1"]);
+
+    // Double-click the middle row's name and type a new one
+    double_click(&mut h, at_pt(1130.0, 694.0));
+    assert!(active(&h).renaming.is_some());
+    h.event(egui::Event::Text("Sky".into()));
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(active(&h).renaming.is_none());
+    assert_eq!(layer_names(&h), ["Background", "Sky", "Layer 1"]);
+    assert_eq!(last_history(&h), "Rename Layer");
+
+    // Clicking the background's lock makes it "Layer 0"
+    click(&mut h, at_pt(1329.0, 734.0));
+    assert_eq!(layer_names(&h), ["Layer 0", "Sky", "Layer 1"]);
+    assert!(!active(&h).doc.layers[0].is_background);
+}
+
+#[test]
+#[ignore]
+fn screenshot_layers() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::J);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::J);
+    h.run_steps(3);
+    shot(&mut h, "layers");
+    double_click(&mut h, at_pt(1130.0, 694.0));
+    shot(&mut h, "layers_rename");
 }

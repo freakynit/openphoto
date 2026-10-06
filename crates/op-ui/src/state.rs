@@ -50,6 +50,8 @@ pub struct DocState {
     pub stroke: Option<(op_core::paint::Stroke, Tool)>,
     /// Where the last stroke ended; Shift-click draws a line from here.
     pub last_paint_point: Option<(f32, f32)>,
+    /// A layer name being edited in the Layers panel, and the text so far.
+    pub renaming: Option<(LayerId, String)>,
     /// Marching-ants outline of the selection, cached per selection revision.
     outline: Option<(u64, Arc<Vec<[u32; 4]>>)>,
     canvas: Option<Arc<CanvasImage>>,
@@ -76,6 +78,7 @@ impl DocState {
             move_drag: None,
             stroke: None,
             last_paint_point: None,
+            renaming: None,
             outline: None,
             canvas: None,
             thumbs: HashMap::new(),

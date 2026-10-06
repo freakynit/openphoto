@@ -224,22 +224,58 @@ fn lock_row(ui: &mut Ui, state: &mut DocState) {
 
 fn layer_list(ui: &mut Ui, state: &mut DocState) {
     ui.spacing_mut().item_spacing.y = 0.0;
+    // Top to bottom, as listed
     let ids: Vec<LayerId> = state.doc.layers.iter().rev().map(|l| l.id).collect();
-    for id in ids {
+    let mut list_top = None;
+    // The row being dragged (its position in the list) and where it is
+    let mut dragged: Option<(usize, Pos2, bool)> = None;
+    for (row, &id) in ids.iter().enumerate() {
         let (rect, response) = ui.allocate_exact_size(
             Vec2::new(ui.available_width(), size::LAYER_ROW),
-            Sense::click(),
+            Sense::click_and_drag(),
         );
+        list_top.get_or_insert(rect.top());
         let eye_rect = Rect::from_min_size(rect.min, Vec2::new(44.0, rect.height()));
         let eye = ui.interact(eye_rect, ui.id().with(("eye", id.0)), Sense::click());
+        let lock_rect = Rect::from_center_size(
+            rect.right_center() - Vec2::new(30.0, 0.0),
+            Vec2::splat(24.0),
+        );
+        let is_background = state.doc.layer(id).is_some_and(|l| l.is_background);
+        // Clicking the background's lock turns it into a regular layer
+        let lock = is_background
+            .then(|| ui.interact(lock_rect, ui.id().with(("lock", id.0)), Sense::click()));
 
         if eye.clicked() {
             if let Some(l) = state.doc.layer_mut(id) {
                 l.visible = !l.visible;
             }
             state.doc.mark_dirty();
+        } else if lock.as_ref().is_some_and(|l| l.clicked()) {
+            if op_core::layer_ops::layer_from_background(&mut state.doc) {
+                state.record("Layer From Background");
+            }
+        } else if response.double_clicked()
+            && response
+                .interact_pointer_pos()
+                .is_some_and(|p| p.x > eye_rect.right() + 10.0 + THUMB)
+        {
+            // Double-clicking the name renames the layer; on the background
+            // it makes it a regular layer (Photoshop asks for a name first)
+            if is_background {
+                if op_core::layer_ops::layer_from_background(&mut state.doc) {
+                    state.record("Layer From Background");
+                }
+            } else if let Some(l) = state.doc.layer(id) {
+                state.renaming = Some((id, l.name.clone()));
+            }
         } else if response.clicked() {
             state.doc.active_layer = Some(id);
+        }
+        if (response.dragged() || response.drag_stopped())
+            && let Some(p) = ui.ctx().pointer_latest_pos()
+        {
+            dragged = Some((row, p, response.drag_stopped()));
         }
 
         let thumb = state.layer_thumbnail(ui.ctx(), id, (THUMB * 2.0) as u32);
@@ -299,8 +335,13 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
         } else {
             theme::body()
         };
+        let name_pos = Pos2::new(thumb_box.right() + 16.0, rect.center().y);
+        if state.renaming.as_ref().is_some_and(|(r, _)| *r == id) {
+            rename_field(ui, state, id, name_pos, rect);
+            continue;
+        }
         painter.text(
-            Pos2::new(thumb_box.right() + 16.0, rect.center().y),
+            name_pos,
             Align2::LEFT_CENTER,
             &layer.name,
             font,
@@ -315,6 +356,85 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
                 color::ICON,
             );
         }
+    }
+    if let (Some((from_row, pointer, released)), Some(top)) = (dragged, list_top) {
+        drop_layer(ui, state, &ids, from_row, pointer, released, top);
+    }
+}
+
+/// The inline text field for renaming a layer: Enter or clicking elsewhere
+/// commits, Escape cancels.
+fn rename_field(ui: &mut Ui, state: &mut DocState, id: LayerId, pos: Pos2, row: Rect) {
+    let Some((_, text)) = &mut state.renaming else {
+        return;
+    };
+    let field = Rect::from_min_max(
+        Pos2::new(pos.x - 4.0, row.center().y - size::FIELD_HEIGHT / 2.0),
+        Pos2::new(
+            row.right() - 50.0,
+            row.center().y + size::FIELD_HEIGHT / 2.0,
+        ),
+    );
+    let edit = egui::TextEdit::singleline(text)
+        .font(theme::body())
+        .margin(Vec2::new(4.0, 2.0));
+    let r = ui.put(field, edit);
+    if !r.has_focus() && !r.lost_focus() {
+        // First frame: focus the field with the whole name selected
+        r.request_focus();
+        if let Some(mut s) = egui::TextEdit::load_state(ui.ctx(), r.id) {
+            let all = egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(text.chars().count()),
+            );
+            s.cursor.set_char_range(Some(all));
+            s.store(ui.ctx(), r.id);
+        }
+        return;
+    }
+    if r.lost_focus() {
+        let cancelled = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        let (_, name) = state.renaming.take().expect("renaming");
+        if !cancelled && op_core::layer_ops::rename(&mut state.doc, id, &name) {
+            state.record("Rename Layer");
+        }
+    }
+}
+
+/// While a row is dragged, shows where it would go; on release, moves it.
+fn drop_layer(
+    ui: &Ui,
+    state: &mut DocState,
+    ids: &[LayerId],
+    from_row: usize,
+    pointer: Pos2,
+    released: bool,
+    list_top: f32,
+) {
+    let n = ids.len();
+    // The gap between rows the pointer is closest to (0 = above the top row)
+    let gap = (((pointer.y - list_top) / size::LAYER_ROW).round().max(0.0) as usize).min(n);
+    // Its final position in the list once removed from its own row...
+    let row = if gap > from_row { gap - 1 } else { gap };
+    // ...and in the bottom-up layer order
+    let to = n - 1 - row;
+    let from = n - 1 - from_row;
+    let allowed = to != from
+        && !state.doc.layers[from].is_background
+        && !(to == 0 && state.doc.layers[0].is_background);
+    if released {
+        if allowed && op_core::layer_ops::move_layer(&mut state.doc, from, to) {
+            state.record("Layer Order");
+        }
+        return;
+    }
+    if allowed {
+        let y = list_top + gap as f32 * size::LAYER_ROW;
+        let clip = ui.clip_rect();
+        ui.painter().line_segment(
+            [Pos2::new(clip.left(), y), Pos2::new(clip.right(), y)],
+            Stroke::new(2.0, color::ACCENT),
+        );
     }
 }
 
