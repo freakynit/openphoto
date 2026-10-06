@@ -9,13 +9,13 @@
 //! out after Photoshop's dialogs; sizes are in Photoshop points. With
 //! Preview on, the document shows the result while the dialog is open.
 
-use egui::{Align2, Color32, FontId, Key, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, vec2};
+use egui::{Align2, Color32, FontId, Key, Pos2, Rect, Sense, Shape, Stroke, Ui, vec2};
 use op_core::adjust::Adjustment;
 use op_core::filter::{Filter, OffsetFill};
 
 use super::{
     black_white, brightness_contrast, channel_mixer, color_balance, common, curves, exposure,
-    hue_saturation, levels, photo_filter, selective_color, uxp, vibrance,
+    gradient_map, hue_saturation, levels, photo_filter, selective_color, threshold, uxp, vibrance,
 };
 use crate::theme::{self, color, pt};
 
@@ -26,7 +26,6 @@ const FIELD_W: f32 = pt(56.0);
 const LEFT: f32 = pt(20.0);
 /// Width of the controls column (left of the buttons).
 const COLUMN: f32 = pt(280.0);
-const HISTOGRAM_H: f32 = pt(100.0);
 const TRACK_H: f32 = pt(12.0);
 
 /// What a dialog applies: an adjustment or a filter.
@@ -110,8 +109,6 @@ const fn check(label: &'static str, default: bool) -> Param {
     }
 }
 
-const THRESHOLD: &[Param] = &[param("Threshold Level:", 1.0, 255.0, 128.0, 0)];
-const GRADIENT_MAP: &[Param] = &[check("Reverse", false)];
 const GAUSSIAN_BLUR: &[Param] = &[param("Radius (pixels):", 0.1, 1000.0, 1.0, 1)];
 const BOX_BLUR: &[Param] = &[param("Radius (pixels):", 1.0, 2000.0, 1.0, 0)];
 const UNSHARP_MASK: &[Param] = &[
@@ -197,7 +194,6 @@ impl Kind {
 
     fn params(self) -> &'static [Param] {
         match self {
-            Self::Threshold => THRESHOLD,
             // Their own dialogs keep their settings
             Self::Levels
             | Self::Curves
@@ -210,8 +206,9 @@ impl Kind {
             | Self::Posterize
             | Self::Exposure
             | Self::PhotoFilter
-            | Self::BlackWhite => &[],
-            Self::GradientMap => GRADIENT_MAP,
+            | Self::BlackWhite
+            | Self::Threshold
+            | Self::GradientMap => &[],
             Self::GaussianBlur => GAUSSIAN_BLUR,
             Self::BoxBlur => BOX_BLUR,
             Self::UnsharpMask => UNSHARP_MASK,
@@ -263,8 +260,6 @@ pub struct AdjustDialog {
     pub previewing: Option<Effect>,
     /// The document before any preview, restored on Cancel.
     pub before: op_core::Snapshot,
-    /// Gradient Map's colors (the foreground and background colors).
-    pub colors: ([u8; 3], [u8; 3]),
     /// The dialogs rebuilt after Photoshop 2026, which keep their own
     /// settings.
     custom: Option<Custom>,
@@ -284,6 +279,8 @@ enum Custom {
     Exposure(exposure::Dialog),
     PhotoFilter(photo_filter::Dialog),
     BlackWhite(Box<black_white::Dialog>),
+    Threshold(Box<threshold::Dialog>),
+    GradientMap(gradient_map::Dialog),
 }
 
 fn format(v: f32, decimals: usize) -> String {
@@ -304,7 +301,6 @@ impl AdjustDialog {
             first_frame: true,
             previewing: None,
             before,
-            colors: ([0; 3], [255; 3]),
             custom: match kind {
                 Kind::BrightnessContrast => Some(Custom::BrightnessContrast(Default::default())),
                 Kind::ColorBalance => Some(Custom::ColorBalance(Default::default())),
@@ -318,6 +314,12 @@ impl AdjustDialog {
                 Kind::Exposure => Some(Custom::Exposure(Default::default())),
                 Kind::PhotoFilter => Some(Custom::PhotoFilter(Default::default())),
                 Kind::BlackWhite => Some(Custom::BlackWhite(Default::default())),
+                Kind::Threshold => Some(Custom::Threshold(Box::new(threshold::Dialog::new(
+                    histogram,
+                )))),
+                Kind::GradientMap => Some(Custom::GradientMap(gradient_map::Dialog::new((
+                    [0; 3], [255; 3],
+                )))),
                 Kind::SelectiveColor => Some(Custom::SelectiveColor(Default::default())),
                 Kind::Curves => Some(Custom::Curves(Box::new(curves::Dialog::new([[0; 256]; 3])))),
                 _ => None,
@@ -331,6 +333,13 @@ impl AdjustDialog {
             Some(Custom::Levels(d)) => **d = levels::Dialog::new(histograms),
             Some(Custom::Curves(d)) => **d = curves::Dialog::new(histograms),
             _ => {}
+        }
+    }
+
+    /// Gradient Map's two colors (the foreground and background colors).
+    pub fn set_gradient_colors(&mut self, colors: ([u8; 3], [u8; 3])) {
+        if let Some(Custom::GradientMap(d)) = &mut self.custom {
+            d.colors = colors;
         }
     }
 
@@ -367,6 +376,8 @@ impl AdjustDialog {
             Some(Custom::Exposure(d)) => return d.adjustment().map(Effect::Adjustment),
             Some(Custom::PhotoFilter(d)) => return d.adjustment().map(Effect::Adjustment),
             Some(Custom::BlackWhite(d)) => return d.adjustment().map(Effect::Adjustment),
+            Some(Custom::Threshold(d)) => return d.adjustment().map(Effect::Adjustment),
+            Some(Custom::GradientMap(d)) => return Some(Effect::Adjustment(d.adjustment())),
             None => {}
         }
         let v: Vec<f32> = (0..self.values.len())
@@ -407,21 +418,10 @@ impl AdjustDialog {
                 ][v[2] as usize],
             },
             Kind::Mosaic => Filter::Mosaic { cell: v[0] as u32 },
-            _ => return self.adjustment(&v).map(Effect::Adjustment),
+            // Every adjustment has its own dialog
+            _ => return None,
         };
         Some(Effect::Filter(filter))
-    }
-
-    fn adjustment(&self, v: &[f32]) -> Option<Adjustment> {
-        Some(match self.kind {
-            Kind::Threshold => Adjustment::Threshold(v[0] as u8),
-            Kind::GradientMap => {
-                let (a, b) = self.colors;
-                let (from, to) = if v[0] == 1.0 { (b, a) } else { (a, b) };
-                Adjustment::GradientMap { from, to }
-            }
-            _ => return None,
-        })
     }
 
     pub fn show(&mut self, ctx: &egui::Context) -> Outcome {
@@ -443,6 +443,8 @@ impl AdjustDialog {
                     Some(Custom::Exposure(_)) => exposure::SIZE,
                     Some(Custom::PhotoFilter(_)) => photo_filter::SIZE,
                     Some(Custom::BlackWhite(_)) => black_white::SIZE,
+                    Some(Custom::Threshold(_)) => threshold::SIZE,
+                    Some(Custom::GradientMap(_)) => gradient_map::SIZE,
                     None => self.kind.size(),
                 };
                 let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
@@ -482,6 +484,8 @@ impl AdjustDialog {
             Some(Custom::Exposure(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
             Some(Custom::PhotoFilter(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
             Some(Custom::BlackWhite(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
+            Some(Custom::Threshold(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
+            Some(Custom::GradientMap(d)) => d.ui(ui, frame, &mut self.preview),
             None => None,
         };
         match button {
@@ -494,27 +498,16 @@ impl AdjustDialog {
     fn ui(&mut self, ui: &mut Ui, frame: Rect) -> Outcome {
         let at = |x: f32, y: f32| frame.min + vec2(x, y);
         common::frame(ui, frame, self.kind.title(), theme::semibold(pt(13.0)));
-        match self.kind {
-            Kind::Threshold => {
-                self.labeled_field(ui, 0, at(LEFT, pt(52.0)));
-                let hist = Rect::from_min_size(at(LEFT, pt(78.0)), vec2(pt(258.0), HISTOGRAM_H));
-                self.histogram_ui(ui, hist);
-                self.track(ui, hist, 0);
-            }
-            Kind::Posterize => self.labeled_field(ui, 0, at(LEFT, pt(58.0))),
-            _ => {
-                let mut y = pt(52.0);
-                for (i, p) in self.kind.params().iter().enumerate() {
-                    match p.kind {
-                        ParamKind::Number => self.slider_row(ui, i, at(LEFT, y), COLUMN - LEFT),
-                        ParamKind::Choice(options) => {
-                            self.choice_row(ui, i, options, at(LEFT, y));
-                        }
-                        ParamKind::Check => self.check_row(ui, i, at(LEFT, y)),
-                    }
-                    y += row_height(p);
+        let mut y = pt(52.0);
+        for (i, p) in self.kind.params().iter().enumerate() {
+            match p.kind {
+                ParamKind::Number => self.slider_row(ui, i, at(LEFT, y), COLUMN - LEFT),
+                ParamKind::Choice(options) => {
+                    self.choice_row(ui, i, options, at(LEFT, y));
                 }
+                ParamKind::Check => self.check_row(ui, i, at(LEFT, y)),
             }
+            y += row_height(p);
         }
         self.buttons(ui, frame)
     }
@@ -591,16 +584,6 @@ impl AdjustDialog {
         );
     }
 
-    /// "Label: [field]" starting at `left_center`.
-    fn labeled_field(&mut self, ui: &mut Ui, i: usize, left_center: Pos2) {
-        let label = self.label(ui, self.kind.params()[i].label, left_center);
-        let field = Rect::from_min_size(
-            Pos2::new(label.right() + pt(8.0), left_center.y - FIELD_H / 2.0),
-            vec2(FIELD_W, FIELD_H),
-        );
-        self.field(ui, i, field);
-    }
-
     /// Label on the left, field on the right, slider underneath.
     fn slider_row(&mut self, ui: &mut Ui, i: usize, left_center: Pos2, width: f32) {
         self.label(ui, self.kind.params()[i].label, left_center);
@@ -653,30 +636,6 @@ impl AdjustDialog {
             color::TEXT,
             Stroke::new(1.0, Color32::from_gray(0x9a)),
         ));
-    }
-
-    fn histogram_ui(&self, ui: &Ui, rect: Rect) {
-        let painter = ui.painter();
-        painter.rect(
-            rect,
-            0,
-            Color32::from_gray(0x3c),
-            Stroke::new(1.0, Color32::from_gray(0x2c)),
-            StrokeKind::Outside,
-        );
-        let max = self.histogram.iter().copied().max().unwrap_or(0).max(1) as f32;
-        let bar = rect.width() / 256.0;
-        for (i, &count) in self.histogram.iter().enumerate() {
-            if count == 0 {
-                continue;
-            }
-            let h = count as f32 / max * rect.height();
-            let x = rect.left() + (i as f32 + 0.5) * bar;
-            painter.line_segment(
-                [Pos2::new(x, rect.bottom()), Pos2::new(x, rect.bottom() - h)],
-                Stroke::new(bar.max(1.0), color::TEXT),
-            );
-        }
     }
 
     fn buttons(&mut self, ui: &mut Ui, frame: Rect) -> Outcome {

@@ -70,6 +70,7 @@ pub enum Adjustment {
     GradientMap {
         from: [u8; 3],
         to: [u8; 3],
+        method: crate::gradient::Method,
     },
     /// Image > Auto Tone: each channel stretched to the full range,
     /// ignoring the darkest and lightest 0.1%.
@@ -637,10 +638,10 @@ fn color_adjust(adjustment: Adjustment, px: [u8; 4]) -> [u8; 4] {
             }
             to_u8(out, px[3])
         }
-        Adjustment::GradientMap { from, to } => {
-            let out =
-                [0, 1, 2].map(|c| (from[c] as f32 + (to[c] as f32 - from[c] as f32) * lum) / 255.0);
-            to_u8(out, px[3])
+        Adjustment::GradientMap { from, to, method } => {
+            // Each pixel's luminosity picks its place along the gradient
+            let [r, g, b] = crate::gradient::blend_colors(from, to, lum, method);
+            [r, g, b, px[3]]
         }
         _ => px,
     }
@@ -1290,6 +1291,7 @@ mod tests {
         let gm = Adjustment::GradientMap {
             from: [0, 0, 0],
             to: [255, 0, 0],
+            method: crate::gradient::Method::Classic,
         };
         apply(&mut d, gm).unwrap();
         assert_eq!(first(&d), [255, 0, 0, 255]);
@@ -1745,6 +1747,26 @@ mod tests {
                     2,
                 ),
             ] {
+                let (worst, _) = compare(adjustment, name);
+                assert!(worst <= allowed, "{name}: off by {worst}");
+            }
+        }
+
+        #[test]
+        fn gradient_map_matches_photoshop() {
+            use crate::gradient::Method;
+            for (name, method, allowed) in [
+                ("gm_classic.rgb", Method::Classic, 1),
+                ("gm_perc.rgb", Method::Perceptual, 2),
+                ("gm_lin.rgb", Method::Linear, 2),
+                // Smooth's easing is measured only roughly
+                ("gm_smooth.rgb", Method::Smooth, 6),
+            ] {
+                let adjustment = Adjustment::GradientMap {
+                    from: [255, 0, 0],
+                    to: [0, 0, 255],
+                    method,
+                };
                 let (worst, _) = compare(adjustment, name);
                 assert!(worst <= allowed, "{name}: off by {worst}");
             }

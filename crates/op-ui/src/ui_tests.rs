@@ -823,6 +823,8 @@ fn screenshot_adjustment_dialogs() {
         (Command::Posterize, "posterize_dialog"),
         (Command::PhotoFilter, "photo_filter_dialog"),
         (Command::BlackWhite, "black_white_dialog"),
+        (Command::Threshold, "threshold_dialog"),
+        (Command::GradientMap, "gradient_map_dialog"),
     ] {
         let mut h = harness(Vec::new());
         reference_document(&mut h);
@@ -1816,8 +1818,15 @@ fn more_adjustments() {
     run_command(&mut h, Command::GradientMap);
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
+    // 102 gray, Smooth (the dialog's default method)
+    let want = op_core::gradient::blend_colors(
+        [0; 3],
+        [255; 3],
+        102.0 / 255.0,
+        op_core::gradient::Method::Smooth,
+    );
     let px = composite_pixel(&mut h, 5, 5);
-    assert!(px[0] == px[1] && px[0] > 90 && px[0] < 115, "{px:?}");
+    assert_eq!([px[0], px[1], px[2]], want);
 
     run_command(&mut h, Command::PhotoFilter);
     shot(&mut h, "photo_filter");

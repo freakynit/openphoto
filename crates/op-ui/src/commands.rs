@@ -1111,7 +1111,7 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                         let before = state.doc.snapshot();
                         let mut dialog = AdjustDialog::new(kind, histogram, before);
                         // Gradient Map runs from the foreground to the background color
-                        dialog.colors = colors;
+                        dialog.set_gradient_colors(colors);
                         // Colorize starts from the foreground color's hue
                         dialog.set_colorize_hue(adjust::hue_of(colors.0).round() as i32);
                         dialog.set_channel_histograms(adjust::rgb_histograms(&state.doc));
