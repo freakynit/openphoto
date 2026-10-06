@@ -720,7 +720,7 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
     }
     let ppp = ctx.pixels_per_point();
     match command {
-        Command::New => actions::new_document(app),
+        Command::New => actions::new_dialog(app),
         Command::Open => actions::open_dialog(app),
         Command::Close => actions::close_active(app),
         Command::Save | Command::SaveAs | Command::SaveACopy => {

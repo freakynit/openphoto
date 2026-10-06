@@ -1405,3 +1405,37 @@ fn type_tool_sets_text() {
     h.run_steps(2);
     assert_eq!(layer_names(&h), ["Background", "Hello"]);
 }
+
+#[test]
+fn new_document_dialog() {
+    let mut h = harness(Vec::new());
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::N);
+    h.run_steps(3);
+    assert!(h.state().state.new_document_dialog.is_some());
+    shot(&mut h, "new_document");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(h.state().state.new_document_dialog.is_none());
+    let d = &active(&h).doc;
+    assert_eq!(
+        (d.title.as_str(), d.width, d.height),
+        ("Untitled-2", 1920, 1080)
+    );
+    assert!(d.layers[0].is_background);
+
+    // A transparent background is a regular "Layer 1"
+    let app = &mut h.state_mut().state;
+    crate::actions::create_document(
+        app,
+        "Clear".into(),
+        (300, 200),
+        150.0,
+        crate::dialogs::NewContents::Transparent,
+    );
+    h.run_steps(2);
+    let d = &active(&h).doc;
+    assert_eq!(d.layers[0].name, "Layer 1");
+    assert!(!d.layers[0].is_background);
+    assert_eq!(d.resolution, 150.0);
+    assert_eq!(composite_pixel(&mut h, 10, 10)[3], 0);
+}

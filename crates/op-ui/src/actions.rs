@@ -112,6 +112,42 @@ pub fn clipboard(command: Command, app: &mut AppState, ppp: f32) {
     }
 }
 
+/// File > New...: opens the dialog, named after the next untitled document
+/// and sized like the clipboard's image if there is one.
+pub fn new_dialog(app: &mut AppState) {
+    let name = format!("Untitled-{}", app.untitled_counter + 1);
+    let size = app.clipboard.get().map(|c| (c.width, c.height));
+    app.new_document_dialog = Some(crate::dialogs::NewDocumentDialog::new(name, size));
+}
+
+/// Creates the document the New dialog describes. A transparent background
+/// gives a regular "Layer 1" instead of a background layer, as in Photoshop.
+pub fn create_document(
+    app: &mut AppState,
+    name: String,
+    (width, height): (u32, u32),
+    resolution: f32,
+    contents: crate::dialogs::NewContents,
+) {
+    use crate::dialogs::NewContents;
+    app.untitled_counter += 1;
+    let fill = match contents {
+        NewContents::White => Color::WHITE,
+        NewContents::Black => Color::BLACK,
+        NewContents::BackgroundColor => app.background,
+        NewContents::Transparent => Color::from_rgba8([0; 4]),
+    };
+    let mut doc = Document::new_with_background(name, width, height, fill);
+    if contents == NewContents::Transparent {
+        let layer = &mut doc.layers[0];
+        layer.is_background = false;
+        layer.name = "Layer 1".into();
+    }
+    doc.resolution = resolution;
+    app.add_document(doc, "New");
+}
+
+/// The document OpenPhoto starts with when no file is given.
 pub fn new_document(app: &mut AppState) {
     app.untitled_counter += 1;
     let doc = Document::new_with_background(

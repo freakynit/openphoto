@@ -824,6 +824,8 @@ pub struct AppState {
     pub adjust_dialog: Option<crate::dialogs::AdjustDialog>,
     /// Select > Modify > Border/Smooth/Expand/Contract/Feather, while open.
     pub modify_dialog: Option<crate::dialogs::ModifyDialog>,
+    /// File > New..., while open.
+    pub new_document_dialog: Option<crate::dialogs::NewDocumentDialog>,
     /// View > Guides > New Guide..., while open.
     pub new_guide_dialog: Option<crate::dialogs::NewGuideDialog>,
     /// Image > Image Size, while open.
@@ -893,6 +895,7 @@ impl Default for AppState {
             trim_dialog: None,
             image_size_dialog: None,
             new_guide_dialog: None,
+            new_document_dialog: None,
             modify_dialog: None,
             adjust_dialog: None,
             last_filter: None,
@@ -970,6 +973,7 @@ impl AppState {
             || self.trim_dialog.is_some()
             || self.image_size_dialog.is_some()
             || self.new_guide_dialog.is_some()
+            || self.new_document_dialog.is_some()
             || self.modify_dialog.is_some()
             || self.adjust_dialog.is_some()
             || self.color_picker.is_some()

@@ -296,6 +296,29 @@ impl OpenPhotoApp {
         }
     }
 
+    fn new_document_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.state.new_document_dialog.take() else {
+            return;
+        };
+        match dialog.show(ctx) {
+            dialogs::NewDocumentOutcome::Open => self.state.new_document_dialog = Some(dialog),
+            dialogs::NewDocumentOutcome::Cancel => {}
+            dialogs::NewDocumentOutcome::Create {
+                name,
+                width,
+                height,
+                resolution,
+                contents,
+            } => actions::create_document(
+                &mut self.state,
+                name,
+                (width, height),
+                resolution,
+                contents,
+            ),
+        }
+    }
+
     fn new_guide_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.state.new_guide_dialog.take() else {
             return;
@@ -495,6 +518,7 @@ impl eframe::App for OpenPhotoApp {
         self.trim_dialog(&ctx);
         self.image_size_dialog(&ctx);
         self.new_guide_dialog(&ctx);
+        self.new_document_dialog(&ctx);
         self.modify_dialog(&ctx);
         self.adjust_dialog(&ctx);
         self.save_prompt(&ctx);
