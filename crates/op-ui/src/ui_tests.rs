@@ -1103,6 +1103,29 @@ fn transform_bar_takes_typed_numbers() {
 }
 
 #[test]
+fn transform_selection_moves_only_the_outline() {
+    use crate::commands::Command;
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    assert!(!Command::TransformSelection.enabled(&h.state().state));
+    select_rect(&mut h, 100.0, 100.0, 140.0, 140.0);
+    let before = composite_pixel(&mut h, 120, 120);
+    run_command(&mut h, Command::TransformSelection);
+    assert!(active(&h).free_transform.as_ref().unwrap().selection_only);
+    let (a, b) = (doc_point(&h, 120.0, 120.0), doc_point(&h, 170.0, 130.0));
+    drag(&mut h, a, b, Modifiers::NONE);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    let sel = active(&h).doc.selection().unwrap().bounds().unwrap();
+    assert!(
+        (sel.0 as i32 - 150).abs() <= 1 && (sel.1 as i32 - 110).abs() <= 1,
+        "{sel:?}"
+    );
+    assert_eq!(composite_pixel(&mut h, 120, 120), before);
+    assert_eq!(last_history(&h), "Transform Selection");
+}
+
+#[test]
 fn transform_distort_from_the_menu() {
     use crate::commands::Command;
     let mut h = harness(Vec::new());

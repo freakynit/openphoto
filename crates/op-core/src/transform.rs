@@ -602,26 +602,50 @@ pub fn transform_with<M: Mapping>(
     }
 
     if let Some(s) = selection {
-        let (w, h) = (cw as usize, ch as usize);
-        let mut mask = vec![0u8; w * h];
-        let src: Vec<[f32; 4]> = (0..w * h)
-            .map(|i| {
-                let v = s.get((i % w) as u32, (i / w) as u32) as f32;
-                [v, 0.0, 0.0, 0.0]
-            })
-            .collect();
-        for y in 0..h {
-            for x in 0..w {
-                let (sx, sy) = inverse.map((x as f32 + 0.5, y as f32 + 0.5));
-                mask[y * w + x] = sample(&src, w, h, sx, sy, Interpolation::Bilinear)[0]
-                    .round()
-                    .clamp(0.0, 255.0) as u8;
-            }
-        }
-        doc.set_selection(Some(Selection::from_mask(w as u32, h as u32, mask, false)));
+        doc.set_selection(Some(turned_selection(&s, inverse)));
     }
     doc.mark_dirty();
     Ok(())
+}
+
+/// `s` moved by the map whose inverse is `inverse`.
+fn turned_selection<M: Mapping>(s: &Selection, inverse: M) -> Selection {
+    let (w, h) = (s.width() as usize, s.height() as usize);
+    let src: Vec<[f32; 4]> = (0..w * h)
+        .map(|i| {
+            let v = s.get((i % w) as u32, (i / w) as u32) as f32;
+            [v, 0.0, 0.0, 0.0]
+        })
+        .collect();
+    let mut mask = vec![0u8; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let (sx, sy) = inverse.map((x as f32 + 0.5, y as f32 + 0.5));
+            mask[y * w + x] = sample(&src, w, h, sx, sy, Interpolation::Bilinear)[0]
+                .round()
+                .clamp(0.0, 255.0) as u8;
+        }
+    }
+    Selection::from_mask(w as u32, h as u32, mask, false)
+}
+
+/// The box Select > Transform Selection starts with: the selection's.
+pub fn selection_bounds(doc: &Document) -> Option<(f32, f32, f32, f32)> {
+    let (x0, y0, x1, y1) = doc.selection()?.bounds()?;
+    Some((x0 as f32, y0 as f32, x1 as f32, y1 as f32))
+}
+
+/// Select > Transform Selection: moves the selection's outline (not the
+/// pixels) by `m`. Returns false without a selection.
+pub fn transform_selection<M: Mapping>(doc: &mut Document, m: M) -> bool {
+    let Some(inverse) = m.inverted() else {
+        return false;
+    };
+    let Some(s) = doc.selection().cloned() else {
+        return false;
+    };
+    doc.set_selection(Some(turned_selection(&s, inverse)));
+    true
 }
 
 /// The fixed transforms of Edit > Transform.
@@ -757,6 +781,19 @@ mod tests {
         }
         assert_eq!(Interpolation::default(), Interpolation::Bicubic);
         assert_eq!(Interpolation::ALL[5].label(), "Bicubic Automatic");
+    }
+
+    #[test]
+    fn transforming_the_selection_only() {
+        let mut d = doc();
+        d.set_selection(Some(Selection::rect(6, 6, Rect::new(1.0, 1.0, 3.0, 3.0))));
+        assert_eq!(selection_bounds(&d), Some((1.0, 1.0, 3.0, 3.0)));
+        assert!(transform_selection(&mut d, Affine::translate(2.0, 1.0)));
+        assert_eq!(d.selection().unwrap().bounds(), Some((3, 2, 5, 4)));
+        // The pixels stay
+        assert_eq!(layer_px(&d, 1, 1), [255, 0, 0, 255]);
+        d.set_selection(None);
+        assert!(!transform_selection(&mut d, Affine::IDENTITY));
     }
 
     #[test]

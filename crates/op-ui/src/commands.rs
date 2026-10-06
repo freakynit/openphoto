@@ -140,6 +140,8 @@ pub enum Command {
     /// Edit > Clear (Delete).
     Clear,
     FreeTransform,
+    /// Select > Transform Selection.
+    TransformSelection,
     /// Edit > Transform > Scale, Rotate, Skew, Distort, Perspective: a
     /// transform whose handles do that.
     TransformIn(crate::state::TransformMode, &'static str),
@@ -413,6 +415,7 @@ impl Command {
             | Self::TransformFlipHorizontal
             | Self::TransformFlipVertical
             | Self::TransformIn(..)
+            | Self::TransformSelection
             | Self::RenameLayer
             | Self::RotateArbitrary
             | Self::DeselectLayers
@@ -622,7 +625,9 @@ impl Command {
             Self::LayerViaCut => {
                 doc.is_some_and(|d| d.doc.selection().is_some() && d.doc.active_layer.is_some())
             }
-            Self::Crop => doc.is_some_and(|d| d.doc.selection().is_some()),
+            Self::Crop | Self::TransformSelection => {
+                doc.is_some_and(|d| d.doc.selection().is_some())
+            }
             Self::PasteInto | Self::PasteOutside => {
                 doc.is_some_and(|d| d.doc.selection().is_some())
             }
@@ -1098,6 +1103,11 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                     }
                     Err(e) => app.alert = Some(e.message(name)),
                 }
+            }
+        }
+        Command::TransformSelection => {
+            if let Some(state) = app.active_doc.and_then(|id| app.docs.get_mut(&id)) {
+                crate::free_transform::start_selection(state);
             }
         }
         Command::TransformIn(mode, name) => {

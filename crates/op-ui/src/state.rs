@@ -697,6 +697,8 @@ pub struct FreeTransform {
     /// W and H change together.
     pub linked: bool,
     pub interpolation: op_core::transform::Interpolation,
+    /// Select > Transform Selection: only the selection's outline moves.
+    pub selection_only: bool,
     pub drag: Option<TransformDrag>,
     /// The transform the document currently shows, and how it was
     /// resampled.
@@ -720,6 +722,7 @@ impl FreeTransform {
             relative: false,
             linked: true,
             interpolation: op_core::transform::Interpolation::Bicubic,
+            selection_only: false,
             drag: None,
             applied: op_core::transform::Projective::IDENTITY,
             applied_interpolation: op_core::transform::Interpolation::Bicubic,

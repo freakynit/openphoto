@@ -33,6 +33,18 @@ pub fn start(state: &mut DocState) -> Result<(), TransformError> {
     start_in(state, TransformMode::Free)
 }
 
+/// Select > Transform Selection: the box around the selection, moving
+/// only its outline. Returns false without a selection.
+pub fn start_selection(state: &mut DocState) -> bool {
+    let Some(bounds) = transform::selection_bounds(&state.doc) else {
+        return false;
+    };
+    let mut t = FreeTransform::new(state.doc.snapshot(), bounds);
+    t.selection_only = true;
+    state.free_transform = Some(t);
+    true
+}
+
 /// Starts a transform in one of Edit > Transform's modes (or switches the
 /// running one to it, keeping the box).
 pub fn start_in(state: &mut DocState, mode: TransformMode) -> Result<(), TransformError> {
@@ -371,9 +383,12 @@ pub fn preview(state: &mut DocState, background: [u8; 3]) {
         return;
     }
     state.doc.restore(&t.before);
-    if transform::transform_with(&mut state.doc, m, background, how).is_ok()
-        && let Some(t) = &mut state.free_transform
-    {
+    let done = if t.selection_only {
+        transform::transform_selection(&mut state.doc, m)
+    } else {
+        transform::transform_with(&mut state.doc, m, background, how).is_ok()
+    };
+    if done && let Some(t) = &mut state.free_transform {
         t.applied = m;
         t.applied_interpolation = how;
     }
@@ -383,6 +398,10 @@ pub fn preview(state: &mut DocState, background: [u8; 3]) {
 pub fn commit(state: &mut DocState) -> Option<Outcome> {
     let t = state.free_transform.take()?;
     if t.applied == Projective::IDENTITY {
+        return Some(Outcome::Cancelled);
+    }
+    if t.selection_only {
+        state.record("Transform Selection");
         return Some(Outcome::Cancelled);
     }
     state.record("Free Transform");
