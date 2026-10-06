@@ -184,6 +184,38 @@ impl TiledImage {
         out
     }
 
+    /// The whole image as a tightly packed RGBA8 buffer.
+    pub fn to_rgba8(&self) -> Vec<u8> {
+        let (w, h) = (self.width as usize, self.height as usize);
+        let mut out = vec![0; w * h * 4];
+        for y in 0..h {
+            self.read_span(0, y as u32, &mut out[y * w * 4..(y + 1) * w * 4]);
+        }
+        out
+    }
+
+    /// A `width`×`height` image whose pixel (x, y) is this image's pixel
+    /// `source(x, y)`, e.g. a rotated or mirrored copy.
+    pub fn remapped(
+        &self,
+        width: u32,
+        height: u32,
+        source: impl Fn(u32, u32) -> (u32, u32),
+    ) -> Self {
+        let src = self.to_rgba8();
+        let sw = self.width as usize;
+        let mut out = vec![0; (width * height * 4) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let (sx, sy) = source(x, y);
+                let s = (sy as usize * sw + sx as usize) * 4;
+                let d = ((y * width + x) * 4) as usize;
+                out[d..d + 4].copy_from_slice(&src[s..s + 4]);
+            }
+        }
+        Self::from_rgba8(width, height, &out)
+    }
+
     /// Writes one pixel (ignored outside the image). Writing a transparent
     /// pixel into a missing tile allocates nothing.
     pub fn set_pixel(&mut self, x: u32, y: u32, rgba: [u8; 4]) {

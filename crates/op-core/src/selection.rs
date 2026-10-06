@@ -184,6 +184,28 @@ impl Selection {
         b
     }
 
+    /// Like [`crate::TiledImage::remapped`]: a `width`×`height` selection
+    /// whose pixel (x, y) is this selection's pixel `source(x, y)`.
+    pub fn remapped(
+        &self,
+        width: u32,
+        height: u32,
+        source: impl Fn(u32, u32) -> (u32, u32),
+    ) -> Self {
+        let mut mask = vec![0; (width * height) as usize];
+        for y in 0..height {
+            for x in 0..width {
+                let (sx, sy) = source(x, y);
+                mask[(y * width + x) as usize] = self.get(sx, sy);
+            }
+        }
+        Self {
+            width,
+            height,
+            mask,
+        }
+    }
+
     /// Select > Inverse.
     pub fn inverse(&self) -> Self {
         Self {

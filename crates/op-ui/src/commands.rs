@@ -3,6 +3,7 @@
 
 use egui::{Key, Modifiers};
 
+use op_core::image_ops::{self, Orientation};
 use op_core::layer_ops::{self, Arrange};
 
 use crate::actions;
@@ -21,6 +22,15 @@ pub enum Command {
     Redo,
     ToggleLastState,
     CanvasSize,
+    Rotate180,
+    Rotate90Clockwise,
+    Rotate90CounterClockwise,
+    FlipCanvasHorizontal,
+    FlipCanvasVertical,
+    /// Image > Crop (to the selection).
+    Crop,
+    /// Image > Trim... (opens the dialog).
+    Trim,
     NewLayer,
     DeleteLayer,
     /// Layer > Hide Layers / Show Layers for the active layer.
@@ -185,12 +195,30 @@ impl Command {
             Self::ZoomOut => cmd(Key::Minus),
             Self::FitOnScreen => cmd(Key::Num0),
             Self::ActualPixels => cmd(Key::Num1),
+            Self::Rotate180
+            | Self::Rotate90Clockwise
+            | Self::Rotate90CounterClockwise
+            | Self::FlipCanvasHorizontal
+            | Self::FlipCanvasVertical
+            | Self::Crop
+            | Self::Trim => return None,
             Self::DeleteLayer
             | Self::ToggleHistory
             | Self::DuplicateLayer
             | Self::LayerFromBackground
             | Self::DeleteHiddenLayers
             | Self::FlattenImage => return None,
+        })
+    }
+
+    fn orientation(self) -> Option<Orientation> {
+        Some(match self {
+            Self::Rotate180 => Orientation::Rotate180,
+            Self::Rotate90Clockwise => Orientation::Rotate90Clockwise,
+            Self::Rotate90CounterClockwise => Orientation::Rotate90CounterClockwise,
+            Self::FlipCanvasHorizontal => Orientation::FlipHorizontal,
+            Self::FlipCanvasVertical => Orientation::FlipVertical,
+            _ => return None,
         })
     }
 
@@ -240,6 +268,7 @@ impl Command {
             Self::LayerViaCut => {
                 doc.is_some_and(|d| d.doc.selection().is_some() && d.doc.active_layer.is_some())
             }
+            Self::Crop => doc.is_some_and(|d| d.doc.selection().is_some()),
             Self::LayerFromBackground => doc.is_some_and(|d| d.doc.has_background()),
             Self::DeleteHiddenLayers => doc.is_some_and(|d| {
                 let layers = &d.doc.layers;
@@ -270,6 +299,12 @@ impl Command {
             | Self::CloseAll
             | Self::ExportAs
             | Self::CanvasSize
+            | Self::Rotate180
+            | Self::Rotate90Clockwise
+            | Self::Rotate90CounterClockwise
+            | Self::FlipCanvasHorizontal
+            | Self::FlipCanvasVertical
+            | Self::Trim
             | Self::NewLayer
             | Self::ZoomIn
             | Self::ZoomOut
@@ -451,6 +486,12 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 Err(e) => app.alert = Some(e.message(name)),
             }
         }
+        Command::Trim => {
+            if let Some(state) = app.active() {
+                let dialog = crate::dialogs::TrimDialog::new(state.doc.has_background());
+                app.trim_dialog = Some(dialog);
+            }
+        }
         Command::CanvasSize => {
             if let Some(state) = app.active() {
                 let dialog = crate::dialogs::CanvasSizeDialog::new(&state.doc);
@@ -489,6 +530,20 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                     let inverse = state.doc.selection().map(|s| s.inverse());
                     state.doc.set_selection(inverse);
                     state.record("Select Inverse");
+                }
+                Command::Rotate180
+                | Command::Rotate90Clockwise
+                | Command::Rotate90CounterClockwise
+                | Command::FlipCanvasHorizontal
+                | Command::FlipCanvasVertical => {
+                    let orientation = command.orientation().expect("rotation command");
+                    image_ops::reorient(&mut state.doc, orientation);
+                    state.record(orientation.history_name());
+                }
+                Command::Crop => {
+                    if image_ops::crop_to_selection(&mut state.doc) {
+                        state.record("Crop");
+                    }
                 }
                 Command::NewLayer => crate::panels::new_layer(state),
                 Command::DuplicateLayer => {

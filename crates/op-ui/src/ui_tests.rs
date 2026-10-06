@@ -622,3 +622,53 @@ fn screenshot_layers() {
     double_click(&mut h, at_pt(1130.0, 694.0));
     shot(&mut h, "layers_rename");
 }
+
+fn run_command(h: &mut Harness<'_, OpenPhotoApp>, command: crate::commands::Command) {
+    let ctx = h.ctx.clone();
+    crate::commands::run(command, &ctx, &mut h.state_mut().state);
+    h.run_steps(3);
+}
+
+#[test]
+fn rotate_crop_and_trim() {
+    use crate::commands::Command;
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    run_command(&mut h, Command::Rotate90Clockwise);
+    assert_eq!((active(&h).doc.width, active(&h).doc.height), (811, 734));
+    assert_eq!(last_history(&h), "Rotate Canvas");
+
+    // Crop is only available with a selection
+    assert!(!Command::Crop.enabled(&h.state().state));
+    select_rect(&mut h, 10.0, 20.0, 110.0, 70.0);
+    run_command(&mut h, Command::Crop);
+    assert_eq!((active(&h).doc.width, active(&h).doc.height), (100, 50));
+    assert_eq!(last_history(&h), "Crop");
+
+    // A red square on white: Trim based on the top-left color keeps it
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::D);
+    h.state_mut().state.foreground = Color::from_rgba8([255, 255, 255, 255]);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.run_steps(2);
+    h.state_mut().state.foreground = Color::from_rgba8([255, 0, 0, 255]);
+    select_rect(&mut h, 30.0, 10.0, 40.0, 30.0);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::D);
+    h.run_steps(2);
+    run_command(&mut h, Command::Trim);
+    assert!(h.state().state.trim_dialog.is_some());
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(h.state().state.trim_dialog.is_none());
+    assert_eq!((active(&h).doc.width, active(&h).doc.height), (10, 20));
+    assert_eq!(last_history(&h), "Trim");
+}
+
+#[test]
+#[ignore]
+fn screenshot_trim_dialog() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    run_command(&mut h, crate::commands::Command::Trim);
+    shot(&mut h, "trim_dialog");
+}

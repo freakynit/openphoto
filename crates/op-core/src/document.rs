@@ -215,6 +215,33 @@ impl Document {
         self.mark_dirty();
     }
 
+    /// Replaces the canvas with a `width`×`height` one: every layer's image
+    /// and both selections (current and the one Reselect brings back) are
+    /// passed through `image` and `selection`. Used by Crop, Trim, Image
+    /// Rotation and the canvas flips.
+    pub fn transform_canvas(
+        &mut self,
+        width: u32,
+        height: u32,
+        image: impl Fn(&TiledImage) -> TiledImage,
+        selection: impl Fn(&Selection) -> Selection,
+    ) {
+        for layer in &mut self.layers {
+            let LayerKind::Raster(img) = &mut layer.kind;
+            *img = image(img);
+        }
+        for sel in [&mut self.selection, &mut self.last_selection]
+            .into_iter()
+            .flatten()
+        {
+            *sel = selection(sel);
+        }
+        self.selection_revision += 1;
+        self.width = width;
+        self.height = height;
+        self.mark_dirty();
+    }
+
     pub fn selection(&self) -> Option<&Selection> {
         self.selection.as_ref()
     }

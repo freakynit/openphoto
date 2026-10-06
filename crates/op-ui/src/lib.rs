@@ -165,6 +165,23 @@ impl OpenPhotoApp {
         }
     }
 
+    fn trim_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.state.trim_dialog.take() else {
+            return;
+        };
+        match dialog.show(ctx) {
+            dialogs::TrimOutcome::Open => self.state.trim_dialog = Some(dialog),
+            dialogs::TrimOutcome::Cancel => {}
+            dialogs::TrimOutcome::Apply { basis, sides } => {
+                if let Some(state) = self.state.active()
+                    && op_core::image_ops::trim(&mut state.doc, basis, sides)
+                {
+                    state.record("Trim");
+                }
+            }
+        }
+    }
+
     /// The Color Picker, drawn after (on top of) Canvas Size.
     fn color_picker(&mut self, ctx: &egui::Context) {
         let Some(mut session) = self.state.color_picker.take() else {
@@ -315,6 +332,7 @@ impl eframe::App for OpenPhotoApp {
 
         self.canvas_size_dialog(&ctx);
         self.fill_dialog(&ctx);
+        self.trim_dialog(&ctx);
         self.color_picker(&ctx);
 
         #[cfg(target_os = "macos")]
