@@ -51,6 +51,7 @@ pub enum Command {
     /// Image > Adjustments > Posterize... (opens the dialog).
     Posterize,
     Levels,
+    Curves,
     HueSaturation,
     Exposure,
     BrightnessContrast,
@@ -378,6 +379,7 @@ impl Command {
             | Self::Mosaic => return None,
             Self::Invert => cmd(Key::I),
             Self::Levels => cmd(Key::L),
+            Self::Curves => cmd(Key::M),
             Self::HueSaturation => cmd(Key::U),
             Self::ColorBalance => cmd(Key::B),
             Self::BlackWhite => Shortcut {
@@ -579,6 +581,7 @@ impl Command {
             | Self::Posterize
             | Self::Levels
             | Self::HueSaturation
+            | Self::Curves
             | Self::Exposure
             | Self::BrightnessContrast
             | Self::ColorBalance
@@ -657,6 +660,7 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::Quit,
     Command::Invert,
     Command::Levels,
+    Command::Curves,
     Command::HueSaturation,
     Command::ColorBalance,
     Command::LayerViaCopy,
@@ -877,6 +881,7 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
         | Command::Levels
         | Command::HueSaturation
         | Command::Exposure
+        | Command::Curves
         | Command::BrightnessContrast
         | Command::ColorBalance
         | Command::BlackWhite
@@ -899,6 +904,7 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 Command::Levels => (AdjustKind::Levels, "Levels"),
                 Command::HueSaturation => (AdjustKind::HueSaturation, "Hue/Saturation"),
                 Command::Exposure => (AdjustKind::Exposure, "Exposure"),
+                Command::Curves => (AdjustKind::Curves, "Curves"),
                 Command::BrightnessContrast => {
                     (AdjustKind::BrightnessContrast, "Brightness/Contrast")
                 }

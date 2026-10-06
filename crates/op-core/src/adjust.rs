@@ -82,6 +82,12 @@ pub enum Adjustment {
     /// Image > Auto Contrast: all channels stretched together, so colors
     /// keep their balance.
     AutoContrast,
+    /// Curves on the composite RGB channel: up to 16 (input, output)
+    /// points, the first `count` of `points` used, sorted by input.
+    Curves {
+        points: [(u8, u8); 16],
+        count: u8,
+    },
     /// Image > Auto Color: here each channel stretched like Auto Tone
     /// (Photoshop also neutralizes the midtones).
     AutoColor,
@@ -108,12 +114,27 @@ impl Adjustment {
             Self::AutoTone => "Auto Tone",
             Self::AutoContrast => "Auto Contrast",
             Self::AutoColor => "Auto Color",
+            Self::Curves { .. } => "Curves",
+        }
+    }
+
+    /// Curves from a list of (input, output) points.
+    pub fn curves(points: &[(u8, u8)]) -> Self {
+        let mut array = [(0u8, 0u8); 16];
+        let count = points.len().min(16);
+        array[..count].copy_from_slice(&points[..count]);
+        Self::Curves {
+            points: array,
+            count: count as u8,
         }
     }
 
     /// Per-channel lookup table for adjustments that treat each channel the
     /// same way on its own.
     fn table(self) -> Option<[u8; 256]> {
+        if let Self::Curves { points, count } = self {
+            return Some(curve_table(&points[..count as usize]));
+        }
         let f: Box<dyn Fn(f32) -> f32> = match self {
             Self::Levels {
                 input_black,
@@ -232,6 +253,72 @@ pub(crate) fn hsl_to_rgb([h, s, l]: [f32; 3]) -> [f32; 3] {
     };
     let h = h / 360.0;
     [channel(h + 1.0 / 3.0), channel(h), channel(h - 1.0 / 3.0)]
+}
+
+/// The curve through `points` (sorted by input) as a 256-entry table: a
+/// natural cubic spline, flat beyond the first and last points, clamped to
+/// 0–255.
+pub fn curve_table(points: &[(u8, u8)]) -> [u8; 256] {
+    let mut pts: Vec<(f32, f32)> = points.iter().map(|&(x, y)| (x as f32, y as f32)).collect();
+    pts.sort_by(|a, b| a.0.total_cmp(&b.0));
+    pts.dedup_by(|a, b| a.0 == b.0);
+    let mut table = [0u8; 256];
+    match pts.len() {
+        0 => {
+            for (i, t) in table.iter_mut().enumerate() {
+                *t = i as u8;
+            }
+            return table;
+        }
+        1 => {
+            table.fill(pts[0].1.round() as u8);
+            return table;
+        }
+        _ => {}
+    }
+    // Second derivatives of the natural spline (tridiagonal solve)
+    let n = pts.len();
+    let mut m = vec![0f32; n];
+    if n > 2 {
+        let h: Vec<f32> = (0..n - 1).map(|i| pts[i + 1].0 - pts[i].0).collect();
+        let mut a = vec![0f32; n];
+        let mut b = vec![0f32; n];
+        let mut c = vec![0f32; n];
+        let mut d = vec![0f32; n];
+        for i in 1..n - 1 {
+            a[i] = h[i - 1];
+            b[i] = 2.0 * (h[i - 1] + h[i]);
+            c[i] = h[i];
+            d[i] = 6.0 * ((pts[i + 1].1 - pts[i].1) / h[i] - (pts[i].1 - pts[i - 1].1) / h[i - 1]);
+        }
+        // Thomas algorithm on rows 1..n-1 (m[0] = m[n-1] = 0)
+        for i in 2..n - 1 {
+            let w = a[i] / b[i - 1];
+            b[i] -= w * c[i - 1];
+            d[i] -= w * d[i - 1];
+        }
+        for i in (1..n - 1).rev() {
+            let next = if i + 1 < n - 1 { m[i + 1] } else { 0.0 };
+            m[i] = (d[i] - c[i] * next) / b[i];
+        }
+    }
+    for (x, t) in table.iter_mut().enumerate() {
+        let x = x as f32;
+        let y = if x <= pts[0].0 {
+            pts[0].1
+        } else if x >= pts[n - 1].0 {
+            pts[n - 1].1
+        } else {
+            let i = (0..n - 1).find(|&i| x <= pts[i + 1].0).unwrap_or(n - 2);
+            let (x0, y0) = pts[i];
+            let (x1, y1) = pts[i + 1];
+            let h = x1 - x0;
+            let (s, u) = ((x1 - x) / h, (x - x0) / h);
+            s * y0 + u * y1 + ((s * s * s - s) * m[i] + (u * u * u - u) * m[i + 1]) * h * h / 6.0
+        };
+        *t = y.round().clamp(0.0, 255.0) as u8;
+    }
+    table
 }
 
 /// Moves every channel by the same amount so the pixel's luminosity is
@@ -545,7 +632,8 @@ pub fn apply(doc: &mut Document, adjustment: Adjustment) -> Result<(), FillError
             Adjustment::Equalize
             | Adjustment::Levels { .. }
             | Adjustment::Exposure { .. }
-            | Adjustment::BrightnessContrast { .. } => {
+            | Adjustment::BrightnessContrast { .. }
+            | Adjustment::Curves { .. } => {
                 let t = table.as_ref().expect("computed above");
                 [t[r as usize], t[g as usize], t[b as usize], a]
             }
@@ -772,6 +860,23 @@ mod tests {
         };
         apply(&mut d, pf).unwrap();
         assert_eq!(first(&d), [100, 100, 200, 255]);
+    }
+
+    #[test]
+    fn curves_pass_through_their_points() {
+        let identity = curve_table(&[(0, 0), (255, 255)]);
+        assert!(identity.iter().enumerate().all(|(i, &v)| v == i as u8));
+        // An S-curve through (64, 40) and (192, 215) keeps its points and
+        // stays smooth and increasing
+        let s = curve_table(&[(0, 0), (64, 40), (192, 215), (255, 255)]);
+        assert_eq!((s[64], s[192]), (40, 215));
+        assert!(s.windows(2).all(|w| w[1] >= w[0]));
+        // Beyond the end points the curve is flat
+        let clipped = curve_table(&[(30, 0), (220, 255)]);
+        assert_eq!((clipped[10], clipped[240]), (0, 255));
+        let mut d = doc([64, 64, 64, 255]);
+        apply(&mut d, Adjustment::curves(&[(0, 0), (64, 128), (255, 255)])).unwrap();
+        assert_eq!(first(&d), [128, 128, 128, 255]);
     }
 
     #[test]

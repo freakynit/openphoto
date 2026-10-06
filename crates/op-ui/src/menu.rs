@@ -46,6 +46,7 @@ const ALL_COMMANDS: &[Command] = &[
     Command::HueSaturation,
     Command::Exposure,
     Command::BrightnessContrast,
+    Command::Curves,
     Command::ColorBalance,
     Command::BlackWhite,
     Command::Vibrance,
@@ -369,7 +370,7 @@ impl NativeMenu {
                         &item("Brightness/Contrast...", Command::BrightnessContrast)
                             as &dyn IsMenuItem,
                         &item("Levels...", Command::Levels),
-                        &todo("Curves...", Some("CmdOrCtrl+M")),
+                        &item("Curves...", Command::Curves),
                         &item("Exposure...", Command::Exposure),
                         &sep(),
                         &item("Vibrance...", Command::Vibrance),

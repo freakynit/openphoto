@@ -1473,3 +1473,31 @@ fn more_adjustments() {
     h.key_press(egui::Key::Escape);
     h.run_steps(2);
 }
+
+#[test]
+fn curves_dialog_adds_points() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    // A mid gray to bend
+    h.state_mut().state.foreground = Color::from_rgba8([128, 128, 128, 255]);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::M);
+    h.run_steps(3);
+    assert!(h.state().state.adjust_dialog.is_some());
+    // The 420 × 380 dialog is centered in the 1350 × 800 window; its graph
+    // (240 square) starts 20 right and 88 down of the dialog's corner.
+    // Click the curve point (128, 192).
+    let (gx, gy) = (675.0 - 210.0 + 20.0, 400.0 - 190.0 + 88.0);
+    let p = at_pt(
+        gx + 128.0 / 255.0 * 240.0,
+        gy + 240.0 - 192.0 / 255.0 * 240.0,
+    );
+    click(&mut h, p);
+    shot(&mut h, "curves");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(last_history(&h), "Curves");
+    let v = composite_pixel(&mut h, 5, 5)[0];
+    assert!((185..=198).contains(&v), "{v}");
+}

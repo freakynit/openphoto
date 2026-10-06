@@ -218,6 +218,7 @@ pub enum Kind {
     Threshold,
     Posterize,
     Levels,
+    Curves,
     HueSaturation,
     Exposure,
     BrightnessContrast,
@@ -244,6 +245,7 @@ impl Kind {
             Self::Threshold => "Threshold",
             Self::Posterize => "Posterize",
             Self::Levels => "Levels",
+            Self::Curves => "Curves",
             Self::HueSaturation => "Hue/Saturation",
             Self::Exposure => "Exposure",
             Self::BrightnessContrast => "Brightness/Contrast",
@@ -270,6 +272,7 @@ impl Kind {
             Self::Threshold => THRESHOLD,
             Self::Posterize => POSTERIZE,
             Self::Levels => LEVELS,
+            Self::Curves => &[],
             Self::HueSaturation => HUE_SATURATION,
             Self::Exposure => EXPOSURE,
             Self::BrightnessContrast => BRIGHTNESS_CONTRAST,
@@ -294,6 +297,7 @@ impl Kind {
             Self::Threshold => vec2(pt(400.0), pt(232.0)),
             Self::Posterize => vec2(pt(330.0), pt(132.0)),
             Self::Levels => vec2(pt(400.0), pt(330.0)),
+            Self::Curves => vec2(pt(420.0), pt(380.0)),
             _ => {
                 let rows: f32 = self.params().iter().map(row_height).sum();
                 vec2(pt(400.0), (pt(36.0) + rows + pt(20.0)).max(pt(150.0)))
@@ -332,6 +336,11 @@ pub struct AdjustDialog {
     pub before: op_core::Snapshot,
     /// Gradient Map's colors (the foreground and background colors).
     pub colors: ([u8; 3], [u8; 3]),
+    /// Curves: the points (input, output) in 0–255, sorted by input, the
+    /// selected one and the one being dragged.
+    curve: Vec<(f32, f32)>,
+    curve_selected: Option<usize>,
+    curve_drag: Option<usize>,
 }
 
 fn format(v: f32, decimals: usize) -> String {
@@ -353,6 +362,9 @@ impl AdjustDialog {
             previewing: None,
             before,
             colors: ([0; 3], [255; 3]),
+            curve: vec![(0.0, 0.0), (255.0, 255.0)],
+            curve_selected: None,
+            curve_drag: None,
         }
     }
 
@@ -459,6 +471,14 @@ impl AdjustDialog {
                 density: v[1] as u8,
                 preserve_luminosity: v[2] == 1.0,
             },
+            Kind::Curves => {
+                let points: Vec<(u8, u8)> = self
+                    .curve
+                    .iter()
+                    .map(|&(x, y)| (x.round() as u8, y.round() as u8))
+                    .collect();
+                Adjustment::curves(&points)
+            }
             Kind::GradientMap => {
                 let (a, b) = self.colors;
                 let (from, to) = if v[0] == 1.0 { (b, a) } else { (a, b) };
@@ -496,6 +516,7 @@ impl AdjustDialog {
             }
             Kind::Posterize => self.labeled_field(ui, 0, at(LEFT, pt(58.0))),
             Kind::Levels => self.levels_ui(ui, frame),
+            Kind::Curves => self.curves_ui(ui, frame),
             _ => {
                 let mut y = pt(52.0);
                 for (i, p) in self.kind.params().iter().enumerate() {
@@ -740,6 +761,129 @@ impl AdjustDialog {
                 vec2(FIELD_W, FIELD_H),
             );
             self.field(ui, i, r);
+        }
+    }
+
+    /// The Curves graph: histogram, quarter grid, the diagonal, the curve and
+    /// its points. Click to add a point, drag to move it, drag it out of the
+    /// graph to remove it; the end points always stay.
+    fn curves_ui(&mut self, ui: &mut Ui, frame: Rect) {
+        let at = |x: f32, y: f32| frame.min + vec2(x, y);
+        self.label(ui, "Preset: Default", at(LEFT, pt(48.0)));
+        self.label(ui, "Channel: RGB", at(LEFT, pt(70.0)));
+        let graph = Rect::from_min_size(at(LEFT, pt(88.0)), vec2(pt(240.0), pt(240.0)));
+        self.histogram_ui(ui, graph);
+        let painter = ui.painter_at(graph.expand(pt(6.0)));
+        let grid = Stroke::new(1.0, Color32::from_gray(0x55));
+        for k in 1..4 {
+            let x = graph.left() + graph.width() * k as f32 / 4.0;
+            let y = graph.top() + graph.height() * k as f32 / 4.0;
+            painter.line_segment(
+                [Pos2::new(x, graph.top()), Pos2::new(x, graph.bottom())],
+                grid,
+            );
+            painter.line_segment(
+                [Pos2::new(graph.left(), y), Pos2::new(graph.right(), y)],
+                grid,
+            );
+        }
+        painter.line_segment([graph.left_bottom(), graph.right_top()], grid);
+        // Curve coordinates (0–255, y up) ↔ screen
+        let to_screen = |(x, y): (f32, f32)| {
+            Pos2::new(
+                graph.left() + x / 255.0 * graph.width(),
+                graph.bottom() - y / 255.0 * graph.height(),
+            )
+        };
+        let to_curve = |p: Pos2| {
+            (
+                ((p.x - graph.left()) / graph.width() * 255.0).clamp(0.0, 255.0),
+                ((graph.bottom() - p.y) / graph.height() * 255.0).clamp(0.0, 255.0),
+            )
+        };
+
+        let id = ui.id().with("curves-graph");
+        let response = ui.interact(graph.expand(pt(4.0)), id, Sense::click_and_drag());
+        if (response.drag_started() || response.clicked())
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            let near = self
+                .curve
+                .iter()
+                .position(|&c| to_screen(c).distance(p) <= pt(8.0));
+            let index = near.unwrap_or_else(|| {
+                // A new point where the pointer is
+                let c = to_curve(p);
+                let i = self
+                    .curve
+                    .iter()
+                    .position(|&(x, _)| x > c.0)
+                    .unwrap_or(self.curve.len());
+                self.curve.insert(i, c);
+                i
+            });
+            self.curve_selected = Some(index);
+            self.curve_drag = response.drag_started().then_some(index);
+        }
+        if let (Some(i), Some(p)) = (self.curve_drag, response.interact_pointer_pos()) {
+            let (mut x, y) = to_curve(p);
+            // A point stays between its neighbors
+            let lo = if i > 0 {
+                self.curve[i - 1].0 + 1.0
+            } else {
+                0.0
+            };
+            let hi = if i + 1 < self.curve.len() {
+                self.curve[i + 1].0 - 1.0
+            } else {
+                255.0
+            };
+            x = x.clamp(lo, hi.max(lo));
+            self.curve[i] = (x, y);
+            let outside = !graph.expand(pt(20.0)).contains(p);
+            let end = i == 0 || i + 1 == self.curve.len();
+            if response.drag_stopped() {
+                if outside && !end {
+                    self.curve.remove(i);
+                    self.curve_selected = None;
+                }
+                self.curve_drag = None;
+            }
+        }
+
+        // The curve
+        let points: Vec<(u8, u8)> = self
+            .curve
+            .iter()
+            .map(|&(x, y)| (x.round() as u8, y.round() as u8))
+            .collect();
+        let table = op_core::adjust::curve_table(&points);
+        let line: Vec<Pos2> = (0..256)
+            .map(|x| to_screen((x as f32, table[x] as f32)))
+            .collect();
+        painter.add(Shape::line(line, Stroke::new(1.5, color::TEXT)));
+        for (i, &c) in self.curve.iter().enumerate() {
+            let r = Rect::from_center_size(to_screen(c), egui::Vec2::splat(pt(6.0)));
+            if self.curve_selected == Some(i) {
+                painter.rect_filled(r, 0, color::TEXT);
+            } else {
+                painter.rect(
+                    r,
+                    0,
+                    Color32::from_gray(0x3c),
+                    Stroke::new(1.0, color::TEXT),
+                    StrokeKind::Inside,
+                );
+            }
+        }
+        // Input and Output of the selected point
+        if let Some(&(x, y)) = self.curve_selected.and_then(|i| self.curve.get(i)) {
+            self.label(ui, &format!("Output: {}", y.round()), at(LEFT, pt(346.0)));
+            self.label(
+                ui,
+                &format!("Input: {}", x.round()),
+                at(LEFT + pt(130.0), pt(346.0)),
+            );
         }
     }
 
