@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use crate::document::Document;
-use crate::layer::{LayerId, LayerKind};
+use crate::layer::LayerId;
 use crate::selection::Selection;
 use crate::tile::{TILE_SIZE, TiledImage};
 
@@ -114,6 +114,8 @@ pub enum StrokeError {
     NoLayer,
     Locked,
     Hidden,
+    /// Painting pixels while a group is the active layer.
+    Group,
 }
 
 impl StrokeError {
@@ -124,6 +126,7 @@ impl StrokeError {
             }
             Self::Locked => format!("Could not use the {tool} because the layer is locked."),
             Self::Hidden => format!("Could not use the {tool} because the target layer is hidden."),
+            Self::Group => format!("Could not use the {tool} because the target layer is a group."),
         }
     }
 }
@@ -180,6 +183,9 @@ impl Stroke {
             if layer.lock_pixels {
                 return Err(StrokeError::Locked);
             }
+            if target == Target::Pixels && layer.is_group() {
+                return Err(StrokeError::Group);
+            }
         }
         // On a mask colors become grays, and erasing paints the background
         // color's gray
@@ -196,10 +202,7 @@ impl Stroke {
                 layer.mask.as_ref().expect("checked").image.clone(),
                 gray(kind),
             ),
-            Target::Pixels => {
-                let LayerKind::Raster(image) = &layer.kind;
-                (image.clone(), kind)
-            }
+            Target::Pixels => (layer.image().expect("checked: not a group").clone(), kind),
         };
         let on_mask = target != Target::Pixels;
         Ok(Self {
@@ -265,10 +268,10 @@ impl Stroke {
             };
             match (&mut layer.mask, self.target) {
                 (Some(mask), Target::LayerMask) => &mut mask.image,
-                _ => {
-                    let LayerKind::Raster(image) = &mut layer.kind;
-                    image
-                }
+                _ => match layer.image_mut() {
+                    Some(image) => image,
+                    None => return,
+                },
             }
         };
         for y in y0..y1 {
@@ -459,7 +462,7 @@ mod tests {
     }
 
     fn pixel(doc: &Document, id: LayerId, x: u32, y: u32) -> [u8; 4] {
-        let LayerKind::Raster(img) = &doc.layer(id).unwrap().kind;
+        let img = doc.layer(id).unwrap().image().unwrap();
         img.pixel(x, y)
     }
 
@@ -562,7 +565,7 @@ mod tests {
         };
         let mut s = Stroke::begin(&doc, tip, StrokeKind::Paint([0, 0, 0]), 1.0, 1.0).unwrap();
         s.add_point(&mut doc, 20.0, 20.0);
-        let LayerKind::Raster(img) = &doc.layer(id).unwrap().kind;
+        let img = doc.layer(id).unwrap().image().unwrap();
         for y in 10..30 {
             for x in 10..30 {
                 let a = img.pixel(x, y)[3];
@@ -661,7 +664,7 @@ mod tests {
         // A vertical edge at x = 20: black left, white right
         let (mut doc, id) = doc_filled([255, 255, 255, 255]);
         {
-            let LayerKind::Raster(img) = &mut doc.layer_mut(id).unwrap().kind;
+            let img = doc.layer_mut(id).unwrap().image_mut().unwrap();
             for y in 0..40 {
                 for x in 0..20 {
                     img.set_pixel(x, y, [0, 0, 0, 255]);
@@ -674,11 +677,11 @@ mod tests {
 
         let (mut doc, id) = doc_filled([100, 100, 100, 255]);
         {
-            let LayerKind::Raster(img) = &mut doc.layer_mut(id).unwrap().kind;
+            let img = doc.layer_mut(id).unwrap().image_mut().unwrap();
             img.set_pixel(5, 5, [255, 0, 0, 255]);
         }
         // Clone (5, 5) to (20, 20)
-        let LayerKind::Raster(img) = &doc.layer(id).unwrap().kind;
+        let img = doc.layer(id).unwrap().image().unwrap();
         let source = StrokeKind::Source {
             image: img.clone(),
             dx: 15,

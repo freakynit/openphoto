@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::blend;
 use crate::color::Color;
-use crate::layer::{Layer, LayerId, LayerKind};
+use crate::layer::{BlendMode, Layer, LayerId, LayerKind};
 use crate::pixel::{BitDepth, ColorMode};
 use crate::selection::Selection;
 use crate::tile::{TILE_SIZE, TiledImage};
@@ -255,8 +255,7 @@ impl Document {
     /// y1) in canvas coordinates: what Image > Reveal All shows.
     pub fn content_bounds(&self) -> (i64, i64, i64, i64) {
         let mut b = (0, 0, self.width as i64, self.height as i64);
-        for layer in &self.layers {
-            let LayerKind::Raster(image) = &layer.kind;
+        for image in self.layers.iter().filter_map(|l| l.image()) {
             if let Some((x0, y0, x1, y1)) = image.content_bounds() {
                 b = (b.0.min(x0), b.1.min(y0), b.2.max(x1), b.3.max(y1));
             }
@@ -269,15 +268,17 @@ impl Document {
     pub fn place_canvas(&mut self, width: u32, height: u32, dx: i64, dy: i64, fill: Color) {
         let fill = fill.to_rgba8();
         for layer in &mut self.layers {
-            let LayerKind::Raster(image) = &mut layer.kind;
             let extension = if layer.is_background {
                 [fill[0], fill[1], fill[2], 255]
             } else {
                 [0; 4]
             };
-            *image = image.with_canvas(width, height, dx, dy, extension);
-            if layer.is_background {
-                *image = image.clipped();
+            let background = layer.is_background;
+            if let Some(image) = layer.image_mut() {
+                *image = image.with_canvas(width, height, dx, dy, extension);
+                if background {
+                    *image = image.clipped();
+                }
             }
             // New canvas areas are revealed by the mask
             if let Some(mask) = &mut layer.mask {
@@ -312,8 +313,9 @@ impl Document {
         selection: impl Fn(&Selection) -> Selection,
     ) {
         for layer in &mut self.layers {
-            let LayerKind::Raster(img) = &mut layer.kind;
-            *img = image(img);
+            if let Some(img) = layer.image_mut() {
+                *img = image(img);
+            }
             if let Some(mask) = &mut layer.mask {
                 mask.image = image(&mask.image);
             }
@@ -412,7 +414,8 @@ impl Document {
             });
         }
         let keep_alpha = layer.is_background || layer.lock_transparency;
-        let LayerKind::Raster(image) = &mut layer.kind;
+        // A group has no pixels to edit
+        let image = layer.image_mut()?;
         Some(EditTarget {
             image,
             mask: false,
@@ -555,6 +558,46 @@ impl Document {
         self.active_layer = None;
     }
 
+    /// The layers inside a group, at any depth (empty for other layers).
+    pub fn descendants(&self, id: LayerId) -> Vec<LayerId> {
+        let mut out = Vec::new();
+        let mut frontier = vec![id];
+        while let Some(parent) = frontier.pop() {
+            for l in self.layers.iter().filter(|l| l.parent == Some(parent)) {
+                out.push(l.id);
+                frontier.push(l.id);
+            }
+        }
+        out
+    }
+
+    /// `ids` with every group replaced by the pixel layers inside it, in
+    /// stack order (bottom to top), without duplicates.
+    pub fn pixel_layers(&self, ids: &[LayerId]) -> Vec<LayerId> {
+        let mut wanted: Vec<LayerId> = Vec::new();
+        for &id in ids {
+            wanted.push(id);
+            wanted.extend(self.descendants(id));
+        }
+        self.layers
+            .iter()
+            .filter(|l| !l.is_group() && wanted.contains(&l.id))
+            .map(|l| l.id)
+            .collect()
+    }
+
+    /// Whether the layer and every group it is in are visible.
+    pub fn is_shown(&self, id: LayerId) -> bool {
+        let mut current = self.layer(id);
+        while let Some(layer) = current {
+            if !layer.visible {
+                return false;
+            }
+            current = layer.parent.and_then(|p| self.layer(p));
+        }
+        true
+    }
+
     /// The topmost visible layer showing a pixel at (x, y): the Move tool's
     /// Auto-Select. Pixels hidden by the layer's mask or a zero opacity
     /// don't count.
@@ -565,9 +608,11 @@ impl Document {
         self.layers
             .iter()
             .rev()
-            .filter(|l| l.visible && l.opacity * l.fill > 0.0)
+            .filter(|l| self.is_shown(l.id) && l.opacity * l.fill > 0.0)
             .find(|l| {
-                let LayerKind::Raster(image) = &l.kind;
+                let Some(image) = l.image() else {
+                    return false;
+                };
                 let masked = l
                     .mask
                     .as_ref()
@@ -582,68 +627,131 @@ impl Document {
     }
 
     /// Like [`Self::composite_rgba8`] for a given list of layers (bottom to
-    /// top, each the size of the document), e.g. the layers a merge combines.
+    /// top, each the size of the document), e.g. the layers a merge
+    /// combines. Groups composite their layers: straight into what's below
+    /// when passing through at full opacity without a mask, else on their
+    /// own first and then blended in as one. A layer whose group isn't in
+    /// the list counts as top-level.
     pub fn composite_layers_rgba8(&self, layers: &[Layer]) -> Vec<u8> {
         let (w, h) = (self.width as usize, self.height as usize);
         let mut out = vec![0f32; w * h * 4];
+        let top = |l: &Layer| l.parent.is_none_or(|p| !layers.iter().any(|x| x.id == p));
+        self.composite_children(layers, &top, &mut out);
+        out.iter()
+            .map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
+            .collect()
+    }
 
-        for layer in layers.iter().filter(|l| l.visible) {
-            let LayerKind::Raster(image) = &layer.kind;
-            let layer_alpha = layer.opacity * layer.fill;
-            if layer_alpha <= 0.0 {
-                continue;
-            }
-            let mask = layer.mask.as_ref().filter(|m| m.enabled);
-
-            for ty in 0..image.tiles_y() {
-                for tx in 0..image.tiles_x() {
-                    let Some(tile) = image.tile(tx, ty) else {
-                        continue;
-                    };
-                    // The mask uses the same tile grid; a missing tile hides
-                    let mask_tile = match mask {
-                        Some(m) => match m.image.tile(tx, ty) {
-                            Some(t) => Some(t),
-                            None => continue,
-                        },
-                        None => None,
-                    };
-                    let (x0, y0) = ((tx * TILE_SIZE) as usize, (ty * TILE_SIZE) as usize);
-                    let tw = (TILE_SIZE as usize).min(w - x0);
-                    let th = (TILE_SIZE as usize).min(h - y0);
-                    for row in 0..th {
-                        let src_row = &tile.data[row * TILE_SIZE as usize * 4..];
-                        let dst_row = &mut out[((y0 + row) * w + x0) * 4..];
-                        for col in 0..tw {
-                            let s = &src_row[col * 4..col * 4 + 4];
-                            let m = mask_tile.map_or(1.0, |t| {
-                                t.data[(row * TILE_SIZE as usize + col) * 4] as f32 / 255.0
-                            });
-                            let sa = s[3] as f32 / 255.0 * layer_alpha * m;
-                            if sa <= 0.0 {
-                                continue;
-                            }
-                            let d = &mut dst_row[col * 4..col * 4 + 4];
-                            let src = [s[0], s[1], s[2]].map(|v| v as f32 / 255.0);
-                            let (x, y) = ((x0 + col) as u32, (y0 + row) as u32);
-                            let out = blend::composite(
-                                layer.blend_mode,
-                                [d[0], d[1], d[2], d[3]],
-                                src,
-                                sa,
-                                x,
-                                y,
-                            );
-                            d.copy_from_slice(&out);
-                        }
+    /// Composites the layers of `layers` that `belongs` picks, in order,
+    /// onto `out` (straight RGBA, 0..=1).
+    fn composite_children(
+        &self,
+        layers: &[Layer],
+        belongs: &dyn Fn(&Layer) -> bool,
+        out: &mut [f32],
+    ) {
+        for layer in layers.iter().filter(|l| belongs(l) && l.visible) {
+            match &layer.kind {
+                LayerKind::Raster(image) => self.composite_image(layer, image, out),
+                LayerKind::Group { .. } => {
+                    let id = layer.id;
+                    let child = move |l: &Layer| l.parent == Some(id);
+                    let alpha = layer.opacity * layer.fill;
+                    let mask = layer.mask.as_ref().filter(|m| m.enabled);
+                    if layer.blend_mode == BlendMode::PassThrough && alpha >= 1.0 && mask.is_none()
+                    {
+                        self.composite_children(layers, &child, out);
+                    } else if alpha > 0.0 {
+                        let mut own = vec![0f32; out.len()];
+                        self.composite_children(layers, &child, &mut own);
+                        self.blend_buffer(layer, &own, out);
                     }
                 }
             }
         }
+    }
 
-        out.iter()
-            .map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
-            .collect()
+    /// Blends a group's own composite onto `out` with the group's mode,
+    /// opacity and mask (Pass Through then acts as Normal).
+    fn blend_buffer(&self, group: &Layer, own: &[f32], out: &mut [f32]) {
+        let w = self.width as usize;
+        let alpha = group.opacity * group.fill;
+        let mask = group.mask.as_ref().filter(|m| m.enabled);
+        let mode = match group.blend_mode {
+            BlendMode::PassThrough => BlendMode::Normal,
+            m => m,
+        };
+        for (i, (s, d)) in own
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(out.as_chunks_mut::<4>().0.iter_mut())
+            .enumerate()
+        {
+            let (x, y) = ((i % w) as u32, (i / w) as u32);
+            let m = mask.map_or(1.0, |m| m.value(x, y) as f32 / 255.0);
+            let sa = s[3] * alpha * m;
+            if sa <= 0.0 {
+                continue;
+            }
+            let result =
+                blend::composite(mode, [d[0], d[1], d[2], d[3]], [s[0], s[1], s[2]], sa, x, y);
+            d.copy_from_slice(&result);
+        }
+    }
+
+    /// Composites one pixel layer onto `out`.
+    fn composite_image(&self, layer: &Layer, image: &TiledImage, out: &mut [f32]) {
+        let (w, h) = (self.width as usize, self.height as usize);
+        let layer_alpha = layer.opacity * layer.fill;
+        if layer_alpha <= 0.0 {
+            return;
+        }
+        let mask = layer.mask.as_ref().filter(|m| m.enabled);
+        for ty in 0..image.tiles_y() {
+            for tx in 0..image.tiles_x() {
+                let Some(tile) = image.tile(tx, ty) else {
+                    continue;
+                };
+                // The mask uses the same tile grid; a missing tile hides
+                let mask_tile = match mask {
+                    Some(m) => match m.image.tile(tx, ty) {
+                        Some(t) => Some(t),
+                        None => continue,
+                    },
+                    None => None,
+                };
+                let (x0, y0) = ((tx * TILE_SIZE) as usize, (ty * TILE_SIZE) as usize);
+                let tw = (TILE_SIZE as usize).min(w - x0);
+                let th = (TILE_SIZE as usize).min(h - y0);
+                for row in 0..th {
+                    let src_row = &tile.data[row * TILE_SIZE as usize * 4..];
+                    let dst_row = &mut out[((y0 + row) * w + x0) * 4..];
+                    for col in 0..tw {
+                        let s = &src_row[col * 4..col * 4 + 4];
+                        let m = mask_tile.map_or(1.0, |t| {
+                            t.data[(row * TILE_SIZE as usize + col) * 4] as f32 / 255.0
+                        });
+                        let sa = s[3] as f32 / 255.0 * layer_alpha * m;
+                        if sa <= 0.0 {
+                            continue;
+                        }
+                        let d = &mut dst_row[col * 4..col * 4 + 4];
+                        let src = [s[0], s[1], s[2]].map(|v| v as f32 / 255.0);
+                        let (x, y) = ((x0 + col) as u32, (y0 + row) as u32);
+                        let out = blend::composite(
+                            layer.blend_mode,
+                            [d[0], d[1], d[2], d[3]],
+                            src,
+                            sa,
+                            x,
+                            y,
+                        );
+                        d.copy_from_slice(&out);
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -692,7 +800,7 @@ mod tests {
             TiledImage::filled(2, 2, [255, 0, 0, 255]),
         ));
         doc.resize_canvas(3, 3, Anchor { x: 0, y: 0 }, Color::BLACK);
-        let LayerKind::Raster(img) = &doc.layer(id).unwrap().kind;
+        let img = doc.layer(id).unwrap().image().unwrap();
         assert_eq!(img.pixel(2, 2), [0; 4]);
         assert_eq!(img.pixel(1, 1), [255, 0, 0, 255]);
     }
@@ -771,13 +879,13 @@ mod tests {
             TiledImage::filled(4, 4, [1, 2, 3, 255]),
         ));
         doc.resize_canvas(2, 2, Anchor::CENTER, Color::BLACK);
-        let LayerKind::Raster(image) = &doc.layer(id).unwrap().kind;
+        let image = doc.layer(id).unwrap().image().unwrap();
         assert_eq!(image.content_bounds(), Some((-1, -1, 3, 3)));
-        let LayerKind::Raster(bg) = &doc.layers[0].kind;
+        let bg = doc.layers[0].image().unwrap();
         assert!(!bg.has_pixels_outside());
         // Growing back brings the hidden pixels back
         doc.resize_canvas(4, 4, Anchor::CENTER, Color::BLACK);
-        let LayerKind::Raster(image) = &doc.layer(id).unwrap().kind;
+        let image = doc.layer(id).unwrap().image().unwrap();
         assert_eq!(image.pixel(0, 0), [1, 2, 3, 255]);
     }
 
@@ -815,5 +923,32 @@ mod tests {
         assert_eq!(doc.selected_layers(), ids);
         doc.deselect_layers();
         assert!(doc.selected_layers().is_empty());
+    }
+
+    #[test]
+    fn groups_composite_their_layers() {
+        // White background; a group holding a black layer
+        let mut doc = Document::new_with_background("t", 1, 1, Color::WHITE);
+        let group = doc.new_layer_id();
+        let child = doc.new_layer_id();
+        let mut black = Layer::raster(child, "black", TiledImage::filled(1, 1, [0, 0, 0, 255]));
+        black.parent = Some(group);
+        doc.layers.push(black);
+        doc.layers.push(Layer::group(group, "Group 1"));
+        // Pass Through at full opacity: as if not grouped
+        assert_eq!(&doc.composite_rgba8()[..4], &[0, 0, 0, 255]);
+        assert!(doc.is_shown(child));
+        // A hidden group hides its layers
+        doc.layer_mut(group).unwrap().visible = false;
+        assert_eq!(&doc.composite_rgba8()[..4], &[255, 255, 255, 255]);
+        assert!(!doc.is_shown(child));
+        assert_eq!(doc.layer_at(0, 0), Some(doc.layers[0].id));
+        // Half opacity: the group's result is blended in as one
+        let g = doc.layer_mut(group).unwrap();
+        g.visible = true;
+        g.opacity = 0.5;
+        assert_eq!(&doc.composite_rgba8()[..4], &[128, 128, 128, 255]);
+        assert_eq!(doc.descendants(group), [child]);
+        assert_eq!(doc.pixel_layers(&[group]), [child]);
     }
 }

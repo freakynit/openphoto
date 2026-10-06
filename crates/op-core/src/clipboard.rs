@@ -3,7 +3,7 @@
 
 use crate::document::Document;
 use crate::fill::{self, FillError};
-use crate::layer::{Layer, LayerId, LayerKind};
+use crate::layer::{Layer, LayerId};
 use crate::tile::TiledImage;
 
 /// Pixels on the clipboard.
@@ -40,6 +40,8 @@ pub enum ClipError {
     Locked,
     /// Nothing but transparent pixels in the copied area.
     Empty,
+    /// The active layer is a group.
+    Group,
 }
 
 impl ClipError {
@@ -48,6 +50,7 @@ impl ClipError {
             Self::NoLayer => FillError::NoLayer.message(command),
             Self::Hidden => FillError::Hidden.message(command),
             Self::Locked => FillError::Locked.message(command),
+            Self::Group => FillError::Group.message(command),
             Self::Empty => format!(
                 "Could not complete the {command} command because the selected area is empty."
             ),
@@ -60,6 +63,7 @@ impl From<FillError> for ClipError {
         match e {
             FillError::NoLayer => Self::NoLayer,
             FillError::Hidden => Self::Hidden,
+            FillError::Group => Self::Group,
             FillError::Locked => Self::Locked,
         }
     }
@@ -103,8 +107,7 @@ fn active_image(doc: &Document) -> Result<&TiledImage, ClipError> {
         .active_layer
         .and_then(|id| doc.layer(id))
         .ok_or(ClipError::NoLayer)?;
-    let LayerKind::Raster(image) = &layer.kind;
-    Ok(image)
+    layer.image().ok_or(ClipError::Group)
 }
 
 /// Edit > Copy: the selected pixels of the active layer.
@@ -213,7 +216,7 @@ mod tests {
         // 4×4 white background, with a red pixel at (1, 1)
         let mut doc = Document::new_with_background("t", 4, 4, Color::WHITE);
         let id = doc.active_layer.unwrap();
-        let LayerKind::Raster(image) = &mut doc.layer_mut(id).unwrap().kind;
+        let image = doc.layer_mut(id).unwrap().image_mut().unwrap();
         image.set_pixel(1, 1, [255, 0, 0, 255]);
         doc
     }
@@ -298,7 +301,7 @@ mod tests {
         assert_eq!(&px[12..16], [0, 0, 0, 255]);
         assert_eq!(&px[8..12], [255, 255, 255, 255]);
         // The second pixel landed past the right edge and is kept
-        let LayerKind::Raster(image) = &doc.layer(id).unwrap().kind;
+        let image = doc.layer(id).unwrap().image().unwrap();
         assert_eq!(image.pixel_at(2, 1), [9, 9, 9, 255]);
         assert_eq!(image.content_bounds(), Some((1, 1, 3, 2)));
     }

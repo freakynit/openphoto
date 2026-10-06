@@ -8,7 +8,6 @@
 
 use crate::document::Document;
 use crate::fill::FillError;
-use crate::layer::LayerKind;
 use crate::tile::TiledImage;
 
 /// What Filter > Other > Offset puts in the area uncovered by the shift.
@@ -398,7 +397,7 @@ pub fn apply(doc: &mut Document, filter: Filter, background: [u8; 3]) -> Result<
     let layer = doc.layer_mut(id).expect("checked");
     let keep_alpha = layer.is_background || layer.lock_transparency;
     let is_background = layer.is_background;
-    let LayerKind::Raster(image) = &mut layer.kind;
+    let image = layer.image_mut().expect("checked: not a group");
     let out = filtered(
         image,
         filter,
@@ -440,7 +439,7 @@ mod tests {
     fn doc() -> Document {
         let mut doc = Document::new_with_background("t", 5, 1, Color::WHITE);
         let id = doc.active_layer.unwrap();
-        let LayerKind::Raster(image) = &mut doc.layer_mut(id).unwrap().kind;
+        let image = doc.layer_mut(id).unwrap().image_mut().unwrap();
         image.set_pixel(2, 0, [0, 0, 0, 255]);
         doc
     }
@@ -534,7 +533,7 @@ mod tests {
         image.set_pixel(1, 0, [255, 0, 0, 255]);
         d.insert_above_active(Layer::raster(d.new_layer_id(), "Layer 1", image));
         apply(&mut d, Filter::BoxBlur { radius: 1 }, [255; 3]).unwrap();
-        let LayerKind::Raster(image) = &d.layers[1].kind;
+        let image = d.layers[1].image().unwrap();
         assert_eq!(image.pixel(0, 0), [255, 0, 0, 85]);
     }
 }

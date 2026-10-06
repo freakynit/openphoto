@@ -17,6 +17,7 @@ fn invalid(what: &str) -> IoError {
 
 const BLEND_KEYS: &[(BlendMode, &[u8; 4])] = &[
     (BlendMode::Normal, b"norm"),
+    (BlendMode::PassThrough, b"pass"),
     (BlendMode::Dissolve, b"diss"),
     (BlendMode::Darken, b"dark"),
     (BlendMode::Multiply, b"mul "),
@@ -148,6 +149,63 @@ impl Writer {
     }
 }
 
+/// What the layer records list, bottom to top: layers, and the divider
+/// that opens each group (below its layers).
+enum Record<'a> {
+    Layer(&'a op_core::Layer),
+    Divider,
+}
+
+/// The layer records in PSD order: before a group's bottom-most layer (or
+/// the group itself when empty) comes its divider; for nested groups the
+/// outer group's divider comes first.
+fn records(doc: &Document) -> Vec<Record<'_>> {
+    let index = |id| doc.layers.iter().position(|l| l.id == id);
+    let depth = |id: op_core::LayerId| {
+        let mut d = 0;
+        let mut parent = doc.layer(id).and_then(|l| l.parent);
+        while let Some(p) = parent {
+            d += 1;
+            parent = doc.layer(p).and_then(|l| l.parent);
+        }
+        d
+    };
+    // Each group's first record position, with its depth
+    let mut starts: Vec<(usize, usize)> = doc
+        .layers
+        .iter()
+        .filter(|g| g.is_group())
+        .map(|g| {
+            let first = doc
+                .descendants(g.id)
+                .into_iter()
+                .filter_map(index)
+                .chain(index(g.id))
+                .min()
+                .expect("the group itself");
+            (first, depth(g.id))
+        })
+        .collect();
+    starts.sort();
+    let mut out = Vec::new();
+    for (i, layer) in doc.layers.iter().enumerate() {
+        for _ in starts.iter().filter(|(first, _)| *first == i) {
+            out.push(Record::Divider);
+        }
+        out.push(Record::Layer(layer));
+    }
+    out
+}
+
+fn blend_key(mode: BlendMode) -> &'static [u8; 4] {
+    for &(m, key) in BLEND_KEYS {
+        if m == mode {
+            return key;
+        }
+    }
+    b"norm"
+}
+
 /// The four planes (alpha, red, green, blue) of a region of a layer, in
 /// canvas coordinates (it can reach outside the canvas).
 fn planes(image: &TiledImage, (x0, y0, x1, y1): (i64, i64, i64, i64)) -> [Vec<u8>; 4] {
@@ -205,14 +263,26 @@ pub fn write(doc: &Document) -> Vec<u8> {
     let layer_and_mask = out.length_slot();
     if !only_background {
         let layer_info = out.length_slot();
+        let records = records(doc);
         // Negative: the merged image's alpha holds the merged transparency
-        let count = doc.layers.len() as i16;
+        let count = records.len() as i16;
         out.i16(if opaque { count } else { -count });
         let mut channel_data: Vec<Vec<(u16, Vec<u8>)>> = Vec::new();
-        for layer in &doc.layers {
-            let LayerKind::Raster(image) = &layer.kind;
+        let divider = op_core::Layer::group(op_core::LayerId(0), "</Layer group>");
+        for record in &records {
+            let (layer, section) = match record {
+                Record::Layer(layer) => (*layer, None),
+                // Bottom of a group: an empty record named "</Layer group>"
+                Record::Divider => (&divider, Some(3u32)),
+            };
+            let section = section.or(match layer.kind {
+                LayerKind::Group { collapsed } => Some(if collapsed { 2 } else { 1 }),
+                LayerKind::Raster(_) => None,
+            });
             // The record covers the layer's non-transparent pixels,
             // including any outside the canvas (Photoshop keeps them too)
+            let empty = TiledImage::new(0, 0);
+            let image = layer.image().unwrap_or(&empty);
             let bounds = image.content_bounds();
             let (x0, y0, x1, y1) = bounds.unwrap_or((0, 0, 0, 0));
             out.i32(y0 as i32);
@@ -260,11 +330,7 @@ pub fn write(doc: &Document) -> Vec<u8> {
             channel_data.push(channels);
 
             out.bytes(b"8BIM");
-            let key = BLEND_KEYS
-                .iter()
-                .find(|(m, _)| *m == layer.blend_mode)
-                .map_or(b"norm", |(_, k)| *k);
-            out.bytes(key);
+            out.bytes(blend_key(layer.blend_mode));
             out.u8((layer.opacity * 255.0).round() as u8);
             out.u8(0); // clipping: base
             // Bit 3: bit 4 is meaningful (Photoshop 5 and later)
@@ -332,6 +398,20 @@ pub fn write(doc: &Document) -> Vec<u8> {
             out.u32(4);
             out.u8((layer.fill * 255.0).round() as u8);
             out.bytes(&[0; 3]);
+            // Groups: the section type (1 open, 2 closed, 3 the bottom
+            // divider), and for a folder its blend mode
+            if let Some(kind) = section {
+                out.bytes(b"8BIMlsct");
+                if kind == 3 {
+                    out.u32(4);
+                    out.u32(3);
+                } else {
+                    out.u32(12);
+                    out.u32(kind);
+                    out.bytes(b"8BIM");
+                    out.bytes(blend_key(layer.blend_mode));
+                }
+            }
             out.close(extra, 2);
         }
         for channels in channel_data {
@@ -438,8 +518,8 @@ struct LayerRecord {
     flags: u8,
     name: String,
     fill: u8,
-    /// A group's start or end marker ('lsct'), not a pixel layer.
-    divider: bool,
+    /// The `lsct` section type of a group record (1 open, 2 closed, 3 divider).
+    section: Option<u32>,
     mask: Option<MaskRecord>,
 }
 
@@ -543,7 +623,9 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                 let mut name = String::from_utf8_lossy(r.bytes(name_len)?).into_owned();
                 r.seek(name_start + ((name_len as u64 + 1).next_multiple_of(4)));
                 let mut fill = 255;
-                let mut divider = false;
+                // Group records: 1 open folder, 2 closed folder, 3 the
+                // divider at the group's bottom (0: a normal layer)
+                let mut section = None;
                 let mut label = 0u16;
                 while r.pos() + 12 <= extra_end {
                     let sig = r.take::<4>()?;
@@ -564,7 +646,7 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                         }
                         b"iOpa" => fill = r.u8()?,
                         b"lclr" => label = r.u16()?,
-                        b"lsct" | b"lsdk" => divider = true,
+                        b"lsct" | b"lsdk" => section = Some(r.u32()?),
                         _ => {}
                     }
                     r.seek(start + len);
@@ -578,11 +660,12 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                     flags,
                     name,
                     fill,
-                    divider,
+                    section,
                     mask,
                     label,
                 });
             }
+            let mut open_groups: Vec<usize> = Vec::new();
             for (i, rec) in records.iter().enumerate() {
                 let (top, left, bottom, right) = rec.rect;
                 let rows = (bottom - top).max(0) as usize;
@@ -607,7 +690,9 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                     };
                     planes[slot] = Some(read_channel(&mut r, len, rows, cols)?);
                 }
-                if rec.divider {
+                // A group's bottom: its layers follow until its folder record
+                if rec.section == Some(3) {
+                    open_groups.push(layers.len());
                     continue;
                 }
                 let mut image = TiledImage::new(w, h);
@@ -656,10 +741,24 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                 if i == 0 && rec.flags & 1 != 0 && (no_alpha || rec.name == "Background") {
                     layer.is_background = true;
                     // The background ends at the canvas
-                    let LayerKind::Raster(image) = &mut layer.kind;
-                    *image = image.clipped();
+                    if let Some(image) = layer.image_mut() {
+                        *image = image.clipped();
+                    }
                 } else {
                     layer.lock_transparency = rec.flags & 1 != 0;
+                }
+                if let Some(kind @ (1 | 2)) = rec.section {
+                    // The folder: the layers since its divider are in it
+                    layer.kind = LayerKind::Group {
+                        collapsed: kind == 2,
+                    };
+                    layer.lock_transparency = false;
+                    let start = open_groups.pop().unwrap_or(0);
+                    for child in &mut layers[start..] {
+                        if child.parent.is_none() {
+                            child.parent = Some(layer.id);
+                        }
+                    }
                 }
                 layers.push(layer);
             }
@@ -749,7 +848,7 @@ mod tests {
         assert_eq!((l.fill * 255.0).round(), 64.0);
         assert_eq!(l.blend_mode, BlendMode::Multiply);
         assert!(!l.visible);
-        let LayerKind::Raster(image) = &l.kind;
+        let image = l.image().unwrap();
         assert_eq!(image.pixel(2, 1), [255, 0, 0, 128]);
         assert_eq!(image.pixel(4, 3), [0, 0, 255, 255]);
         assert_eq!(image.pixel(0, 0), [0, 0, 0, 0]);
@@ -775,7 +874,7 @@ mod tests {
     fn a_lone_background_is_stored_as_the_merged_image() {
         let mut doc = Document::new_with_background("t.psd", 3, 2, Color::WHITE);
         let id = doc.active_layer.unwrap();
-        let LayerKind::Raster(image) = &mut doc.layer_mut(id).unwrap().kind;
+        let image = doc.layer_mut(id).unwrap().image_mut().unwrap();
         image.set_pixel(1, 1, [10, 20, 30, 255]);
         let back = read(&write(&doc), "t.psd".into()).unwrap();
         assert_eq!(back.layers.len(), 1);
@@ -822,8 +921,14 @@ mod photoshop_check {
         let doc = read(&std::fs::read(&path).unwrap(), "t".into()).unwrap();
         for l in &doc.layers {
             eprintln!(
-                "{} bg={} visible={} opacity={} color={:?}",
-                l.name, l.is_background, l.visible, l.opacity, l.color
+                "{} bg={} visible={} opacity={} color={:?} group={} parent={:?}",
+                l.name,
+                l.is_background,
+                l.visible,
+                l.opacity,
+                l.color,
+                l.is_group(),
+                l.parent.and_then(|p| doc.layer(p)).map(|p| p.name.clone())
             );
         }
         assert!(doc.layers[0].is_background);
@@ -840,7 +945,7 @@ mod photoshop_check {
         doc.layers
             .push(op_core::Layer::raster(id, "Layer 1", image));
         let back = read(&write(&doc), "t.psd".into()).unwrap();
-        let LayerKind::Raster(image) = &back.layers[1].kind;
+        let image = back.layers[1].image().unwrap();
         assert_eq!(image.content_bounds(), Some((-3, 1, 7, 6)));
         assert_eq!(image.pixel_at(-3, 1), [255, 0, 0, 255]);
         assert_eq!(image.pixel_at(6, 5), [0, 0, 255, 255]);
@@ -857,5 +962,81 @@ mod photoshop_check {
         let back = read(&write(&doc), "t.psd".into()).unwrap();
         assert_eq!(back.layers[0].color, op_core::LayerColor::None);
         assert_eq!(back.layers[1].color, op_core::LayerColor::Violet);
+    }
+
+    #[test]
+    fn groups_round_trip() {
+        // Background, then Outer { Inner { a }, b }, then c on top
+        let mut doc = Document::new_with_background("t", 4, 3, Color::WHITE);
+        let ids: Vec<op_core::LayerId> = (0..5).map(|_| doc.new_layer_id()).collect();
+        let (outer, inner, a, b, c) = (ids[0], ids[1], ids[2], ids[3], ids[4]);
+        let pixel = |id, name: &str, parent| {
+            let mut image = TiledImage::new(4, 3);
+            image.set_pixel(1, 1, [9, 9, 9, 255]);
+            let mut l = op_core::Layer::raster(id, name, image);
+            l.parent = parent;
+            l
+        };
+        let la = pixel(a, "a", Some(inner));
+        let lb = pixel(b, "b", Some(outer));
+        let lc = pixel(c, "c", None);
+        let mut g_inner = op_core::Layer::group(inner, "Inner");
+        g_inner.parent = Some(outer);
+        if let LayerKind::Group { collapsed } = &mut g_inner.kind {
+            *collapsed = true;
+        }
+        let mut g_outer = op_core::Layer::group(outer, "Outer");
+        g_outer.opacity = 0.5;
+        doc.layers.extend([la, g_inner, lb, g_outer, lc]);
+        let back = read(&write(&doc), "t.psd".into()).unwrap();
+        let names: Vec<&str> = back.layers.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Background", "a", "Inner", "b", "Outer", "c"]);
+        let by = |n: &str| back.layers.iter().find(|l| l.name == n).unwrap();
+        assert_eq!(by("a").parent, Some(by("Inner").id));
+        assert_eq!(by("Inner").parent, Some(by("Outer").id));
+        assert_eq!(by("b").parent, Some(by("Outer").id));
+        assert_eq!(by("Outer").parent, None);
+        assert_eq!(by("c").parent, None);
+        assert!(matches!(
+            by("Inner").kind,
+            LayerKind::Group { collapsed: true }
+        ));
+        assert!(matches!(
+            by("Outer").kind,
+            LayerKind::Group { collapsed: false }
+        ));
+        assert_eq!(by("Outer").blend_mode, BlendMode::PassThrough);
+        assert!((by("Outer").opacity - 0.5).abs() < 0.01);
+    }
+
+    /// Writes target/psd-check/groups.psd to open in Photoshop.
+    #[test]
+    #[ignore]
+    fn write_group_sample() {
+        let mut doc = Document::new_with_background("groups.psd", 64, 48, Color::WHITE);
+        let (outer, inner, a, b) = (
+            doc.new_layer_id(),
+            doc.new_layer_id(),
+            doc.new_layer_id(),
+            doc.new_layer_id(),
+        );
+        let mut image = TiledImage::new(64, 48);
+        for y in 10..30 {
+            for x in 10..30 {
+                image.set_pixel(x, y, [220, 30, 30, 255]);
+            }
+        }
+        let mut la = op_core::Layer::raster(a, "Red", image);
+        la.parent = Some(inner);
+        let mut lb = op_core::Layer::raster(b, "Empty", TiledImage::new(64, 48));
+        lb.parent = Some(outer);
+        let mut gi = op_core::Layer::group(inner, "Inner");
+        gi.parent = Some(outer);
+        let mut go = op_core::Layer::group(outer, "Outer");
+        go.opacity = 0.6;
+        doc.layers.extend([la, gi, lb, go]);
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/psd-check");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("groups.psd"), write(&doc)).unwrap();
     }
 }

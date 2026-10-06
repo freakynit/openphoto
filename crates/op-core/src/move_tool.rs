@@ -1,7 +1,7 @@
 //! The Move tool: shifting a layer's pixels, or only the selected ones.
 
 use crate::document::Document;
-use crate::layer::{LayerId, LayerKind};
+use crate::layer::LayerId;
 use crate::selection::Selection;
 use crate::tile::TiledImage;
 
@@ -11,6 +11,8 @@ pub enum MoveError {
     NoLayer,
     Locked,
     Hidden,
+    /// Moving selected pixels while a group is the active layer.
+    Group,
 }
 
 impl MoveError {
@@ -19,6 +21,7 @@ impl MoveError {
             Self::NoLayer => "Could not use the move tool because there is no layer.",
             Self::Locked => "Could not use the move tool because the layer is locked.",
             Self::Hidden => "Could not use the move tool because the target layer is hidden.",
+            Self::Group => "Could not use the move tool because the target layer is a group.",
         }
     }
 }
@@ -41,7 +44,7 @@ impl Move {
     pub fn begin(doc: &Document, background: [u8; 3]) -> Result<Self, MoveError> {
         let id = doc.active_layer.ok_or(MoveError::NoLayer)?;
         let layer = doc.layer(id).ok_or(MoveError::NoLayer)?;
-        if !layer.visible {
+        if !doc.is_shown(id) {
             return Err(MoveError::Hidden);
         }
         let selection = doc.selection().cloned();
@@ -50,26 +53,37 @@ impl Move {
         {
             return Err(MoveError::Locked);
         }
-        let LayerKind::Raster(image) = &layer.kind;
-        // Without a pixel selection, the other selected layers that can
-        // move go along (as in Photoshop)
-        let others = if selection.is_none() {
-            doc.selected_layers()
+        // Selected pixels only move on a pixel layer
+        if selection.is_some() && layer.is_group() {
+            return Err(MoveError::Group);
+        }
+        // Without a pixel selection, the other selected layers (and the
+        // layers in selected groups) that can move go along, as in Photoshop
+        let mut moving: Vec<(LayerId, TiledImage)> = if selection.is_none() {
+            doc.pixel_layers(&doc.selected_layers())
                 .into_iter()
-                .filter(|&other| other != id)
                 .filter_map(|other| doc.layer(other))
-                .filter(|l| l.visible && !l.is_background && !l.lock_position && !l.lock_pixels)
-                .map(|l| {
-                    let LayerKind::Raster(image) = &l.kind;
-                    (l.id, image.clone())
+                .filter(|l| {
+                    doc.is_shown(l.id) && !l.is_background && !l.lock_position && !l.lock_pixels
                 })
+                .filter_map(|l| Some((l.id, l.image()?.clone())))
                 .collect()
         } else {
             Vec::new()
         };
+        // The active layer leads (an empty group moves nothing)
+        let (main, image) = match layer.image() {
+            Some(image) => {
+                moving.retain(|(other, _)| *other != id);
+                (id, image.clone())
+            }
+            None if moving.is_empty() => return Err(MoveError::Locked),
+            None => moving.remove(0),
+        };
+        let others = moving;
         Ok(Self {
-            layer: id,
-            base: image.clone(),
+            layer: main,
+            base: image,
             selection,
             background_fill: layer.is_background.then_some(background),
             others,
@@ -126,13 +140,11 @@ impl Move {
                 out
             }
         };
-        if let Some(layer) = doc.layer_mut(self.layer) {
-            let LayerKind::Raster(image) = &mut layer.kind;
+        if let Some(image) = doc.layer_mut(self.layer).and_then(|l| l.image_mut()) {
             *image = moved;
         }
         for (id, base) in &self.others {
-            if let Some(layer) = doc.layer_mut(*id) {
-                let LayerKind::Raster(image) = &mut layer.kind;
+            if let Some(image) = doc.layer_mut(*id).and_then(|l| l.image_mut()) {
                 *image = base.with_canvas(w, h, dx, dy, [0; 4]);
             }
         }
@@ -178,7 +190,7 @@ mod tests {
     }
 
     fn px(doc: &Document, id: LayerId, x: u32, y: u32) -> [u8; 4] {
-        let LayerKind::Raster(img) = &doc.layer(id).unwrap().kind;
+        let img = doc.layer(id).unwrap().image().unwrap();
         img.pixel(x, y)
     }
 
@@ -213,7 +225,7 @@ mod tests {
         // The red dot at (2, 2) goes 5 px past the left edge...
         m.apply(&mut doc, -7, 0);
         assert_eq!(px(&doc, id, 0, 2)[3], 0);
-        let LayerKind::Raster(img) = &doc.layer(id).unwrap().kind;
+        let img = doc.layer(id).unwrap().image().unwrap();
         assert_eq!(img.pixel_at(-5, 2), [255, 0, 0, 255]);
         // ...and a second move brings it back
         let m = Move::begin(&doc, [0; 3]).unwrap();
@@ -228,14 +240,14 @@ mod tests {
         doc.set_selection(Some(Selection::rect(10, 10, Rect::new(0.0, 0.0, 5.0, 5.0))));
         let m = Move::begin(&doc, [0; 3]).unwrap();
         m.apply(&mut doc, 0, -4);
-        let LayerKind::Raster(img) = &doc.layer(id).unwrap().kind;
+        let img = doc.layer(id).unwrap().image().unwrap();
         assert_eq!(img.pixel_at(2, -2), [255, 0, 0, 255]);
 
         let mut doc = Document::new_with_background("t", 10, 10, Color::WHITE);
         doc.set_selection(Some(Selection::rect(10, 10, Rect::new(0.0, 0.0, 2.0, 2.0))));
         let m = Move::begin(&doc, [9, 9, 9]).unwrap();
         m.apply(&mut doc, -1, 0);
-        let LayerKind::Raster(img) = &doc.layers[0].kind;
+        let img = doc.layers[0].image().unwrap();
         assert!(!img.has_pixels_outside());
     }
 

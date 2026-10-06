@@ -8,6 +8,9 @@ pub struct LayerId(pub u64);
 pub enum BlendMode {
     #[default]
     Normal,
+    /// Groups only: the group's layers blend straight into what's below,
+    /// as if they weren't grouped.
+    PassThrough,
     Dissolve,
 
     Darken,
@@ -80,6 +83,7 @@ impl BlendMode {
     pub fn label(self) -> &'static str {
         match self {
             Self::Normal => "Normal",
+            Self::PassThrough => "Pass Through",
             Self::Dissolve => "Dissolve",
             Self::Darken => "Darken",
             Self::Multiply => "Multiply",
@@ -113,6 +117,12 @@ impl BlendMode {
 #[derive(Clone)]
 pub enum LayerKind {
     Raster(TiledImage),
+    /// A layer group (folder). Its layers follow it directly below in
+    /// `Document::layers`, each with `parent` set to the group's id.
+    Group {
+        /// Collapsed in the Layers panel (its layers not listed).
+        collapsed: bool,
+    },
 }
 
 /// A layer mask: white shows the layer, black hides it, grays partly.
@@ -238,6 +248,8 @@ pub struct Layer {
     pub kind: LayerKind,
     pub mask: Option<LayerMask>,
     pub color: LayerColor,
+    /// The group the layer is in, if any.
+    pub parent: Option<LayerId>,
 }
 
 impl Layer {
@@ -256,6 +268,35 @@ impl Layer {
             kind: LayerKind::Raster(image),
             mask: None,
             color: LayerColor::None,
+            parent: None,
+        }
+    }
+
+    /// A layer group (folder) with the given name.
+    pub fn group(id: LayerId, name: impl Into<String>) -> Self {
+        Self {
+            kind: LayerKind::Group { collapsed: false },
+            blend_mode: BlendMode::PassThrough,
+            ..Self::raster(id, name, TiledImage::new(0, 0))
+        }
+    }
+
+    pub fn is_group(&self) -> bool {
+        matches!(self.kind, LayerKind::Group { .. })
+    }
+
+    /// The layer's pixels; `None` for a group.
+    pub fn image(&self) -> Option<&TiledImage> {
+        match &self.kind {
+            LayerKind::Raster(image) => Some(image),
+            LayerKind::Group { .. } => None,
+        }
+    }
+
+    pub fn image_mut(&mut self) -> Option<&mut TiledImage> {
+        match &mut self.kind {
+            LayerKind::Raster(image) => Some(image),
+            LayerKind::Group { .. } => None,
         }
     }
 

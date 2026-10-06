@@ -3,7 +3,7 @@
 
 use crate::clipboard::{self, ClipError};
 use crate::document::Document;
-use crate::layer::{BlendMode, Layer, LayerId, LayerKind, LayerMask};
+use crate::layer::{BlendMode, Layer, LayerId, LayerMask};
 use crate::tile::TiledImage;
 
 /// Layer > Arrange.
@@ -79,8 +79,9 @@ pub fn duplicate_into(source: &Document, target: &mut Document, name: &str) -> O
     layer.name = name.to_string();
     layer.is_background = false;
     let (w, h) = (target.width, target.height);
-    let LayerKind::Raster(image) = &mut layer.kind;
-    *image = image.with_canvas(w, h, 0, 0, [0; 4]);
+    if let Some(image) = layer.image_mut() {
+        *image = image.with_canvas(w, h, 0, 0, [0; 4]);
+    }
     if let Some(mask) = &mut layer.mask {
         mask.image = mask.image.with_canvas(w, h, 0, 0, [255; 4]).clipped();
     }
@@ -455,7 +456,11 @@ pub fn apply_mask(doc: &mut Document) -> bool {
     let Some(mask) = layer.mask.take() else {
         return false;
     };
-    let crate::layer::LayerKind::Raster(image) = &mut layer.kind;
+    let Some(image) = layer.image_mut() else {
+        // A group's mask is just removed
+        doc.mark_dirty();
+        return true;
+    };
     if mask.enabled {
         for y in 0..h {
             for x in 0..w {
@@ -509,7 +514,6 @@ pub fn delete_hidden(doc: &mut Document) -> bool {
 mod tests {
     use super::*;
     use crate::color::Color;
-    use crate::layer::LayerKind;
     use crate::selection::{Rect, Selection};
 
     /// 4×4 white background plus "Layer 1" with a red pixel at (1, 1).
@@ -561,7 +565,7 @@ mod tests {
 
         doc.active_layer = Some(doc.layers[1].id);
         via_cut(&mut doc, [0, 0, 0]).unwrap();
-        let LayerKind::Raster(image) = &doc.layers[1].kind;
+        let image = doc.layers[1].image().unwrap();
         assert_eq!(image.pixel(1, 1)[3], 0);
         assert_eq!(doc.layers[2].name, "Layer 3");
     }
@@ -611,13 +615,13 @@ mod tests {
         // Painting white on the mask reveals the red pixel
         crate::fill::fill(&mut d, [255, 255, 255], Default::default()).unwrap();
         assert_eq!(pixel(&d, 1, 1), [255, 0, 0, 255]);
-        let LayerKind::Raster(image) = &d.layers[1].kind;
+        let image = d.layers[1].image().unwrap();
         assert_eq!(image.pixel(0, 0)[3], 0, "the layer's pixels are untouched");
         // Applying a half-gray mask halves the alpha
         crate::fill::fill(&mut d, [128, 128, 128], Default::default()).unwrap();
         assert!(apply_mask(&mut d));
         assert!(d.layers[1].mask.is_none() && !d.editing_mask());
-        let LayerKind::Raster(image) = &d.layers[1].kind;
+        let image = d.layers[1].image().unwrap();
         assert_eq!(image.pixel(1, 1)[3], 128);
 
         // From the selection
@@ -686,7 +690,7 @@ mod tests {
         let copied = duplicate_into(&a, &mut b, "From A").unwrap();
         assert_eq!(b.layers.len(), 2);
         assert_eq!(b.active_layer, Some(copied));
-        let LayerKind::Raster(image) = &b.layer(copied).unwrap().kind;
+        let image = b.layer(copied).unwrap().image().unwrap();
         assert_eq!(image.content_bounds(), Some((0, 0, 4, 4)));
 
         // To a new document
@@ -718,7 +722,7 @@ mod tests {
         let names: Vec<&str> = doc.layers.iter().map(|l| l.name.as_str()).collect();
         assert_eq!(names, ["Background", "B", "C"]);
         assert_eq!(doc.selected_layers(), [b]);
-        let LayerKind::Raster(image) = &doc.layer(b).unwrap().kind;
+        let image = doc.layer(b).unwrap().image().unwrap();
         assert_eq!(image.pixel(0, 0)[3], 255);
 
         doc.toggle_layer_selection(c);

@@ -288,8 +288,7 @@ impl DocState {
             None
         } else {
             let id = self.doc.active_layer?;
-            let op_core::LayerKind::Raster(image) = &self.doc.layer(id)?.kind;
-            Some(image)
+            Some(self.doc.layer(id)?.image()?)
         };
         let half = (size / 2) as i64;
         let mut sum = [0u64; 3];
@@ -420,8 +419,8 @@ impl DocState {
         let img = if mask {
             &l.mask.as_ref()?.image
         } else {
-            let op_core::LayerKind::Raster(img) = &l.kind;
-            img
+            // A group has no thumbnail of its own
+            l.image()?
         };
         let scale = (max_px as f32 / img.width().max(img.height()) as f32).min(1.0);
         let tw = ((img.width() as f32 * scale).round() as u32).max(1);

@@ -2,7 +2,7 @@
 
 use crate::blend;
 use crate::document::Document;
-use crate::layer::{BlendMode, LayerKind};
+use crate::layer::BlendMode;
 use crate::selection::Selection;
 use crate::tile::TiledImage;
 
@@ -12,6 +12,8 @@ pub enum FillError {
     NoLayer,
     Locked,
     Hidden,
+    /// The active layer is a group, which has no pixels.
+    Group,
 }
 
 impl FillError {
@@ -25,6 +27,9 @@ impl FillError {
             }
             Self::Hidden => format!(
                 "Could not complete the {command} command because the target layer is hidden."
+            ),
+            Self::Group => format!(
+                "Could not complete the {command} command because the target layer is a group."
             ),
         }
     }
@@ -61,6 +66,9 @@ fn target(doc: &Document) -> Result<crate::layer::LayerId, FillError> {
     }
     if layer.lock_pixels {
         return Err(FillError::Locked);
+    }
+    if layer.is_group() {
+        return Err(FillError::Group);
     }
     Ok(id)
 }
@@ -153,7 +161,7 @@ pub fn clear(doc: &mut Document, background: [u8; 3]) -> Result<(), FillError> {
     let selection = doc.selection().cloned();
     let (w, h) = (doc.width, doc.height);
     let layer = doc.layer_mut(id).expect("target layer exists");
-    let LayerKind::Raster(image) = &mut layer.kind;
+    let image = layer.image_mut().expect("checked: not a group");
     for y in 0..h {
         for x in 0..w {
             let amount = selection
@@ -209,8 +217,7 @@ pub fn magic_wand(doc: &Document, x: u32, y: u32, options: &BucketOptions) -> Op
         TiledImage::from_rgba8(doc.width, doc.height, &doc.composite_rgba8())
     } else {
         let layer = doc.active_layer.and_then(|id| doc.layer(id))?;
-        let LayerKind::Raster(image) = &layer.kind;
-        image.clone()
+        layer.image()?.clone()
     };
     Some(bucket_region(&source, x, y, options))
 }
@@ -226,8 +233,7 @@ pub fn grow(doc: &Document, options: &BucketOptions, contiguous: bool) -> Option
         TiledImage::from_rgba8(w, h, &doc.composite_rgba8())
     } else {
         let layer = doc.active_layer.and_then(|id| doc.layer(id))?;
-        let LayerKind::Raster(image) = &layer.kind;
-        image.clone()
+        layer.image()?.clone()
     };
     // The range of each channel among the (mostly) selected pixels
     let mut lo = [255i32; 4];
@@ -349,8 +355,8 @@ pub fn bucket(
     let source = if options.all_layers {
         TiledImage::from_rgba8(doc.width, doc.height, &doc.composite_rgba8())
     } else {
-        let LayerKind::Raster(image) = &doc.layer(id).expect("target layer exists").kind;
-        image.clone()
+        let layer = doc.layer(id).expect("target layer exists");
+        layer.image().expect("checked: not a group").clone()
     };
     let region = bucket_region(&source, x, y, &options);
     fill_masked(doc, color, options.fill, Some(&region))
@@ -367,7 +373,11 @@ mod tests {
     }
 
     fn px(doc: &Document, x: u32, y: u32) -> [u8; 4] {
-        let LayerKind::Raster(img) = &doc.layer(doc.active_layer.unwrap()).unwrap().kind;
+        let img = doc
+            .layer(doc.active_layer.unwrap())
+            .unwrap()
+            .image()
+            .unwrap();
         img.pixel(x, y)
     }
 
@@ -376,7 +386,7 @@ mod tests {
         // White canvas, black squares at 2..4 and 7..9 on one row
         let mut d = doc();
         let id = d.active_layer.unwrap();
-        let LayerKind::Raster(image) = &mut d.layer_mut(id).unwrap().kind;
+        let image = d.layer_mut(id).unwrap().image_mut().unwrap();
         for x in (2..4).chain(7..9) {
             image.set_pixel(x, 5, [0, 0, 0, 255]);
         }
@@ -398,7 +408,7 @@ mod tests {
     fn magic_wand_selects_the_clicked_area() {
         let mut d = doc();
         let id = d.active_layer.unwrap();
-        let LayerKind::Raster(image) = &mut d.layer_mut(id).unwrap().kind;
+        let image = d.layer_mut(id).unwrap().image_mut().unwrap();
         for y in 2..5 {
             for x in 2..5 {
                 image.set_pixel(x, y, [0, 0, 0, 255]);
@@ -516,7 +526,7 @@ mod tests {
 
     pub(super) fn set(d: &mut Document, x: u32, y: u32, rgba: [u8; 4]) {
         let id = d.active_layer.unwrap();
-        let LayerKind::Raster(img) = &mut d.layer_mut(id).unwrap().kind;
+        let img = d.layer_mut(id).unwrap().image_mut().unwrap();
         img.set_pixel(x, y, rgba);
     }
 

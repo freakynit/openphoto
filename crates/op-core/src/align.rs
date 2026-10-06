@@ -3,7 +3,7 @@
 //! evenly spread, as in Photoshop.
 
 use crate::document::Document;
-use crate::layer::{LayerId, LayerKind};
+use crate::layer::LayerId;
 
 /// Layer > Align.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -117,14 +117,18 @@ impl Distribute {
 type Bounds = (i64, i64, i64, i64);
 
 /// The selected layers that can move and have pixels, with their bounds.
+/// A group counts as one, with the box around its layers' pixels.
 fn movable(doc: &Document) -> Vec<(LayerId, Bounds)> {
     doc.selected_layers()
         .into_iter()
         .filter_map(|id| doc.layer(id))
         .filter(|l| !l.is_background && !l.lock_position && !l.lock_pixels)
         .filter_map(|l| {
-            let LayerKind::Raster(image) = &l.kind;
-            image.content_bounds().map(|b| (l.id, b))
+            doc.pixel_layers(&[l.id])
+                .into_iter()
+                .filter_map(|p| doc.layer(p)?.image()?.content_bounds())
+                .reduce(|a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3)))
+                .map(|b| (l.id, b))
         })
         .collect()
 }
@@ -134,9 +138,11 @@ fn shift(doc: &mut Document, id: LayerId, dx: i64, dy: i64) {
         return;
     }
     let (w, h) = (doc.width, doc.height);
-    if let Some(layer) = doc.layer_mut(id) {
-        let LayerKind::Raster(image) = &mut layer.kind;
-        *image = image.with_canvas(w, h, dx, dy, [0; 4]);
+    // A group moves with all its layers
+    for p in doc.pixel_layers(&[id]) {
+        if let Some(image) = doc.layer_mut(p).and_then(|l| l.image_mut()) {
+            *image = image.with_canvas(w, h, dx, dy, [0; 4]);
+        }
     }
 }
 
@@ -292,7 +298,7 @@ mod tests {
         assert!(align(&mut doc, Align::Bottom));
         assert!(distribute(&mut doc, Distribute::VerticalCenter));
         let bounds = |id| {
-            let LayerKind::Raster(image) = &doc.layer(id).unwrap().kind;
+            let image = doc.layer(id).unwrap().image().unwrap();
             image.content_bounds().unwrap()
         };
         assert_eq!(bounds(ids[0]), (10, 95, 30, 115));
@@ -316,7 +322,7 @@ mod tests {
         doc.select_all_layers();
         assert!(distribute(&mut doc, Distribute::Horizontally));
         let bounds = |doc: &Document, id| {
-            let LayerKind::Raster(image) = &doc.layer(id).unwrap().kind;
+            let image = doc.layer(id).unwrap().image().unwrap();
             image.content_bounds().unwrap()
         };
         // Gaps of 30 on both sides of the middle bar

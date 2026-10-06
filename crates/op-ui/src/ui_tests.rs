@@ -524,7 +524,7 @@ fn screenshot_main_window() {
 }
 
 fn layer_pixel(h: &Harness<'_, OpenPhotoApp>, layer: usize, x: u32, y: u32) -> [u8; 4] {
-    let op_core::LayerKind::Raster(image) = &active(h).doc.layers[layer].kind;
+    let image = active(h).doc.layers[layer].image().unwrap();
     image.pixel(x, y)
 }
 
@@ -2008,7 +2008,7 @@ fn align_buttons_line_up_selected_layers() {
         let state = h.state_mut().state.active().unwrap();
         crate::panels::new_layer(state);
         let id = state.doc.active_layer.unwrap();
-        let op_core::LayerKind::Raster(image) = &mut state.doc.layer_mut(id).unwrap().kind;
+        let image = state.doc.layer_mut(id).unwrap().image_mut().unwrap();
         for y in y0..y0 + 40 {
             for x in x0..x0 + 40 {
                 image.set_pixel(x, y, [255, 0, 0, 255]);
@@ -2029,7 +2029,7 @@ fn align_buttons_line_up_selected_layers() {
     let lefts: Vec<i64> = active(&h).doc.layers[1..]
         .iter()
         .map(|l| {
-            let op_core::LayerKind::Raster(image) = &l.kind;
+            let image = l.image().unwrap();
             image.content_bounds().unwrap().0
         })
         .collect();

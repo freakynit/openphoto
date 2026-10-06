@@ -132,7 +132,6 @@ pub fn add_shape_layer(
 mod tests {
     use super::*;
     use crate::color::Color;
-    use crate::layer::LayerKind;
 
     #[test]
     fn shapes_cover_their_box() {
@@ -172,7 +171,7 @@ mod tests {
         );
         let names: Vec<&str> = doc.layers.iter().map(|l| l.name.as_str()).collect();
         assert_eq!(names, ["Background", "Rectangle 1", "Rectangle 2"]);
-        let LayerKind::Raster(image) = &doc.layers[2].kind;
+        let image = doc.layers[2].image().unwrap();
         assert_eq!(image.pixel(6, 6), [0, 0, 255, 255]);
         // A zero-size shape adds nothing
         assert!(

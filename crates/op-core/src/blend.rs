@@ -43,7 +43,8 @@ pub fn blend(mode: BlendMode, cb: [f32; 3], cs: [f32; 3]) -> [f32; 3] {
     use BlendMode::*;
     let sep = |f: fn(f32, f32) -> f32| [f(cb[0], cs[0]), f(cb[1], cs[1]), f(cb[2], cs[2])];
     match mode {
-        Normal | Dissolve => cs,
+        // Pass Through only reaches here for a group composited as one
+        Normal | Dissolve | PassThrough => cs,
         Darken => sep(f32::min),
         Multiply => sep(|b, s| b * s),
         ColorBurn => sep(color_burn),

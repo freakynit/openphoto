@@ -3,7 +3,6 @@
 
 use crate::document::Document;
 use crate::fill::FillError;
-use crate::layer::LayerKind;
 
 /// A pixel adjustment with its settings.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -417,8 +416,11 @@ fn color_adjust(adjustment: Adjustment, px: [u8; 4]) -> [u8; 4] {
 /// darkest and lightest 0.1% stretched to 0–255.
 fn auto_tables(doc: &Document, per_channel: bool) -> [[u8; 256]; 3] {
     let mut hists = [[0u64; 256]; 3];
-    if let Some(layer) = doc.active_layer.and_then(|id| doc.layer(id)) {
-        let LayerKind::Raster(image) = &layer.kind;
+    if let Some(image) = doc
+        .active_layer
+        .and_then(|id| doc.layer(id))
+        .and_then(|l| l.image())
+    {
         let selection = doc.selection();
         for y in 0..doc.height {
             for x in 0..doc.width {
@@ -520,7 +522,9 @@ pub fn channel_histogram(doc: &Document) -> [u64; 256] {
     let Some(layer) = doc.active_layer.and_then(|id| doc.layer(id)) else {
         return hist;
     };
-    let LayerKind::Raster(image) = &layer.kind;
+    let Some(image) = layer.image() else {
+        return hist;
+    };
     let selection = doc.selection();
     for y in 0..doc.height {
         for x in 0..doc.width {
@@ -565,7 +569,9 @@ pub fn luminosity_histogram(doc: &Document) -> [u64; 256] {
     let Some(layer) = doc.active_layer.and_then(|id| doc.layer(id)) else {
         return hist;
     };
-    let LayerKind::Raster(image) = &layer.kind;
+    let Some(image) = layer.image() else {
+        return hist;
+    };
     let selection = doc.selection();
     for y in 0..doc.height {
         for x in 0..doc.width {
@@ -594,6 +600,9 @@ pub fn check(doc: &Document) -> Result<(), FillError> {
     }
     if layer.lock_pixels {
         return Err(FillError::Locked);
+    }
+    if layer.is_group() {
+        return Err(FillError::Group);
     }
     Ok(())
 }
@@ -656,7 +665,10 @@ pub fn apply(doc: &mut Document, adjustment: Adjustment) -> Result<(), FillError
     let selection = doc.selection().cloned();
     let (w, h) = (doc.width, doc.height);
     let id = doc.active_layer.expect("checked");
-    let LayerKind::Raster(image) = &mut doc.layer_mut(id).expect("checked").kind;
+    let image = doc
+        .layer_mut(id)
+        .and_then(|l| l.image_mut())
+        .expect("checked: not a group");
     for y in 0..h {
         for x in 0..w {
             let amount = selection.as_ref().map_or(255, |s| s.get(x, y));
@@ -692,7 +704,7 @@ mod tests {
     fn doc(px: [u8; 4]) -> Document {
         let mut doc = Document::new_with_background("t", 2, 1, Color::WHITE);
         let id = doc.active_layer.unwrap();
-        let LayerKind::Raster(image) = &mut doc.layer_mut(id).unwrap().kind;
+        let image = doc.layer_mut(id).unwrap().image_mut().unwrap();
         image.set_pixel(0, 0, px);
         doc
     }
@@ -732,7 +744,7 @@ mod tests {
         // Values 100 and 200 only: equalized to the middle and the top
         let mut d = doc([100, 100, 100, 255]);
         let id = d.active_layer.unwrap();
-        let LayerKind::Raster(image) = &mut d.layer_mut(id).unwrap().kind;
+        let image = d.layer_mut(id).unwrap().image_mut().unwrap();
         image.set_pixel(1, 0, [200, 200, 200, 255]);
         apply(&mut d, Adjustment::Equalize).unwrap();
         assert_eq!(first(&d), [128, 128, 128, 255]);
@@ -883,7 +895,7 @@ mod tests {
     fn auto_tone_stretches_each_channel() {
         let mut d = doc([50, 100, 150, 255]);
         let id = d.active_layer.unwrap();
-        let LayerKind::Raster(image) = &mut d.layer_mut(id).unwrap().kind;
+        let image = d.layer_mut(id).unwrap().image_mut().unwrap();
         image.set_pixel(1, 0, [100, 200, 250, 255]);
         apply(&mut d, Adjustment::AutoTone).unwrap();
         assert_eq!(first(&d), [0, 0, 0, 255]);

@@ -391,14 +391,13 @@ pub fn trim(doc: &mut Document, basis: TrimBasis, sides: TrimSides) -> bool {
 mod tests {
     use super::*;
     use crate::color::Color;
-    use crate::layer::LayerKind;
     use crate::selection::{Rect, Selection};
 
     /// 3×2 white background with red at (0, 0) and blue at (2, 1).
     fn doc() -> Document {
         let mut doc = Document::new_with_background("t", 3, 2, Color::WHITE);
         let id = doc.active_layer.unwrap();
-        let LayerKind::Raster(image) = &mut doc.layer_mut(id).unwrap().kind;
+        let image = doc.layer_mut(id).unwrap().image_mut().unwrap();
         image.set_pixel(0, 0, [255, 0, 0, 255]);
         image.set_pixel(2, 1, [0, 0, 255, 255]);
         doc
@@ -497,7 +496,7 @@ mod tests {
     fn resize_scales_layers_and_selection() {
         let mut d = Document::new_with_background("t", 4, 2, Color::WHITE);
         let id = d.active_layer.unwrap();
-        let LayerKind::Raster(image) = &mut d.layer_mut(id).unwrap().kind;
+        let image = d.layer_mut(id).unwrap().image_mut().unwrap();
         image.set_pixel(0, 0, RED);
         image.set_pixel(1, 0, RED);
         image.set_pixel(0, 1, RED);
@@ -514,7 +513,7 @@ mod tests {
         // Nearest neighbor doubling keeps hard edges
         let mut d = Document::new_with_background("t", 2, 1, Color::WHITE);
         let id = d.active_layer.unwrap();
-        let LayerKind::Raster(image) = &mut d.layer_mut(id).unwrap().kind;
+        let image = d.layer_mut(id).unwrap().image_mut().unwrap();
         image.set_pixel(0, 0, RED);
         resize(&mut d, 4, 2, Resample::NearestNeighbor);
         assert_eq!(pixel(&d, 1, 1), RED);
@@ -530,7 +529,7 @@ mod tests {
     fn trim_removes_borders_of_the_corner_color() {
         let mut d = Document::new_with_background("t", 5, 5, Color::WHITE);
         let id = d.active_layer.unwrap();
-        let LayerKind::Raster(image) = &mut d.layer_mut(id).unwrap().kind;
+        let image = d.layer_mut(id).unwrap().image_mut().unwrap();
         image.set_pixel(2, 1, RED);
         image.set_pixel(3, 3, RED);
         assert_eq!(
@@ -563,11 +562,11 @@ mod tests {
         doc.layers.push(crate::Layer::raster(id, "L", image));
         assert!(reveal_all(&mut doc, Color::BLACK));
         assert_eq!((doc.width, doc.height), (8, 7));
-        let LayerKind::Raster(image) = &doc.layer(id).unwrap().kind;
+        let image = doc.layer(id).unwrap().image().unwrap();
         assert_eq!(image.pixel(0, 1), [255, 0, 0, 255]);
         assert_eq!(image.pixel(7, 6), [0, 0, 255, 255]);
         // The background is extended with the background color
-        let LayerKind::Raster(bg) = &doc.layers[0].kind;
+        let bg = doc.layers[0].image().unwrap();
         assert_eq!(bg.pixel(0, 0), [0, 0, 0, 255]);
         assert_eq!(bg.pixel(2, 0), [255, 255, 255, 255]);
         assert!(!reveal_all(&mut doc, Color::BLACK));

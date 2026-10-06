@@ -100,7 +100,9 @@ pub fn fit_layers(state: &mut DocState, ppp: f32) {
     let Some(layer) = state.doc.active_layer.and_then(|id| state.doc.layer(id)) else {
         return;
     };
-    let op_core::LayerKind::Raster(image) = &layer.kind;
+    let Some(image) = layer.image() else {
+        return;
+    };
     let (w, h) = (state.doc.width, state.doc.height);
     let mut b: Option<(u32, u32, u32, u32)> = None;
     for y in 0..h {
@@ -1050,8 +1052,7 @@ fn stroke_kind(
     };
     let active_image = |state: &DocState| {
         let layer = state.doc.active_layer.and_then(|id| state.doc.layer(id))?;
-        let op_core::LayerKind::Raster(image) = &layer.kind;
-        Some(image.clone())
+        layer.image().cloned()
     };
     Ok(match tool {
         Tool::Eraser => StrokeKind::Erase {
@@ -1094,7 +1095,11 @@ fn stroke_kind(
                  a corresponding layer."
                     .to_string()
             })?;
-            let op_core::LayerKind::Raster(image) = &layer.kind;
+            let image = layer.image().ok_or_else(|| {
+                "Could not use the history brush because the history state does not contain \
+                 a corresponding layer."
+                    .to_string()
+            })?;
             if (image.width(), image.height()) != (state.doc.width, state.doc.height) {
                 return Err("Could not use the history brush because the history state \
                             does not contain a corresponding layer."
