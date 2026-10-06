@@ -147,22 +147,20 @@ pub fn bounds(doc: &Document) -> Result<(f32, f32, f32, f32), TransformError> {
     }
     let LayerKind::Raster(image) = &layer.kind;
     let (w, h) = (doc.width, doc.height);
-    let mut b: Option<(u32, u32, u32, u32)> = None;
-    for y in 0..h {
-        for x in 0..w {
-            let covered = image.pixel(x, y)[3] > 0 && selection.is_none_or(|s| s.get(x, y) > 0);
-            if covered {
-                b = Some(match b {
-                    None => (x, y, x + 1, y + 1),
-                    Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1)),
-                });
-            }
-        }
-    }
-    // With a selection, the box is the selection's (as in Photoshop)
     let b = match selection {
-        Some(s) if b.is_some() => s.bounds(),
-        _ => b,
+        // With a selection, the box is the selection's (as in Photoshop),
+        // once it covers some of the layer's pixels
+        Some(s) => {
+            let covered =
+                (0..h).any(|y| (0..w).any(|x| image.pixel(x, y)[3] > 0 && s.get(x, y) > 0));
+            covered
+                .then(|| s.bounds())
+                .flatten()
+                .map(|(x0, y0, x1, y1)| (x0 as i64, y0 as i64, x1 as i64, y1 as i64))
+        }
+        // Otherwise all of the layer's pixels, including those outside
+        // the canvas
+        None => image.content_bounds(),
     };
     let (x0, y0, x1, y1) = b.ok_or(TransformError::Empty)?;
     Ok((x0 as f32, y0 as f32, x1 as f32, y1 as f32))
@@ -199,26 +197,45 @@ fn sample(px: &[[f32; 4]], w: usize, h: usize, x: f32, y: f32) -> [f32; 4] {
 /// Applies `m` (source → destination, in document pixels) to the active
 /// layer. With a selection only the selected pixels move: the place they
 /// leave becomes transparent (the background color on the background
-/// layer), and the selection moves with them. Pixels moved off the canvas
-/// are lost.
+/// layer), and the selection moves with them. Pixels outside the canvas
+/// move too and stay on the layer, as in Photoshop; the background layer
+/// ends at the canvas.
 pub fn transform(doc: &mut Document, m: Affine, background: [u8; 3]) -> Result<(), TransformError> {
-    bounds(doc)?;
+    let src_box = bounds(doc)?;
     let inverse = m.inverse().ok_or(TransformError::Empty)?;
     let selection = doc.selection().cloned();
-    let (w, h) = (doc.width as usize, doc.height as usize);
+    let (cw, ch) = (doc.width as i64, doc.height as i64);
     let id = doc.active_layer.expect("checked");
     let layer = doc.layer_mut(id).expect("checked");
     let is_background = layer.is_background;
     let LayerKind::Raster(image) = &mut layer.kind;
 
+    // The region worked on: the canvas, the layer's pixels and where the
+    // box lands
+    let (bx0, by0, bx1, by1) = src_box;
+    let corners = [(bx0, by0), (bx1, by0), (bx1, by1), (bx0, by1)].map(|p| m.apply(p));
+    let fx0 = corners.iter().map(|c| c.0).fold(f32::MAX, f32::min).floor() as i64;
+    let fy0 = corners.iter().map(|c| c.1).fold(f32::MAX, f32::min).floor() as i64;
+    let fx1 = corners.iter().map(|c| c.0).fold(f32::MIN, f32::max).ceil() as i64;
+    let fy1 = corners.iter().map(|c| c.1).fold(f32::MIN, f32::max).ceil() as i64;
+    let (cx0, cy0, cx1, cy1) = image.content_bounds().unwrap_or((0, 0, cw, ch));
+    let (ux0, uy0) = (0.min(cx0).min(fx0), 0.min(cy0).min(fy0));
+    let (ux1, uy1) = (cw.max(cx1).max(fx1), ch.max(cy1).max(fy1));
+    let (w, h) = ((ux1 - ux0) as usize, (uy1 - uy0) as usize);
+
     // The moving pixels (premultiplied) and what stays behind (straight)
-    let raw = image.to_rgba8();
+    let raw = image.region_rgba8(ux0, uy0, w as u32, h as u32);
     let mut moving = vec![[0f32; 4]; w * h];
     let mut staying = raw.clone();
     for i in 0..w * h {
-        let m = selection.as_ref().map_or(1.0, |s| {
-            s.get((i % w) as u32, (i / w) as u32) as f32 / 255.0
-        });
+        let (x, y) = (ux0 + (i % w) as i64, uy0 + (i / w) as i64);
+        let m = match &selection {
+            None => 1.0,
+            Some(s) if x >= 0 && y >= 0 && x < cw && y < ch => {
+                s.get(x as u32, y as u32) as f32 / 255.0
+            }
+            Some(_) => 0.0,
+        };
         if m <= 0.0 {
             continue;
         }
@@ -239,8 +256,9 @@ pub fn transform(doc: &mut Document, m: Affine, background: [u8; 3]) -> Result<(
     let mut out = staying;
     for y in 0..h {
         for x in 0..w {
-            let (sx, sy) = inverse.apply((x as f32 + 0.5, y as f32 + 0.5));
-            let s = sample(&moving, w, h, sx, sy);
+            let (dx, dy) = ((ux0 + x as i64) as f32 + 0.5, (uy0 + y as i64) as f32 + 0.5);
+            let (sx, sy) = inverse.apply((dx, dy));
+            let s = sample(&moving, w, h, sx - ux0 as f32, sy - uy0 as f32);
             let sa = s[3] / 255.0;
             if sa <= 0.0 {
                 continue;
@@ -256,9 +274,13 @@ pub fn transform(doc: &mut Document, m: Affine, background: [u8; 3]) -> Result<(
             d[3] = (oa * 255.0).round() as u8;
         }
     }
-    *image = TiledImage::from_rgba8(w as u32, h as u32, &out);
+    *image = TiledImage::from_region(cw as u32, ch as u32, ux0, uy0, w as u32, h as u32, &out);
+    if is_background {
+        *image = image.clipped();
+    }
 
     if let Some(s) = selection {
+        let (w, h) = (cw as usize, ch as usize);
         let mut mask = vec![0u8; w * h];
         let src: Vec<[f32; 4]> = (0..w * h)
             .map(|i| {
@@ -394,5 +416,28 @@ mod tests {
         assert_eq!(image.pixel(5, 0), [0, 0, 255, 255]);
         assert_eq!(image.pixel(0, 0), [0, 255, 0, 255]);
         assert_eq!(d.selection().unwrap().bounds(), Some((5, 0, 6, 1)));
+    }
+
+    #[test]
+    fn transforming_takes_pixels_outside_the_canvas_along() {
+        let mut doc = Document::new_with_background("t", 10, 10, crate::Color::WHITE);
+        let id = doc.new_layer_id();
+        let mut image = TiledImage::new(10, 10);
+        // A 2 × 1 bar half outside the left edge
+        image.set_pixel_at(-1, 4, [255, 0, 0, 255]);
+        image.set_pixel_at(0, 4, [255, 0, 0, 255]);
+        doc.layers.push(crate::Layer::raster(id, "L", image));
+        doc.active_layer = Some(id);
+        assert_eq!(bounds(&doc), Ok((-1.0, 4.0, 1.0, 5.0)));
+        // Moving it right by 3 brings the outside pixel in
+        transform(&mut doc, Affine::translate(3.0, 0.0), [0; 3]).unwrap();
+        let LayerKind::Raster(image) = &doc.layer(id).unwrap().kind;
+        assert_eq!(image.pixel(2, 4), [255, 0, 0, 255]);
+        assert_eq!(image.pixel(3, 4), [255, 0, 0, 255]);
+        assert!(!image.has_pixels_outside());
+        // Moving it up by 8 puts it outside, where it is kept
+        transform(&mut doc, Affine::translate(0.0, -8.0), [0; 3]).unwrap();
+        let LayerKind::Raster(image) = &doc.layer(id).unwrap().kind;
+        assert_eq!(image.content_bounds(), Some((2, -4, 4, -3)));
     }
 }

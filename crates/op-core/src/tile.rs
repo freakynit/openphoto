@@ -346,6 +346,53 @@ impl TiledImage {
         out
     }
 
+    /// The pixels of the `w` × `h` region at (`x0`, `y0`), which may reach
+    /// outside the canvas, as a tightly packed RGBA8 buffer.
+    pub fn region_rgba8(&self, x0: i64, y0: i64, w: u32, h: u32) -> Vec<u8> {
+        let ts = TILE_SIZE as i64;
+        let (w, h) = (w as usize, h as usize);
+        let mut out = vec![0; w * h * 4];
+        for row in 0..h {
+            let y = y0 + row as i64;
+            let (ty, ry) = (y.div_euclid(ts) as i32, y.rem_euclid(ts));
+            let mut done = 0usize;
+            while done < w {
+                let x = x0 + done as i64;
+                let (tx, col) = (x.div_euclid(ts) as i32, x.rem_euclid(ts));
+                let n = ((ts - col) as usize).min(w - done);
+                if let Some(tile) = self.tile_at(tx, ty) {
+                    let i = ((ry * ts + col) * 4) as usize;
+                    let d = (row * w + done) * 4;
+                    out[d..d + n * 4].copy_from_slice(&tile.data[i..i + n * 4]);
+                }
+                done += n;
+            }
+        }
+        out
+    }
+
+    /// A `width` × `height` canvas holding only `pixels`, a tightly packed
+    /// RGBA8 buffer of the `w` × `h` region at (`x0`, `y0`), which may reach
+    /// outside the canvas.
+    pub fn from_region(
+        width: u32,
+        height: u32,
+        x0: i64,
+        y0: i64,
+        w: u32,
+        h: u32,
+        pixels: &[u8],
+    ) -> Self {
+        assert_eq!(pixels.len(), (w as usize) * (h as usize) * 4);
+        let mut out = Self::new(width, height);
+        let row = w as usize * 4;
+        for y in 0..h as usize {
+            out.write_span_at(x0, y0 + y as i64, &pixels[y * row..(y + 1) * row]);
+        }
+        out.drop_transparent_tiles();
+        out
+    }
+
     /// The whole image as a tightly packed RGBA8 buffer.
     pub fn to_rgba8(&self) -> Vec<u8> {
         let (w, h) = (self.width as usize, self.height as usize);
@@ -498,5 +545,19 @@ mod tests {
         assert_eq!(grown.pixel(3, 2), [9, 9, 9, 255]);
         assert_eq!(grown.pixel(2, 1), [1, 1, 1, 255]);
         assert!(!grown.has_pixels_outside());
+    }
+
+    #[test]
+    fn regions_reach_outside_the_canvas() {
+        let mut img = TiledImage::new(4, 4);
+        img.set_pixel_at(-1, -1, [1, 1, 1, 255]);
+        img.set_pixel_at(300, 2, [2, 2, 2, 255]);
+        let px = img.region_rgba8(-1, -1, 302, 4);
+        assert_eq!(&px[0..4], &[1, 1, 1, 255]);
+        let i = (3 * 302 + 301) * 4;
+        assert_eq!(&px[i..i + 4], &[2, 2, 2, 255]);
+        let back = TiledImage::from_region(4, 4, -1, -1, 302, 4, &px);
+        assert_eq!(back.content_bounds(), img.content_bounds());
+        assert_eq!(back.pixel_at(300, 2), [2, 2, 2, 255]);
     }
 }
