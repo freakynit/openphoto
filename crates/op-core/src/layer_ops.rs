@@ -255,6 +255,90 @@ pub fn merge_down(doc: &mut Document) -> bool {
     true
 }
 
+/// Whether Layer > Merge Layers (Cmd+E with several layers selected) can
+/// run: at least two of the selected layers are visible.
+pub fn can_merge_selected(doc: &Document) -> bool {
+    let selected = doc.selected_layers();
+    selected.len() > 1
+        && selected
+            .iter()
+            .filter(|&&id| doc.layer(id).is_some_and(|l| l.visible))
+            .count()
+            > 1
+}
+
+/// Layer > Merge Layers: the visible selected layers merged into one, in
+/// the topmost one's place and with its name (or into the background when
+/// it is among them). Hidden selected layers stay as they are.
+pub fn merge_selected(doc: &mut Document) -> bool {
+    if !can_merge_selected(doc) {
+        return false;
+    }
+    let selected = doc.selected_layers();
+    let merging: Vec<Layer> = doc
+        .layers
+        .iter()
+        .filter(|l| l.visible && selected.contains(&l.id))
+        .cloned()
+        .collect();
+    let target_id = merging
+        .iter()
+        .find(|l| l.is_background)
+        .or(merging.last())
+        .map(|l| l.id)
+        .expect("two or more");
+    let image = merged(doc, &merging);
+    doc.layers
+        .retain(|l| l.id == target_id || !merging.iter().any(|m| m.id == l.id));
+    let layer = doc.layer_mut(target_id).expect("kept");
+    layer.kind = crate::layer::LayerKind::Raster(image);
+    layer.mask = None;
+    layer.opacity = 1.0;
+    layer.fill = 1.0;
+    layer.blend_mode = BlendMode::Normal;
+    doc.select_layer(target_id);
+    doc.mark_dirty();
+    true
+}
+
+/// Deletes every selected layer, unless that would leave none. The layer
+/// below the lowest deleted one (else the lowest left) becomes active.
+pub fn delete_selected(doc: &mut Document) -> bool {
+    let selected = doc.selected_layers();
+    if selected.is_empty() || selected.len() >= doc.layers.len() {
+        return false;
+    }
+    let lowest = doc
+        .layers
+        .iter()
+        .position(|l| selected.contains(&l.id))
+        .expect("selected layers exist");
+    doc.layers.retain(|l| !selected.contains(&l.id));
+    let next = doc.layers[lowest.saturating_sub(1).min(doc.layers.len() - 1)].id;
+    doc.select_layer(next);
+    doc.mark_dirty();
+    true
+}
+
+/// Layer > Hide Layers / Show Layers: hides every selected layer, or shows
+/// them all when all are hidden. Returns whether they are now visible.
+pub fn toggle_selected_visibility(doc: &mut Document) -> Option<bool> {
+    let selected = doc.selected_layers();
+    if selected.is_empty() {
+        return None;
+    }
+    let show = selected
+        .iter()
+        .all(|&id| doc.layer(id).is_some_and(|l| !l.visible));
+    for id in selected {
+        if let Some(l) = doc.layer_mut(id) {
+            l.visible = show;
+        }
+    }
+    doc.mark_dirty();
+    Some(show)
+}
+
 /// Whether Layer > Merge Visible has anything to merge.
 pub fn can_merge_visible(doc: &Document) -> bool {
     doc.layers.iter().filter(|l| l.visible).count() > 1
@@ -611,5 +695,41 @@ mod tests {
         assert_eq!(c.layers.len(), 1);
         assert_eq!(c.layers[0].name, "Sky");
         assert_eq!(c.active_layer, Some(c.layers[0].id));
+    }
+
+    #[test]
+    fn selected_layers_merge_delete_and_hide() {
+        let mut doc = Document::new_with_background("t", 2, 1, crate::Color::WHITE);
+        let add = |doc: &mut Document, name: &str, px: [u8; 4]| {
+            let id = doc.new_layer_id();
+            let mut image = TiledImage::new(2, 1);
+            image.set_pixel(0, 0, px);
+            doc.layers.push(Layer::raster(id, name, image));
+            id
+        };
+        let a = add(&mut doc, "A", [255, 0, 0, 255]);
+        let b = add(&mut doc, "B", [0, 0, 255, 128]);
+        let c = add(&mut doc, "C", [0, 255, 0, 255]);
+        doc.select_layer(a);
+        doc.toggle_layer_selection(b);
+        assert!(can_merge_selected(&doc));
+        assert!(merge_selected(&mut doc));
+        // B (the top one) holds A and B merged; C is untouched
+        let names: Vec<&str> = doc.layers.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Background", "B", "C"]);
+        assert_eq!(doc.selected_layers(), [b]);
+        let LayerKind::Raster(image) = &doc.layer(b).unwrap().kind;
+        assert_eq!(image.pixel(0, 0)[3], 255);
+
+        doc.toggle_layer_selection(c);
+        assert_eq!(toggle_selected_visibility(&mut doc), Some(false));
+        assert!(!doc.layer(b).unwrap().visible && !doc.layer(c).unwrap().visible);
+        assert_eq!(toggle_selected_visibility(&mut doc), Some(true));
+
+        assert!(delete_selected(&mut doc));
+        assert_eq!(doc.layers.len(), 1);
+        assert_eq!(doc.active_layer, Some(doc.layers[0].id));
+        // The last layer can't go
+        assert!(!delete_selected(&mut doc));
     }
 }

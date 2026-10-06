@@ -3,6 +3,7 @@
 use egui::{Align, Color32, Layout, Pos2, Rect, Sense, Ui, Vec2};
 use op_tools::Tool;
 
+use crate::commands::Command;
 use crate::icons;
 use crate::ps_icons::Icon;
 use crate::state::{AppState, MarqueeStyle, SelectionMode};
@@ -871,9 +872,27 @@ fn move_options(ui: &mut Ui, app: &mut AppState) {
     for (g, group) in groups.into_iter().enumerate() {
         for &(x, icon, tip) in group {
             let rect = Rect::from_center_size(Pos2::new(start + pt(x), cy), button);
-            let enabled = icon == Icon::More;
+            use op_core::align::{Align, Distribute};
+            let command = match icon {
+                Icon::AlignLeft => Some(Command::Align(Align::Left)),
+                Icon::AlignHorizontalCenter => Some(Command::Align(Align::HorizontalCenter)),
+                Icon::AlignRight => Some(Command::Align(Align::Right)),
+                Icon::DistributeVertically => Some(Command::Distribute(Distribute::Vertically)),
+                Icon::AlignTop => Some(Command::Align(Align::Top)),
+                Icon::AlignVerticalCenter => Some(Command::Align(Align::VerticalCenter)),
+                Icon::AlignBottom => Some(Command::Align(Align::Bottom)),
+                Icon::DistributeHorizontally => Some(Command::Distribute(Distribute::Horizontally)),
+                _ => None,
+            };
+            // Enabled when Photoshop's are: two or more layers to line up
+            // (or a pixel selection), three or more to distribute
+            let enabled = command.is_none_or(|c| c.enabled(app));
             if enabled {
-                ps_button(ui, rect, icon).on_hover_text(tip);
+                let clicked = ps_button(ui, rect, icon).on_hover_text(tip).clicked();
+                if clicked && let Some(c) = command {
+                    let ctx = ui.ctx().clone();
+                    crate::commands::run(c, &ctx, app);
+                }
             } else {
                 // Drawn directly: a disabled Ui would fade Photoshop's gray
                 crate::ps_icons::paint(

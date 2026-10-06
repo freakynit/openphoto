@@ -485,10 +485,19 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) -> bool {
                 state.renaming = Some((id, l.name.clone()));
             }
         } else if response.clicked() {
-            state.doc.active_layer = Some(id);
             let p = response.interact_pointer_pos().unwrap_or_default();
-            let shift = ui.input(|i| i.modifiers.shift);
-            if mask_box.is_some_and(|b| b.contains(p)) {
+            let (shift, cmd) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
+            let on_mask = mask_box.is_some_and(|b| b.contains(p));
+            // Cmd-click adds or removes a layer, Shift-click selects a range
+            // (Shift on a mask thumbnail turns the mask off instead)
+            if cmd {
+                state.doc.toggle_layer_selection(id);
+            } else if shift && !on_mask {
+                state.doc.select_layer_range(id);
+            } else if !(shift && on_mask && state.doc.active_layer == Some(id)) {
+                state.doc.select_layer(id);
+            }
+            if on_mask {
                 if shift {
                     // Shift-click turns the mask off and on
                     match op_core::layer_ops::toggle_mask(&mut state.doc) {
@@ -511,7 +520,8 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) -> bool {
         }
 
         let thumb = state.layer_thumbnail(ui.ctx(), id, (THUMB_H * 3.0) as u32);
-        let selected = state.doc.active_layer == Some(id);
+        let selected = state.doc.is_layer_selected(id);
+        let active = state.doc.active_layer == Some(id);
         let Some(layer) = state.doc.layer(id) else {
             continue;
         };
@@ -614,7 +624,7 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) -> bool {
         // The edit target (pixels or mask) of the selected layer gets a
         // 1.5 pt white frame 0.5 pt outside its thumbnail (Photoshop 2026
         // leaves it off the background layer)
-        if selected && !layer.is_background {
+        if active && !layer.is_background {
             let target = match mask_box {
                 Some(mbox) if state.doc.mask_target => mbox,
                 _ => thumb_box,
@@ -753,7 +763,8 @@ fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) -> bool {
         .active_layer
         .and_then(|id| state.doc.layer(id))
         .is_some_and(|l| l.is_background);
-    let can_delete = state.doc.layers.len() > 1 && state.doc.active_layer.is_some();
+    let selected = state.doc.selected_layers().len();
+    let can_delete = selected > 0 && selected < state.doc.layers.len();
     let can_mask = op_core::layer_ops::can_add_mask(&state.doc);
     let buttons = [
         (222.5, Icon::FooterBrush, "", false),
@@ -808,11 +819,7 @@ fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) -> bool {
 /// Layer > Hide Layers / Show Layers. Like Photoshop's default, visibility
 /// changes are not recorded in the history.
 pub fn toggle_active_visibility(state: &mut DocState) {
-    let doc = &mut state.doc;
-    if let Some(layer) = doc.active_layer.and_then(|id| doc.layer_mut(id)) {
-        layer.visible = !layer.visible;
-        doc.mark_dirty();
-    }
+    op_core::layer_ops::toggle_selected_visibility(&mut state.doc);
 }
 
 /// The color a layer's color label shows in the Layers panel (behind the
@@ -881,20 +888,9 @@ pub fn new_layer(state: &mut DocState) {
     state.record("New Layer");
 }
 
+/// Deletes the selected layers (all of them when several are selected).
 pub fn delete_active_layer(state: &mut DocState) {
-    let doc = &mut state.doc;
-    let Some(active) = doc.active_layer else {
-        return;
-    };
-    let Some(i) = doc.layers.iter().position(|l| l.id == active) else {
-        return;
-    };
-    doc.layers.remove(i);
-    doc.active_layer = doc
-        .layers
-        .get(i.saturating_sub(1))
-        .or(doc.layers.first())
-        .map(|l| l.id);
-    doc.mark_dirty();
-    state.record("Delete Layer");
+    if op_core::layer_ops::delete_selected(&mut state.doc) {
+        state.record("Delete Layer");
+    }
 }

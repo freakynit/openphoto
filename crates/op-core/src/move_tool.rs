@@ -31,6 +31,9 @@ pub struct Move {
     selection: Option<Selection>,
     /// Background layer: the hole left behind gets the background color.
     background_fill: Option<[u8; 3]>,
+    /// Other selected layers moving along (without a pixel selection),
+    /// with their pixels when the move started.
+    others: Vec<(LayerId, TiledImage)>,
 }
 
 impl Move {
@@ -48,11 +51,28 @@ impl Move {
             return Err(MoveError::Locked);
         }
         let LayerKind::Raster(image) = &layer.kind;
+        // Without a pixel selection, the other selected layers that can
+        // move go along (as in Photoshop)
+        let others = if selection.is_none() {
+            doc.selected_layers()
+                .into_iter()
+                .filter(|&other| other != id)
+                .filter_map(|other| doc.layer(other))
+                .filter(|l| l.visible && !l.is_background && !l.lock_position && !l.lock_pixels)
+                .map(|l| {
+                    let LayerKind::Raster(image) = &l.kind;
+                    (l.id, image.clone())
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         Ok(Self {
             layer: id,
             base: image.clone(),
             selection,
             background_fill: layer.is_background.then_some(background),
+            others,
         })
     }
 
@@ -109,6 +129,12 @@ impl Move {
         if let Some(layer) = doc.layer_mut(self.layer) {
             let LayerKind::Raster(image) = &mut layer.kind;
             *image = moved;
+        }
+        for (id, base) in &self.others {
+            if let Some(layer) = doc.layer_mut(*id) {
+                let LayerKind::Raster(image) = &mut layer.kind;
+                *image = base.with_canvas(w, h, dx, dy, [0; 4]);
+            }
         }
         if let Some(sel) = &self.selection {
             doc.set_selection(Some(sel.with_canvas(w, h, dx, dy)));
@@ -223,5 +249,26 @@ mod tests {
         let bg = doc.layers[0].id;
         assert_eq!(px(&doc, bg, 0, 0), [9, 9, 9, 255]);
         assert_eq!(px(&doc, bg, 5, 5), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn selected_layers_move_together() {
+        let (mut doc, id) = doc_with_dot();
+        let other = doc.new_layer_id();
+        let mut img = TiledImage::new(10, 10);
+        img.set_pixel(5, 5, [0, 255, 0, 255]);
+        doc.layers.push(Layer::raster(other, "M", img));
+        // Select M and the background, then the dot's layer (active)
+        let bg = doc.layers[0].id;
+        doc.select_layer(other);
+        doc.toggle_layer_selection(bg);
+        doc.toggle_layer_selection(id);
+        assert_eq!(doc.active_layer, Some(id));
+        let m = Move::begin(&doc, [0; 3]).unwrap();
+        m.apply(&mut doc, 1, 2);
+        assert_eq!(px(&doc, id, 3, 4), [255, 0, 0, 255]);
+        assert_eq!(px(&doc, other, 6, 7), [0, 255, 0, 255]);
+        // The background is selected too but stays put
+        assert_eq!(px(&doc, bg, 0, 0), [255, 255, 255, 255]);
     }
 }

@@ -12,6 +12,7 @@ use muda::{
 
 use crate::commands::Command;
 use crate::state::AppState;
+use op_core::align::{Align, Distribute};
 
 const ALL_COMMANDS: &[Command] = &[
     Command::New,
@@ -108,6 +109,9 @@ const ALL_COMMANDS: &[Command] = &[
     Command::MaskApply,
     Command::MaskToggle,
     Command::SelectAll,
+    Command::DeselectLayers,
+    Command::SelectAllLayers,
+    Command::RenameLayer,
     Command::Deselect,
     Command::Reselect,
     Command::SelectInverse,
@@ -138,6 +142,20 @@ const ALL_COMMANDS: &[Command] = &[
     Command::ToggleInfo,
     Command::ToggleNavigator,
     Command::ToggleHistogram,
+    Command::Align(Align::Top),
+    Command::Align(Align::VerticalCenter),
+    Command::Align(Align::Bottom),
+    Command::Align(Align::Left),
+    Command::Align(Align::HorizontalCenter),
+    Command::Align(Align::Right),
+    Command::Distribute(Distribute::Top),
+    Command::Distribute(Distribute::VerticalCenter),
+    Command::Distribute(Distribute::Bottom),
+    Command::Distribute(Distribute::Left),
+    Command::Distribute(Distribute::HorizontalCenter),
+    Command::Distribute(Distribute::Right),
+    Command::Distribute(Distribute::Horizontally),
+    Command::Distribute(Distribute::Vertically),
 ];
 
 fn id(command: Command) -> String {
@@ -534,8 +552,49 @@ impl NativeMenu {
                 .expect("static menu definition is valid"),
                 &todo_sub("Combine Shapes"),
                 &sep(),
-                &todo_sub("Align"),
-                &todo_sub("Distribute"),
+                &Submenu::with_items(
+                    "Align",
+                    true,
+                    &[
+                        &item("Top Edges", Command::Align(Align::Top)) as &dyn IsMenuItem,
+                        &item("Vertical Centers", Command::Align(Align::VerticalCenter)),
+                        &item("Bottom Edges", Command::Align(Align::Bottom)),
+                        &sep(),
+                        &item("Left Edges", Command::Align(Align::Left)),
+                        &item(
+                            "Horizontal Centers",
+                            Command::Align(Align::HorizontalCenter),
+                        ),
+                        &item("Right Edges", Command::Align(Align::Right)),
+                    ],
+                )
+                .expect("submenu"),
+                &Submenu::with_items(
+                    "Distribute",
+                    true,
+                    &[
+                        &item("Top Edges", Command::Distribute(Distribute::Top)) as &dyn IsMenuItem,
+                        &item(
+                            "Vertical Centers",
+                            Command::Distribute(Distribute::VerticalCenter),
+                        ),
+                        &item("Bottom Edges", Command::Distribute(Distribute::Bottom)),
+                        &sep(),
+                        &item("Left Edges", Command::Distribute(Distribute::Left)),
+                        &item(
+                            "Horizontal Centers",
+                            Command::Distribute(Distribute::HorizontalCenter),
+                        ),
+                        &item("Right Edges", Command::Distribute(Distribute::Right)),
+                        &sep(),
+                        &item(
+                            "Horizontally",
+                            Command::Distribute(Distribute::Horizontally),
+                        ),
+                        &item("Vertically", Command::Distribute(Distribute::Vertically)),
+                    ],
+                )
+                .expect("submenu"),
                 &sep(),
                 &todo("Lock Layers...", Some("CmdOrCtrl+/")),
                 &sep(),
@@ -559,8 +618,8 @@ impl NativeMenu {
                 &item("Reselect", Command::Reselect),
                 &item("Inverse", Command::SelectInverse),
                 &sep(),
-                &todo("All Layers", Some("CmdOrCtrl+Alt+A")),
-                &todo("Deselect Layers", None),
+                &item("All Layers", Command::SelectAllLayers),
+                &item("Deselect Layers", Command::DeselectLayers),
                 &todo("Find Layers", Some("CmdOrCtrl+Shift+Alt+F")),
                 &todo("Isolate Layers", None),
                 &sep(),
@@ -971,16 +1030,25 @@ impl NativeMenu {
                         .map_or("Last Filter", |f| f.name())
                         .to_string(),
                 ),
+                // Merge Layers with several layers selected
+                Command::MergeDown => Some(
+                    if doc.is_some_and(|d| d.doc.selected_layers().len() > 1) {
+                        "Merge Layers"
+                    } else {
+                        "Merge Down"
+                    }
+                    .into(),
+                ),
                 Command::ToggleLayerVisibility => {
-                    let layer = doc.and_then(|d| d.doc.active_layer.and_then(|id| d.doc.layer(id)));
-                    Some(
-                        if layer.is_some_and(|l| !l.visible) {
-                            "Show Layers"
-                        } else {
-                            "Hide Layers"
-                        }
-                        .into(),
-                    )
+                    // Show Layers when every selected layer is hidden
+                    let hidden = doc.is_some_and(|d| {
+                        let selected = d.doc.selected_layers();
+                        !selected.is_empty()
+                            && selected
+                                .iter()
+                                .all(|&id| d.doc.layer(id).is_some_and(|l| !l.visible))
+                    });
+                    Some(if hidden { "Show Layers" } else { "Hide Layers" }.into())
                 }
                 _ => None,
             };

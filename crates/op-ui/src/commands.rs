@@ -83,6 +83,14 @@ pub enum Command {
     NewLayer,
     /// Alt+Shift+Cmd+N: a new layer without the dialog.
     NewLayerNoDialog,
+    /// Select > All Layers (Alt+Cmd+A): every layer but the background.
+    SelectAllLayers,
+    /// Layer > Align (and the Move tool's align buttons).
+    Align(op_core::align::Align),
+    /// Layer > Distribute.
+    Distribute(op_core::align::Distribute),
+    /// Select > Deselect Layers.
+    DeselectLayers,
     /// Layer > Rename Layer...: starts renaming the active layer in the
     /// Layers panel.
     RenameLayer,
@@ -378,7 +386,14 @@ impl Command {
             | Self::TransformRotate90CounterClockwise
             | Self::TransformFlipHorizontal
             | Self::TransformFlipVertical
-            | Self::RenameLayer => return None,
+            | Self::RenameLayer
+            | Self::DeselectLayers
+            | Self::Align(_)
+            | Self::Distribute(_) => return None,
+            Self::SelectAllLayers => Shortcut {
+                alt: true,
+                ..cmd(Key::A)
+            },
             Self::Rotate180
             | Self::Rotate90Clockwise
             | Self::Rotate90CounterClockwise
@@ -525,7 +540,16 @@ impl Command {
             Self::Revert => doc.is_some_and(|d| d.path.is_some() && d.is_dirty()),
             Self::Undo | Self::ToggleLastState => doc.is_some_and(|d| d.history.can_undo()),
             Self::Redo => doc.is_some_and(|d| d.history.can_redo()),
-            Self::DeleteLayer => doc.is_some_and(|d| d.doc.layers.len() > 1),
+            Self::DeleteLayer => doc.is_some_and(|d| {
+                let n = d.doc.selected_layers().len();
+                n > 0 && n < d.doc.layers.len()
+            }),
+            Self::SelectAllLayers => {
+                doc.is_some_and(|d| d.doc.layers.iter().any(|l| !l.is_background))
+            }
+            Self::DeselectLayers => doc.is_some_and(|d| d.doc.active_layer.is_some()),
+            Self::Align(_) => doc.is_some_and(|d| op_core::align::can_align(&d.doc)),
+            Self::Distribute(_) => doc.is_some_and(|d| op_core::align::can_distribute(&d.doc)),
             Self::CloseOthers => app.docs.len() > 1,
             Self::Deselect
             | Self::SelectInverse
@@ -578,7 +602,13 @@ impl Command {
                     let arrange = self.arrange().expect("arrange command");
                     layer_ops::arrange_target(&d.doc, arrange).is_some()
                 }),
-            Self::MergeDown => doc.is_some_and(|d| layer_ops::can_merge_down(&d.doc)),
+            Self::MergeDown => doc.is_some_and(|d| {
+                if d.doc.selected_layers().len() > 1 {
+                    layer_ops::can_merge_selected(&d.doc)
+                } else {
+                    layer_ops::can_merge_down(&d.doc)
+                }
+            }),
             Self::MergeVisible => doc.is_some_and(|d| layer_ops::can_merge_visible(&d.doc)),
             Self::FlattenImage => doc.is_some_and(|d| {
                 let layers = &d.doc.layers;
@@ -717,6 +747,7 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::Open,
     Command::Close,
     Command::ToggleLayerVisibility,
+    Command::SelectAllLayers,
     Command::SelectAll,
     Command::Deselect,
     Command::ZoomIn,
@@ -1249,8 +1280,27 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                     }
                 }
                 Command::MergeDown => {
-                    if layer_ops::merge_down(&mut state.doc) {
+                    // With several layers selected, Cmd+E is Merge Layers
+                    if state.doc.selected_layers().len() > 1 {
+                        if layer_ops::merge_selected(&mut state.doc) {
+                            state.record("Merge Layers");
+                        }
+                    } else if layer_ops::merge_down(&mut state.doc) {
                         state.record("Merge Down");
+                    }
+                }
+                Command::SelectAllLayers => {
+                    state.doc.select_all_layers();
+                }
+                Command::DeselectLayers => state.doc.deselect_layers(),
+                Command::Align(how) => {
+                    if op_core::align::align(&mut state.doc, how) {
+                        state.record(how.name());
+                    }
+                }
+                Command::Distribute(how) => {
+                    if op_core::align::distribute(&mut state.doc, how) {
+                        state.record(how.name());
                     }
                 }
                 Command::MergeVisible => {

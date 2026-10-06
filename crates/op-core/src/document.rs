@@ -90,6 +90,11 @@ pub struct Document {
     /// Edits go to the active layer's mask (its thumbnail was clicked in
     /// the Layers panel) rather than its pixels. Not part of the history.
     pub mask_target: bool,
+    /// Layers selected together in the Layers panel (Shift- or Cmd-click).
+    /// Only counts while it contains the active layer: setting
+    /// `active_layer` to another layer makes that the only selected one.
+    /// Not part of the history, like Photoshop's layer selection.
+    selected_layers: Vec<LayerId>,
     /// Quick Mask mode (Q): the selection as a gray image being painted
     /// (white selected, black not). Takes every pixel edit while on.
     pub quick_mask: Option<TiledImage>,
@@ -123,6 +128,7 @@ impl Document {
             selection_revision: 0,
             guides: Vec::new(),
             mask_target: false,
+            selected_layers: Vec::new(),
             quick_mask: None,
         }
     }
@@ -467,6 +473,88 @@ impl Document {
     ///
     /// Blending happens in gamma-encoded space, which is Photoshop's default,
     /// with each layer's blend mode (see [`crate::blend`]).
+    /// The selected layers, bottom to top: the multi-selection when it
+    /// includes the active layer, else just the active layer (or none).
+    pub fn selected_layers(&self) -> Vec<LayerId> {
+        let Some(active) = self.active_layer else {
+            return Vec::new();
+        };
+        if !self.selected_layers.contains(&active) {
+            return vec![active];
+        }
+        self.layers
+            .iter()
+            .map(|l| l.id)
+            .filter(|id| self.selected_layers.contains(id))
+            .collect()
+    }
+
+    /// Whether the layer is selected (alone or with others).
+    pub fn is_layer_selected(&self, id: LayerId) -> bool {
+        self.selected_layers().contains(&id)
+    }
+
+    /// A click on a layer: it alone is selected and active.
+    pub fn select_layer(&mut self, id: LayerId) {
+        self.active_layer = Some(id);
+        self.selected_layers = vec![id];
+    }
+
+    /// Cmd-click: adds the layer to the selection (and makes it active), or
+    /// takes it out; the last selected layer stays.
+    pub fn toggle_layer_selection(&mut self, id: LayerId) {
+        let mut selected = self.selected_layers();
+        if let Some(i) = selected.iter().position(|&s| s == id) {
+            if selected.len() == 1 {
+                return;
+            }
+            selected.remove(i);
+            if self.active_layer == Some(id) {
+                self.active_layer = selected.last().copied();
+            }
+        } else {
+            selected.push(id);
+            self.active_layer = Some(id);
+        }
+        self.selected_layers = selected;
+    }
+
+    /// Shift-click: selects every layer between the active one and `id`
+    /// (in the stack), and makes `id` active.
+    pub fn select_layer_range(&mut self, id: LayerId) {
+        let index = |l: Option<LayerId>| l.and_then(|l| self.layers.iter().position(|x| x.id == l));
+        let (Some(from), Some(to)) = (index(self.active_layer), index(Some(id))) else {
+            self.select_layer(id);
+            return;
+        };
+        let (a, b) = (from.min(to), from.max(to));
+        self.selected_layers = self.layers[a..=b].iter().map(|l| l.id).collect();
+        self.active_layer = Some(id);
+    }
+
+    /// Select > All Layers (Alt+Cmd+A): every layer but the background.
+    /// Returns false when there's no such layer.
+    pub fn select_all_layers(&mut self) -> bool {
+        let ids: Vec<LayerId> = self
+            .layers
+            .iter()
+            .filter(|l| !l.is_background)
+            .map(|l| l.id)
+            .collect();
+        let Some(&top) = ids.last() else {
+            return false;
+        };
+        self.selected_layers = ids;
+        self.active_layer = Some(top);
+        true
+    }
+
+    /// Select > Deselect Layers: no layer is selected.
+    pub fn deselect_layers(&mut self) {
+        self.selected_layers.clear();
+        self.active_layer = None;
+    }
+
     /// The topmost visible layer showing a pixel at (x, y): the Move tool's
     /// Auto-Select. Pixels hidden by the layer's mask or a zero opacity
     /// don't count.
@@ -691,5 +779,41 @@ mod tests {
         doc.resize_canvas(4, 4, Anchor::CENTER, Color::BLACK);
         let LayerKind::Raster(image) = &doc.layer(id).unwrap().kind;
         assert_eq!(image.pixel(0, 0), [1, 2, 3, 255]);
+    }
+
+    #[test]
+    fn layer_multi_selection() {
+        let mut doc = Document::new_with_background("t", 2, 2, Color::WHITE);
+        let bg = doc.layers[0].id;
+        let ids: Vec<LayerId> = (0..3)
+            .map(|i| {
+                let id = doc.new_layer_id();
+                doc.layers
+                    .push(Layer::raster(id, format!("L{i}"), TiledImage::new(2, 2)));
+                id
+            })
+            .collect();
+        doc.select_layer(ids[0]);
+        assert_eq!(doc.selected_layers(), [ids[0]]);
+        // Shift-click: a range, the clicked one active
+        doc.select_layer_range(ids[2]);
+        assert_eq!(doc.selected_layers(), ids);
+        assert_eq!(doc.active_layer, Some(ids[2]));
+        // Cmd-click takes one out (the active one: the last left becomes active)
+        doc.toggle_layer_selection(ids[2]);
+        assert_eq!(doc.selected_layers(), [ids[0], ids[1]]);
+        assert_eq!(doc.active_layer, Some(ids[1]));
+        // ...and puts it back, active
+        doc.toggle_layer_selection(bg);
+        assert_eq!(doc.selected_layers(), [bg, ids[0], ids[1]]);
+        assert_eq!(doc.active_layer, Some(bg));
+        // Setting the active layer directly makes it the only selected one
+        doc.active_layer = Some(ids[2]);
+        assert_eq!(doc.selected_layers(), [ids[2]]);
+        // All Layers leaves the background out
+        assert!(doc.select_all_layers());
+        assert_eq!(doc.selected_layers(), ids);
+        doc.deselect_layers();
+        assert!(doc.selected_layers().is_empty());
     }
 }

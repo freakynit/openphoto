@@ -73,6 +73,14 @@ pub fn click(harness: &mut Harness<'_, OpenPhotoApp>, pos: Pos2) {
     harness.run_steps(3);
 }
 
+/// A click with modifier keys held (Cmd-click, Shift-click).
+pub fn click_with(harness: &mut Harness<'_, OpenPhotoApp>, pos: Pos2, modifiers: Modifiers) {
+    harness.event(egui::Event::ModifiersChanged(modifiers));
+    click(harness, pos);
+    harness.event(egui::Event::ModifiersChanged(Modifiers::NONE));
+    harness.step();
+}
+
 pub fn double_click(harness: &mut Harness<'_, OpenPhotoApp>, pos: Pos2) {
     harness.hover_at(pos);
     for _ in 0..2 {
@@ -1947,4 +1955,85 @@ fn screenshot_alerts() {
     ));
     h.run_steps(3);
     shot(&mut h, "alert_caution");
+}
+
+#[test]
+fn layers_multi_selection() {
+    use crate::commands::Command;
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    for _ in 0..3 {
+        crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    }
+    h.run_steps(2);
+    // Rows 42.5 pt apart from 632: Layer 3, Layer 2, Layer 1, Background
+    let row = |k: f32| at_pt(1130.0, 652.0 + 42.5 * k);
+    let ids: Vec<op_core::LayerId> = active(&h).doc.layers.iter().map(|l| l.id).collect();
+    click(&mut h, row(0.0));
+    click_with(&mut h, row(1.0), Modifiers::COMMAND);
+    assert_eq!(active(&h).doc.selected_layers(), [ids[2], ids[3]]);
+    // Cmd+E with two selected merges them (Merge Layers)
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::E);
+    h.run_steps(2);
+    assert_eq!(layer_names(&h), ["Background", "Layer 1", "Layer 3"]);
+    assert_eq!(last_history(&h), "Merge Layers");
+    // Shift-click selects a range; Cmd+, hides them all
+    click(&mut h, row(0.0));
+    click_with(&mut h, row(1.0), Modifiers::SHIFT);
+    assert_eq!(active(&h).doc.selected_layers().len(), 2);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Comma);
+    h.run_steps(2);
+    assert!(active(&h).doc.layers[1..].iter().all(|l| !l.visible));
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Comma);
+    h.run_steps(2);
+    assert!(active(&h).doc.layers.iter().all(|l| l.visible));
+    // Alt+Cmd+A: every layer but the background; delete them with the footer
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, egui::Key::A);
+    h.run_steps(2);
+    assert_eq!(active(&h).doc.selected_layers().len(), 2);
+    click(&mut h, at_pt(1350.0 - 30.25, 787.5));
+    assert_eq!(layer_names(&h), ["Background"]);
+    run_command(&mut h, Command::DeselectLayers);
+    assert!(active(&h).doc.selected_layers().is_empty());
+}
+
+#[test]
+fn align_buttons_line_up_selected_layers() {
+    use crate::commands::Command;
+    use op_core::align::Distribute;
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    // Three layers with a 40 px square each, at different places
+    for (x0, y0) in [(100u32, 100u32), (200, 150), (300, 300)] {
+        let state = h.state_mut().state.active().unwrap();
+        crate::panels::new_layer(state);
+        let id = state.doc.active_layer.unwrap();
+        let op_core::LayerKind::Raster(image) = &mut state.doc.layer_mut(id).unwrap().kind;
+        for y in y0..y0 + 40 {
+            for x in x0..x0 + 40 {
+                image.set_pixel(x, y, [255, 0, 0, 255]);
+            }
+        }
+        state.doc.mark_dirty();
+    }
+    h.key_press(egui::Key::V);
+    h.run_steps(2);
+    // One layer: the align buttons are off
+    assert!(!Command::Align(op_core::align::Align::Left).enabled(&h.state().state));
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, egui::Key::A);
+    h.run_steps(2);
+    assert!(Command::Align(op_core::align::Align::Left).enabled(&h.state().state));
+    // The options bar's "Align left edges" (the first align button)
+    click(&mut h, at_pt(423.0, 45.0));
+    assert_eq!(last_history(&h), "Align Left Edges");
+    let lefts: Vec<i64> = active(&h).doc.layers[1..]
+        .iter()
+        .map(|l| {
+            let op_core::LayerKind::Raster(image) = &l.kind;
+            image.content_bounds().unwrap().0
+        })
+        .collect();
+    assert!(lefts.iter().all(|&x| x == lefts[0]), "{lefts:?}");
+    run_command(&mut h, Command::Distribute(Distribute::VerticalCenter));
+    assert_eq!(last_history(&h), "Distribute Vertical Centers");
 }
