@@ -233,7 +233,7 @@ pub fn write(doc: &Document) -> Vec<u8> {
             out.i32(x0 as i32);
             out.i32(y1 as i32);
             out.i32(x1 as i32);
-            out.u16(4);
+            out.u16(if layer.mask.is_some() { 5 } else { 4 });
             let (rows, cols) = ((y1 - y0) as usize, (x1 - x0) as usize);
             let mut channels = Vec::new();
             let plane_data = bounds.map(|b| planes(image, b));
@@ -248,6 +248,21 @@ pub fn write(doc: &Document) -> Vec<u8> {
                 out.i16(id);
                 out.u32(data.0.len() as u32);
                 channels.push((id as u16, data.0));
+            }
+            // The layer mask (channel -2) over the whole canvas
+            if let Some(mask) = &layer.mask {
+                let plane: Vec<u8> = (0..h)
+                    .flat_map(|y| (0..w).map(move |x| (x, y)))
+                    .map(|(x, y)| mask.value(x, y))
+                    .collect();
+                let mut data = Writer(Vec::new());
+                data.u16(1);
+                let (counts, bytes) = rle_channel(&plane, h as usize, w as usize);
+                counts.iter().for_each(|&c| data.u16(c));
+                data.bytes(&bytes);
+                out.i16(-2);
+                out.u32(data.0.len() as u32);
+                channels.push((-2i16 as u16, data.0));
             }
             channel_data.push(channels);
 
@@ -269,7 +284,21 @@ pub fn write(doc: &Document) -> Vec<u8> {
             out.u8(flags);
             out.u8(0);
             let extra = out.length_slot();
-            out.u32(0); // no layer mask
+            match &layer.mask {
+                Some(mask) => {
+                    // Layer mask data: its rectangle (the canvas), default
+                    // color outside it, flags (bit 1: disabled), padding
+                    out.u32(20);
+                    out.i32(0);
+                    out.i32(0);
+                    out.i32(h as i32);
+                    out.i32(w as i32);
+                    out.u8(255);
+                    out.u8(if mask.enabled { 0 } else { 2 });
+                    out.bytes(&[0, 0]);
+                }
+                None => out.u32(0),
+            }
             out.u32(0); // no blending ranges
             // Pascal name (MacRoman; non-ASCII becomes '?'), padded to 4
             let ascii: Vec<u8> = layer
@@ -402,6 +431,15 @@ struct LayerRecord {
     fill: u8,
     /// A group's start or end marker ('lsct'), not a pixel layer.
     divider: bool,
+    mask: Option<MaskRecord>,
+}
+
+/// A layer mask's record: its rectangle (top, left, bottom, right), the
+/// value outside it, and whether it is on.
+struct MaskRecord {
+    rect: (i32, i32, i32, i32),
+    default: u8,
+    enabled: bool,
 }
 
 pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
@@ -475,7 +513,20 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                 let extra_len = r.u32()? as u64;
                 let extra_end = r.pos() + extra_len;
                 let mask_len = r.u32()? as u64;
-                r.seek(r.pos() + mask_len);
+                let mask_end = r.pos() + mask_len;
+                let mask = if mask_len >= 18 {
+                    let rect = (r.i32()?, r.i32()?, r.i32()?, r.i32()?);
+                    let default = r.u8()?;
+                    let flags = r.u8()?;
+                    Some(MaskRecord {
+                        rect,
+                        default,
+                        enabled: flags & 2 == 0,
+                    })
+                } else {
+                    None
+                };
+                r.seek(mask_end);
                 let ranges_len = r.u32()? as u64;
                 r.seek(r.pos() + ranges_len);
                 let name_start = r.pos();
@@ -517,6 +568,7 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                     name,
                     fill,
                     divider,
+                    mask,
                 });
             }
             for (i, rec) in records.iter().enumerate() {
@@ -524,11 +576,18 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                 let rows = (bottom - top).max(0) as usize;
                 let cols = (right - left).max(0) as usize;
                 let mut planes: [Option<Vec<u8>>; 4] = Default::default();
+                let mut mask_plane = None;
                 for &(id, len) in &rec.channels {
                     let slot = match id {
                         -1 => 0,
                         0..=2 => id as usize + 1,
-                        // Layer masks (-2, -3): skipped
+                        -2 if rec.mask.is_some() => {
+                            let (t, l, b, rt) = rec.mask.as_ref().expect("checked").rect;
+                            let (mr, mc) = ((b - t).max(0) as usize, (rt - l).max(0) as usize);
+                            mask_plane = Some(read_channel(&mut r, len, mr, mc)?);
+                            continue;
+                        }
+                        // Vector and real user masks (-3): skipped
                         _ => {
                             r.seek(r.pos() + len as u64);
                             continue;
@@ -559,6 +618,20 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                     }
                 }
                 let mut layer = Layer::raster(doc.new_layer_id(), rec.name.clone(), image);
+                if let (Some(m), Some(plane)) = (&rec.mask, &mask_plane) {
+                    let (t, l, b, rt) = m.rect;
+                    let cols = (rt - l).max(0) as i64;
+                    let mut mask = op_core::LayerMask::from_values(w, h, |x, y| {
+                        let (mx, my) = (x as i64 - l as i64, y as i64 - t as i64);
+                        if mx < 0 || my < 0 || mx >= cols || my >= (b - t) as i64 {
+                            m.default
+                        } else {
+                            plane[(my * cols + mx) as usize]
+                        }
+                    });
+                    mask.enabled = m.enabled;
+                    layer.mask = Some(mask);
+                }
                 layer.visible = rec.flags & 2 == 0;
                 layer.opacity = rec.opacity as f32 / 255.0;
                 layer.fill = rec.fill as f32 / 255.0;
@@ -666,6 +739,21 @@ mod tests {
         assert_eq!(image.pixel(4, 3), [0, 0, 255, 255]);
         assert_eq!(image.pixel(0, 0), [0, 0, 0, 0]);
         assert_eq!(back.active_layer, Some(l.id));
+    }
+
+    #[test]
+    fn masks_round_trip() {
+        let mut doc = Document::new_with_background("t.psd", 4, 3, Color::WHITE);
+        let image = TiledImage::filled(4, 3, [255, 0, 0, 255]);
+        let mut layer = Layer::raster(doc.new_layer_id(), "Masked", image);
+        let mut mask = op_core::LayerMask::from_values(4, 3, |x, _| if x < 2 { 0 } else { 255 });
+        mask.enabled = false;
+        layer.mask = Some(mask);
+        doc.insert_above_active(layer);
+        let back = read(&write(&doc), "t.psd".into()).unwrap();
+        let mask = back.layers[1].mask.as_ref().unwrap();
+        assert!(!mask.enabled);
+        assert_eq!((mask.value(0, 1), mask.value(3, 2)), (0, 255));
     }
 
     #[test]

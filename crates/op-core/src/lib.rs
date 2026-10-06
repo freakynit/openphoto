@@ -25,7 +25,7 @@ pub mod transform;
 pub use color::Color;
 pub use document::{Anchor, DocId, Document, Guide, Snapshot};
 pub use history::History;
-pub use layer::{BlendMode, Layer, LayerId, LayerKind};
+pub use layer::{BlendMode, Layer, LayerId, LayerKind, LayerMask};
 pub use pixel::{BitDepth, ColorMode};
 pub use selection::{Selection, SelectionOp};
 pub use tile::{TILE_SIZE, Tile, TiledImage};

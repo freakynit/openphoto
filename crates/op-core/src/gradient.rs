@@ -4,7 +4,7 @@
 use crate::blend;
 use crate::document::Document;
 use crate::fill::FillError;
-use crate::layer::{BlendMode, LayerKind};
+use crate::layer::BlendMode;
 
 /// The gradient shape (the five buttons in the options bar).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -106,13 +106,18 @@ pub fn gradient(
     } else {
         colors
     };
-    let (c0, c1) = (c0.map(|v| v as f32 / 255.0), c1.map(|v| v as f32 / 255.0));
     let selection = doc.selection().cloned();
     let (w, h) = (doc.width, doc.height);
-    let id = doc.active_layer.expect("checked");
-    let layer = doc.layer_mut(id).expect("checked");
-    let keep_alpha = layer.is_background || layer.lock_transparency;
-    let LayerKind::Raster(image) = &mut layer.kind;
+    let target = doc.edit_target().expect("checked");
+    let keep_alpha = target.keep_alpha;
+    // On a mask the gradient runs between the colors' grays
+    let (c0, c1) = if target.mask {
+        (crate::adjust::mask_gray(c0), crate::adjust::mask_gray(c1))
+    } else {
+        (c0, c1)
+    };
+    let (c0, c1) = (c0.map(|v| v as f32 / 255.0), c1.map(|v| v as f32 / 255.0));
+    let image = target.image;
     for y in 0..h {
         for x in 0..w {
             let amount = options.opacity

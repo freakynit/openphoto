@@ -61,9 +61,42 @@ pub fn clipboard(command: Command, app: &mut AppState, ppp: f32) {
             };
             let (w, h) = (state.doc.width, state.doc.height);
             let visible = crate::document_view::visible_rect(state, ppp);
-            let in_place = command == Command::PasteInPlace;
-            let at = op_core::clipboard::placement(&clip, w, h, visible, in_place);
+            let into = matches!(command, Command::PasteInto | Command::PasteOutside);
+            // Paste Into / Outside: centered on the selection, masked by it
+            let at = match state
+                .doc
+                .selection()
+                .and_then(|s| s.bounds())
+                .filter(|_| into)
+            {
+                Some((x0, y0, x1, y1)) => (
+                    ((x0 + x1) as i64 - clip.width as i64) / 2,
+                    ((y0 + y1) as i64 - clip.height as i64) / 2,
+                ),
+                None => {
+                    let in_place = command == Command::PasteInPlace;
+                    op_core::clipboard::placement(&clip, w, h, visible, in_place)
+                }
+            };
+            let selection = state.doc.selection().cloned();
             op_core::clipboard::paste(&mut state.doc, &clip, at);
+            if into && let Some(s) = selection {
+                // The mask comes from the selection the paste replaced
+                state.doc.set_selection(Some(s));
+                let kind = if command == Command::PasteInto {
+                    op_core::layer_ops::NewMask::RevealSelection
+                } else {
+                    op_core::layer_ops::NewMask::HideSelection
+                };
+                op_core::layer_ops::add_mask(&mut state.doc, kind);
+                state.doc.set_selection(None);
+                state.record(if command == Command::PasteInto {
+                    "Paste Into"
+                } else {
+                    "Paste Outside"
+                });
+                return;
+            }
             state.record("Paste");
             return;
         }

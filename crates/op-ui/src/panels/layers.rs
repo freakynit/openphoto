@@ -10,6 +10,8 @@ use crate::widgets;
 
 const BOTTOM_BAR: f32 = 38.0;
 const THUMB: f32 = 44.0;
+/// Space between the layer and mask thumbnails (the link icon sits in it).
+const MASK_GAP: f32 = 16.0;
 
 pub fn show(ui: &mut Ui, app: &mut AppState) {
     let full = ui.max_rect();
@@ -242,6 +244,14 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
             Vec2::splat(24.0),
         );
         let is_background = state.doc.layer(id).is_some_and(|l| l.is_background);
+        let has_mask = state.doc.layer(id).is_some_and(|l| l.mask.is_some());
+        // The layer thumbnail, then the mask's (with a link icon between)
+        let thumb_box = Rect::from_center_size(
+            Pos2::new(eye_rect.right() + 10.0 + THUMB / 2.0, rect.center().y),
+            Vec2::splat(THUMB),
+        );
+        let mask_box = has_mask.then(|| thumb_box.translate(Vec2::new(THUMB + MASK_GAP, 0.0)));
+        let name_x = mask_box.unwrap_or(thumb_box).right() + 16.0;
         // Clicking the background's lock turns it into a regular layer
         let lock = is_background
             .then(|| ui.interact(lock_rect, ui.id().with(("lock", id.0)), Sense::click()));
@@ -258,7 +268,7 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
         } else if response.double_clicked()
             && response
                 .interact_pointer_pos()
-                .is_some_and(|p| p.x > eye_rect.right() + 10.0 + THUMB)
+                .is_some_and(|p| p.x > name_x - 16.0)
         {
             // Double-clicking the name renames the layer; on the background
             // it makes it a regular layer (Photoshop asks for a name first)
@@ -271,6 +281,23 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
             }
         } else if response.clicked() {
             state.doc.active_layer = Some(id);
+            let p = response.interact_pointer_pos().unwrap_or_default();
+            let shift = ui.input(|i| i.modifiers.shift);
+            if mask_box.is_some_and(|b| b.contains(p)) {
+                if shift {
+                    // Shift-click turns the mask off and on
+                    match op_core::layer_ops::toggle_mask(&mut state.doc) {
+                        Some(true) => state.record("Enable Layer Mask"),
+                        Some(false) => state.record("Disable Layer Mask"),
+                        None => {}
+                    }
+                } else {
+                    state.doc.mask_target = true;
+                }
+            } else {
+                // The layer itself (its thumbnail or name) is the target
+                state.doc.mask_target = false;
+            }
         }
         if (response.dragged() || response.drag_stopped())
             && let Some(p) = ui.ctx().pointer_latest_pos()
@@ -307,10 +334,11 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
             );
         }
 
-        let thumb_box = Rect::from_center_size(
-            Pos2::new(eye_rect.right() + 10.0 + THUMB / 2.0, rect.center().y),
-            Vec2::splat(THUMB),
-        );
+        let mask_thumb =
+            mask_box.and_then(|_| state.mask_thumbnail(ui.ctx(), id, (THUMB * 2.0) as u32));
+        let Some(layer) = state.doc.layer(id) else {
+            continue;
+        };
         if let Some(tex) = thumb {
             let size = tex.size_vec2();
             let scale = (THUMB / size.x).min(THUMB / size.y);
@@ -329,13 +357,58 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
                 StrokeKind::Outside,
             );
         }
+        if let (Some(mbox), Some(tex)) = (mask_box, mask_thumb) {
+            let size = tex.size_vec2();
+            let scale = (THUMB / size.x).min(THUMB / size.y);
+            let r = Rect::from_center_size(mbox.center(), size * scale);
+            painter.image(
+                tex.id(),
+                r,
+                Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+            painter.rect_stroke(
+                r,
+                0,
+                Stroke::new(1.0, color::SEPARATOR),
+                StrokeKind::Outside,
+            );
+            painter.text(
+                Pos2::new(thumb_box.right() + MASK_GAP / 2.0, rect.center().y),
+                Align2::CENTER_CENTER,
+                icons::LINK_SIMPLE,
+                theme::icon(12.0),
+                color::ICON,
+            );
+            // A disabled mask is crossed out in red
+            if layer.mask.as_ref().is_some_and(|m| !m.enabled) {
+                let red = Stroke::new(2.0, egui::Color32::from_rgb(0xe0, 0x30, 0x30));
+                painter.line_segment([r.left_top(), r.right_bottom()], red);
+                painter.line_segment([r.right_top(), r.left_bottom()], red);
+            }
+        }
+        // The edit target (pixels or mask) of the selected layer gets a
+        // white frame
+        if selected && let Some(mbox) = mask_box {
+            let target = if state.doc.mask_target {
+                mbox
+            } else {
+                thumb_box
+            };
+            painter.rect_stroke(
+                target.expand(2.0),
+                0,
+                Stroke::new(1.5, egui::Color32::WHITE),
+                StrokeKind::Outside,
+            );
+        }
 
         let font = if layer.is_background {
             egui::FontId::new(theme::font::BODY, egui::FontFamily::Proportional)
         } else {
             theme::body()
         };
-        let name_pos = Pos2::new(thumb_box.right() + 16.0, rect.center().y);
+        let name_pos = Pos2::new(name_x, rect.center().y);
         if state.renaming.as_ref().is_some_and(|(r, _)| *r == id) {
             rename_field(ui, state, id, name_pos, rect);
             continue;
@@ -464,15 +537,28 @@ fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) {
     {
         new_layer(state);
     }
-    for (icon, tip) in [
-        (icons::FOLDER_SIMPLE, "Create a new group"),
-        (icons::CIRCLE_HALF, "Create new fill or adjustment layer"),
-        (icons::SELECTION_BACKGROUND, "Add a mask"),
-        (icons::SPARKLE, "Add a layer style"),
-        (icons::LINK_SIMPLE, "Link layers"),
-    ] {
-        widgets::icon_button(&mut bar, icon, 30.0, false).on_hover_text(tip);
+    widgets::icon_button(&mut bar, icons::FOLDER_SIMPLE, 30.0, false)
+        .on_hover_text("Create a new group");
+    widgets::icon_button(&mut bar, icons::CIRCLE_HALF, 30.0, false)
+        .on_hover_text("Create new fill or adjustment layer");
+    // Add a mask: from the selection when there is one, as in Photoshop
+    let can_mask = op_core::layer_ops::can_add_mask(&state.doc);
+    let mask = bar.add_enabled_ui(can_mask, |ui| {
+        widgets::icon_button(ui, icons::SELECTION_BACKGROUND, 30.0, false)
+            .on_hover_text("Add a mask")
+    });
+    if mask.inner.clicked() {
+        let kind = if state.doc.selection().is_some() {
+            op_core::layer_ops::NewMask::RevealSelection
+        } else {
+            op_core::layer_ops::NewMask::RevealAll
+        };
+        if op_core::layer_ops::add_mask(&mut state.doc, kind) {
+            state.record("Add Layer Mask");
+        }
     }
+    widgets::icon_button(&mut bar, icons::SPARKLE, 30.0, false).on_hover_text("Add a layer style");
+    widgets::icon_button(&mut bar, icons::LINK_SIMPLE, 30.0, false).on_hover_text("Link layers");
 }
 
 /// Layer > Hide Layers / Show Layers. Like Photoshop's default, visibility

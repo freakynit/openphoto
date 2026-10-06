@@ -183,6 +183,12 @@ fn hue_saturation(px: [u8; 4], hue: i32, saturation: i32, lightness: i32) -> [u8
     [r, g, b, px[3]]
 }
 
+/// The gray a color paints on a layer mask (its luminosity).
+pub fn mask_gray([r, g, b]: [u8; 3]) -> [u8; 3] {
+    let l = luminosity([r, g, b, 255]);
+    [l, l, l]
+}
+
 /// Luminosity on Photoshop's 0–255 scale (Rec. 601 weights).
 pub fn luminosity([r, g, b, _]: [u8; 4]) -> u8 {
     ((r as u32 * 299 + g as u32 * 587 + b as u32 * 114 + 500) / 1000) as u8

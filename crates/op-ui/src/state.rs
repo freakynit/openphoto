@@ -76,7 +76,8 @@ pub struct DocState {
     /// Marching-ants outline of the selection, cached per selection revision.
     outline: Option<(u64, Arc<Vec<[u32; 4]>>)>,
     canvas: Option<Arc<CanvasImage>>,
-    thumbs: HashMap<LayerId, (u64, egui::TextureHandle)>,
+    /// Layer (and, with `true`, layer mask) thumbnails per revision.
+    thumbs: HashMap<(LayerId, bool), (u64, egui::TextureHandle)>,
     /// Thumbnail of the document as opened, for the History panel's snapshot
     /// row. Kept as pixels until a texture can be created.
     snapshot_thumb: Option<egui::ColorImage>,
@@ -280,14 +281,39 @@ impl DocState {
         layer: LayerId,
         max_px: u32,
     ) -> Option<egui::TextureHandle> {
+        self.thumbnail(ctx, layer, false, max_px)
+    }
+
+    /// Thumbnail of a layer's mask, if it has one.
+    pub fn mask_thumbnail(
+        &mut self,
+        ctx: &egui::Context,
+        layer: LayerId,
+        max_px: u32,
+    ) -> Option<egui::TextureHandle> {
+        self.thumbnail(ctx, layer, true, max_px)
+    }
+
+    fn thumbnail(
+        &mut self,
+        ctx: &egui::Context,
+        layer: LayerId,
+        mask: bool,
+        max_px: u32,
+    ) -> Option<egui::TextureHandle> {
         let rev = self.doc.revision();
-        if let Some((r, tex)) = self.thumbs.get(&layer)
+        if let Some((r, tex)) = self.thumbs.get(&(layer, mask))
             && *r == rev
         {
             return Some(tex.clone());
         }
         let l = self.doc.layer(layer)?;
-        let op_core::LayerKind::Raster(img) = &l.kind;
+        let img = if mask {
+            &l.mask.as_ref()?.image
+        } else {
+            let op_core::LayerKind::Raster(img) = &l.kind;
+            img
+        };
         let scale = (max_px as f32 / img.width().max(img.height()) as f32).min(1.0);
         let tw = ((img.width() as f32 * scale).round() as u32).max(1);
         let th = ((img.height() as f32 * scale).round() as u32).max(1);
@@ -302,11 +328,11 @@ impl DocState {
         }
         let image = egui::ColorImage::new([tw as usize, th as usize], pixels);
         let tex = ctx.load_texture(
-            format!("thumb-{}-{}", self.doc.id.0, layer.0),
+            format!("thumb-{}-{}-{mask}", self.doc.id.0, layer.0),
             image,
             egui::TextureOptions::LINEAR,
         );
-        self.thumbs.insert(layer, (rev, tex.clone()));
+        self.thumbs.insert((layer, mask), (rev, tex.clone()));
         Some(tex)
     }
 }

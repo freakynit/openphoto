@@ -86,6 +86,19 @@ pub struct Document {
     selection_revision: u64,
     /// Ruler guides; undoable like edits, as in Photoshop.
     pub guides: Vec<Guide>,
+    /// Edits go to the active layer's mask (its thumbnail was clicked in
+    /// the Layers panel) rather than its pixels. Not part of the history.
+    pub mask_target: bool,
+}
+
+/// Where pixel edits go: the active layer's pixels, or its mask.
+pub struct EditTarget<'a> {
+    pub image: &'a mut TiledImage,
+    /// The mask is being edited: colors become grays.
+    pub mask: bool,
+    /// Alpha must be kept: the background layer, locked transparency, or a
+    /// mask (always opaque).
+    pub keep_alpha: bool,
 }
 
 impl Document {
@@ -105,6 +118,7 @@ impl Document {
             last_selection: None,
             selection_revision: 0,
             guides: Vec::new(),
+            mask_target: false,
         }
     }
 
@@ -229,6 +243,10 @@ impl Document {
                 [0; 4]
             };
             *image = image.with_canvas(width, height, dx, dy, extension);
+            // New canvas areas are revealed by the mask
+            if let Some(mask) = &mut layer.mask {
+                mask.image = mask.image.with_canvas(width, height, dx, dy, [255; 4]);
+            }
         }
         for sel in [&mut self.selection, &mut self.last_selection]
             .into_iter()
@@ -260,6 +278,9 @@ impl Document {
         for layer in &mut self.layers {
             let LayerKind::Raster(img) = &mut layer.kind;
             *img = image(img);
+            if let Some(mask) = &mut layer.mask {
+                mask.image = image(&mask.image);
+            }
         }
         for sel in [&mut self.selection, &mut self.last_selection]
             .into_iter()
@@ -271,6 +292,37 @@ impl Document {
         self.width = width;
         self.height = height;
         self.mark_dirty();
+    }
+
+    /// Whether edits go to the active layer's mask.
+    pub fn editing_mask(&self) -> bool {
+        self.mask_target
+            && self
+                .active_layer
+                .and_then(|id| self.layer(id))
+                .is_some_and(|l| l.mask.is_some())
+    }
+
+    /// The image pixel edits (painting, fills, gradients) go to.
+    pub fn edit_target(&mut self) -> Option<EditTarget<'_>> {
+        let editing_mask = self.editing_mask();
+        let id = self.active_layer?;
+        let layer = self.layers.iter_mut().find(|l| l.id == id)?;
+        if editing_mask {
+            let mask = layer.mask.as_mut()?;
+            return Some(EditTarget {
+                image: &mut mask.image,
+                mask: true,
+                keep_alpha: true,
+            });
+        }
+        let keep_alpha = layer.is_background || layer.lock_transparency;
+        let LayerKind::Raster(image) = &mut layer.kind;
+        Some(EditTarget {
+            image,
+            mask: false,
+            keep_alpha,
+        })
     }
 
     pub fn selection(&self) -> Option<&Selection> {
@@ -342,11 +394,20 @@ impl Document {
             if layer_alpha <= 0.0 {
                 continue;
             }
+            let mask = layer.mask.as_ref().filter(|m| m.enabled);
 
             for ty in 0..image.tiles_y() {
                 for tx in 0..image.tiles_x() {
                     let Some(tile) = image.tile(tx, ty) else {
                         continue;
+                    };
+                    // The mask uses the same tile grid; a missing tile hides
+                    let mask_tile = match mask {
+                        Some(m) => match m.image.tile(tx, ty) {
+                            Some(t) => Some(t),
+                            None => continue,
+                        },
+                        None => None,
                     };
                     let (x0, y0) = ((tx * TILE_SIZE) as usize, (ty * TILE_SIZE) as usize);
                     let tw = (TILE_SIZE as usize).min(w - x0);
@@ -356,7 +417,10 @@ impl Document {
                         let dst_row = &mut out[((y0 + row) * w + x0) * 4..];
                         for col in 0..tw {
                             let s = &src_row[col * 4..col * 4 + 4];
-                            let sa = s[3] as f32 / 255.0 * layer_alpha;
+                            let m = mask_tile.map_or(1.0, |t| {
+                                t.data[(row * TILE_SIZE as usize + col) * 4] as f32 / 255.0
+                            });
+                            let sa = s[3] as f32 / 255.0 * layer_alpha * m;
                             if sa <= 0.0 {
                                 continue;
                             }

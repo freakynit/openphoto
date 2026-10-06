@@ -115,6 +115,46 @@ pub enum LayerKind {
     Raster(TiledImage),
 }
 
+/// A layer mask: white shows the layer, black hides it, grays partly.
+/// Stored as an opaque gray image (the value is in every color channel), so
+/// a plain white or black mask shares one tile across the whole canvas.
+#[derive(Clone)]
+pub struct LayerMask {
+    pub image: TiledImage,
+    /// Layer > Layer Mask > Disable: a disabled mask is kept but ignored.
+    pub enabled: bool,
+}
+
+impl LayerMask {
+    /// A mask of one value: 255 reveals everything, 0 hides everything.
+    pub fn filled(width: u32, height: u32, value: u8) -> Self {
+        Self {
+            image: TiledImage::filled(width, height, [value, value, value, 255]),
+            enabled: true,
+        }
+    }
+
+    /// A mask from per-pixel values (a selection's mask), row by row.
+    pub fn from_values(width: u32, height: u32, values: impl Fn(u32, u32) -> u8) -> Self {
+        let mut pixels = Vec::with_capacity((width * height * 4) as usize);
+        for y in 0..height {
+            for x in 0..width {
+                let v = values(x, y);
+                pixels.extend_from_slice(&[v, v, v, 255]);
+            }
+        }
+        Self {
+            image: TiledImage::from_rgba8(width, height, &pixels),
+            enabled: true,
+        }
+    }
+
+    /// The mask's value at a pixel (0 outside the image).
+    pub fn value(&self, x: u32, y: u32) -> u8 {
+        self.image.pixel(x, y)[0]
+    }
+}
+
 #[derive(Clone)]
 pub struct Layer {
     pub id: LayerId,
@@ -131,6 +171,7 @@ pub struct Layer {
     pub lock_pixels: bool,
     pub lock_position: bool,
     pub kind: LayerKind,
+    pub mask: Option<LayerMask>,
 }
 
 impl Layer {
@@ -147,6 +188,7 @@ impl Layer {
             lock_pixels: false,
             lock_position: false,
             kind: LayerKind::Raster(image),
+            mask: None,
         }
     }
 

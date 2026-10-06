@@ -70,14 +70,19 @@ fn fill_masked(
     options: FillOptions,
     mask: Option<&Selection>,
 ) -> Result<bool, FillError> {
-    let id = target(doc)?;
+    target(doc)?;
     let selection = doc.selection().cloned();
     let (w, h) = (doc.width, doc.height);
-    let layer = doc.layer_mut(id).expect("target layer exists");
-    // The background layer is always opaque; locked transparency keeps alpha
-    let keep_alpha =
-        layer.is_background || layer.lock_transparency || options.preserve_transparency;
-    let LayerKind::Raster(image) = &mut layer.kind;
+    let target = doc.edit_target().expect("target layer exists");
+    // The background layer and masks are always opaque; locked transparency
+    // keeps alpha
+    let keep_alpha = target.keep_alpha || options.preserve_transparency;
+    let color = if target.mask {
+        crate::adjust::mask_gray(color)
+    } else {
+        color
+    };
+    let image = target.image;
     let src = color.map(|v| v as f32 / 255.0);
     let mut changed = false;
     for y in 0..h {
@@ -133,7 +138,8 @@ pub fn fill(doc: &mut Document, color: [u8; 3], options: FillOptions) -> Result<
 pub fn clear(doc: &mut Document, background: [u8; 3]) -> Result<(), FillError> {
     let id = target(doc)?;
     let layer = doc.layer(id).expect("target layer exists");
-    if layer.is_background || layer.lock_transparency {
+    // A mask is cleared to the background color's gray
+    if layer.is_background || layer.lock_transparency || doc.editing_mask() {
         return fill(doc, background, FillOptions::default());
     }
     let selection = doc.selection().cloned();

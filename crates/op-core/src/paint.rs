@@ -130,6 +130,8 @@ impl StrokeError {
 
 pub struct Stroke {
     layer: LayerId,
+    /// The stroke paints on the layer's mask.
+    on_mask: bool,
     /// The layer's pixels before the stroke.
     base: TiledImage,
     coverage: HashMap<(u32, u32), Box<[f32]>>,
@@ -162,17 +164,36 @@ impl Stroke {
         if layer.lock_pixels {
             return Err(StrokeError::Locked);
         }
-        let LayerKind::Raster(image) = &layer.kind;
+        let on_mask = doc.editing_mask();
+        let (base, kind) = match (&layer.mask, on_mask) {
+            // On a mask colors become grays, and erasing paints the
+            // background color's gray
+            (Some(mask), true) => {
+                let kind = match kind {
+                    StrokeKind::Paint(c) => StrokeKind::Paint(crate::adjust::mask_gray(c)),
+                    StrokeKind::Erase { background } => StrokeKind::Erase {
+                        background: crate::adjust::mask_gray(background),
+                    },
+                    other => other,
+                };
+                (mask.image.clone(), kind)
+            }
+            _ => {
+                let LayerKind::Raster(image) = &layer.kind;
+                (image.clone(), kind)
+            }
+        };
         Ok(Self {
             layer: id,
-            base: image.clone(),
+            on_mask,
+            base,
             coverage: HashMap::new(),
             selection: doc.selection().cloned(),
             tip,
             kind,
             opacity: opacity.clamp(0.0, 1.0),
             flow: flow.clamp(0.0, 1.0),
-            preserve_alpha: layer.is_background || layer.lock_transparency,
+            preserve_alpha: on_mask || layer.is_background || layer.lock_transparency,
             last: None,
             since_dab: 0.0,
         })
@@ -217,7 +238,13 @@ impl Stroke {
         let Some(layer) = doc.layer_mut(self.layer) else {
             return;
         };
-        let LayerKind::Raster(image) = &mut layer.kind;
+        let image = match (&mut layer.mask, self.on_mask) {
+            (Some(mask), true) => &mut mask.image,
+            _ => {
+                let LayerKind::Raster(image) = &mut layer.kind;
+                image
+            }
+        };
         for y in y0..y1 {
             for x in x0..x1 {
                 let (px, py) = (x as f32 + 0.5 - cx, y as f32 + 0.5 - cy);

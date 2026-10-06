@@ -1256,3 +1256,44 @@ fn retouching_tools() {
     let restored = composite_pixel(&mut h, 400, 400);
     assert!(restored[0] <= 0x18 && restored[1] == 0x14, "{restored:?}");
 }
+
+#[test]
+fn layer_masks() {
+    use crate::commands::Command;
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    // A red layer over the dark background
+    crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    h.state_mut().state.foreground = Color::from_rgba8([255, 0, 0, 255]);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.run_steps(2);
+    // The background can't take a mask
+    assert!(Command::MaskRevealAll.enabled(&h.state().state));
+
+    // Hide Selection: the selected square shows the background through
+    select_rect(&mut h, 100.0, 100.0, 140.0, 140.0);
+    run_command(&mut h, Command::MaskHideSelection);
+    assert_eq!(last_history(&h), "Add Layer Mask");
+    assert!(active(&h).doc.editing_mask());
+    assert_eq!(composite_pixel(&mut h, 120, 120), [0x14, 0x14, 0x14, 255]);
+    assert_eq!(composite_pixel(&mut h, 300, 300), [255, 0, 0, 255]);
+    shot(&mut h, "layer_mask");
+
+    // Painting black on the mask hides more; the layer's pixels stay red
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::D);
+    select_rect(&mut h, 200.0, 200.0, 240.0, 240.0);
+    h.state_mut().state.foreground = Color::from_rgba8([0, 0, 0, 255]);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.run_steps(2);
+    assert_eq!(composite_pixel(&mut h, 220, 220), [0x14, 0x14, 0x14, 255]);
+    assert_eq!(layer_pixel(&h, 1, 220, 220), [255, 0, 0, 255]);
+
+    // Disabled, the mask shows everything; Apply bakes it into the layer
+    run_command(&mut h, Command::MaskToggle);
+    assert_eq!(last_history(&h), "Disable Layer Mask");
+    assert_eq!(composite_pixel(&mut h, 120, 120), [255, 0, 0, 255]);
+    run_command(&mut h, Command::MaskToggle);
+    run_command(&mut h, Command::MaskApply);
+    assert!(active(&h).doc.layers[1].mask.is_none());
+    assert_eq!(layer_pixel(&h, 1, 120, 120)[3], 0);
+}

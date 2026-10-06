@@ -3,7 +3,7 @@
 
 use crate::clipboard::{self, ClipError};
 use crate::document::Document;
-use crate::layer::{BlendMode, Layer, LayerId};
+use crate::layer::{BlendMode, Layer, LayerId, LayerMask};
 use crate::tile::TiledImage;
 
 /// Layer > Arrange.
@@ -199,6 +199,8 @@ pub fn merge_down(doc: &mut Document) -> bool {
     doc.layers.remove(i);
     let target = &mut doc.layers[i - 1];
     target.kind = crate::layer::LayerKind::Raster(image);
+    // Both layers' masks are in the merged pixels
+    target.mask = None;
     doc.active_layer = Some(target.id);
     doc.mark_dirty();
     true
@@ -230,6 +232,7 @@ pub fn merge_visible(doc: &mut Document) -> bool {
     doc.layers.retain(|l| !l.visible || l.id == target_id);
     let layer = doc.layer_mut(target_id).expect("kept");
     layer.kind = crate::layer::LayerKind::Raster(image);
+    layer.mask = None;
     layer.opacity = 1.0;
     layer.fill = 1.0;
     layer.blend_mode = BlendMode::Normal;
@@ -255,6 +258,100 @@ pub fn flatten(doc: &mut Document) {
     doc.active_layer = Some(layer.id);
     doc.layers = vec![layer];
     doc.mark_dirty();
+}
+
+/// Layer > Layer Mask > Reveal All / Hide All / Reveal Selection / Hide
+/// Selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NewMask {
+    RevealAll,
+    HideAll,
+    RevealSelection,
+    HideSelection,
+}
+
+/// Whether the active layer can get a mask: an existing, non-background
+/// layer without one.
+pub fn can_add_mask(doc: &Document) -> bool {
+    doc.active_layer
+        .and_then(|id| doc.layer(id))
+        .is_some_and(|l| !l.is_background && l.mask.is_none())
+}
+
+/// Adds a mask to the active layer and makes it the edit target, as in
+/// Photoshop. The selection kinds need a selection (and keep it).
+pub fn add_mask(doc: &mut Document, kind: NewMask) -> bool {
+    if !can_add_mask(doc) {
+        return false;
+    }
+    let (w, h) = (doc.width, doc.height);
+    let mask = match (kind, doc.selection()) {
+        (NewMask::RevealAll, _) => LayerMask::filled(w, h, 255),
+        (NewMask::HideAll, _) => LayerMask::filled(w, h, 0),
+        (NewMask::RevealSelection, Some(s)) => LayerMask::from_values(w, h, |x, y| s.get(x, y)),
+        (NewMask::HideSelection, Some(s)) => LayerMask::from_values(w, h, |x, y| 255 - s.get(x, y)),
+        _ => return false,
+    };
+    let id = doc.active_layer.expect("checked");
+    doc.layer_mut(id).expect("checked").mask = Some(mask);
+    doc.mask_target = true;
+    doc.mark_dirty();
+    true
+}
+
+/// Layer > Layer Mask > Delete: removes the mask without applying it.
+pub fn delete_mask(doc: &mut Document) -> bool {
+    let Some(layer) = doc.active_layer.and_then(|id| doc.layer_mut(id)) else {
+        return false;
+    };
+    if layer.mask.take().is_none() {
+        return false;
+    }
+    doc.mask_target = false;
+    doc.mark_dirty();
+    true
+}
+
+/// Layer > Layer Mask > Apply: the mask is multiplied into the layer's
+/// alpha and removed.
+pub fn apply_mask(doc: &mut Document) -> bool {
+    let (w, h) = (doc.width, doc.height);
+    let Some(layer) = doc.active_layer.and_then(|id| doc.layer_mut(id)) else {
+        return false;
+    };
+    let Some(mask) = layer.mask.take() else {
+        return false;
+    };
+    let crate::layer::LayerKind::Raster(image) = &mut layer.kind;
+    if mask.enabled {
+        for y in 0..h {
+            for x in 0..w {
+                let m = mask.value(x, y) as u32;
+                let px = image.pixel(x, y);
+                if m < 255 && px[3] > 0 {
+                    let a = (px[3] as u32 * m + 127) / 255;
+                    image.set_pixel(x, y, [px[0], px[1], px[2], a as u8]);
+                }
+            }
+        }
+    }
+    doc.mask_target = false;
+    doc.mark_dirty();
+    true
+}
+
+/// Layer > Layer Mask > Disable / Enable. Returns the new state, or `None`
+/// without a mask.
+pub fn toggle_mask(doc: &mut Document) -> Option<bool> {
+    let mask = doc
+        .active_layer
+        .and_then(|id| doc.layer_mut(id))?
+        .mask
+        .as_mut()?;
+    mask.enabled = !mask.enabled;
+    let enabled = mask.enabled;
+    doc.mark_dirty();
+    Some(enabled)
 }
 
 /// Layer > Delete > Hidden Layers. Returns whether any were deleted; the
@@ -362,6 +459,41 @@ mod tests {
         assert_eq!(doc.layers[2].name, "Sky");
         assert!(!rename(&mut doc, id, ""));
         assert!(!rename(&mut doc, id, "Sky"));
+    }
+
+    #[test]
+    fn masks_hide_reveal_and_apply() {
+        let mut d = doc();
+        // The background can't have a mask
+        d.active_layer = Some(d.layers[0].id);
+        assert!(!add_mask(&mut d, NewMask::RevealAll));
+        d.active_layer = Some(d.layers[1].id);
+        assert!(add_mask(&mut d, NewMask::HideAll));
+        assert!(d.editing_mask());
+        assert_eq!(pixel(&d, 1, 1), [255, 255, 255, 255]);
+        // Disabled, the mask is ignored
+        assert_eq!(toggle_mask(&mut d), Some(false));
+        assert_eq!(pixel(&d, 1, 1), [255, 0, 0, 255]);
+        toggle_mask(&mut d);
+        // Painting white on the mask reveals the red pixel
+        crate::fill::fill(&mut d, [255, 255, 255], Default::default()).unwrap();
+        assert_eq!(pixel(&d, 1, 1), [255, 0, 0, 255]);
+        let LayerKind::Raster(image) = &d.layers[1].kind;
+        assert_eq!(image.pixel(0, 0)[3], 0, "the layer's pixels are untouched");
+        // Applying a half-gray mask halves the alpha
+        crate::fill::fill(&mut d, [128, 128, 128], Default::default()).unwrap();
+        assert!(apply_mask(&mut d));
+        assert!(d.layers[1].mask.is_none() && !d.editing_mask());
+        let LayerKind::Raster(image) = &d.layers[1].kind;
+        assert_eq!(image.pixel(1, 1)[3], 128);
+
+        // From the selection
+        let mut d = doc();
+        d.set_selection(Some(Selection::rect(4, 4, Rect::new(0.0, 0.0, 1.0, 1.0))));
+        assert!(add_mask(&mut d, NewMask::HideSelection));
+        assert_eq!(d.layers[1].mask.as_ref().unwrap().value(0, 0), 0);
+        assert_eq!(d.layers[1].mask.as_ref().unwrap().value(1, 1), 255);
+        assert!(delete_mask(&mut d));
     }
 
     #[test]

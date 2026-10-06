@@ -105,6 +105,18 @@ pub enum Command {
     Paste,
     /// Edit > Paste Special > Paste in Place.
     PasteInPlace,
+    /// Edit > Paste Special > Paste Into: a new layer masked by the selection.
+    PasteInto,
+    /// Edit > Paste Special > Paste Outside: masked by the inverse.
+    PasteOutside,
+    MaskRevealAll,
+    MaskHideAll,
+    MaskRevealSelection,
+    MaskHideSelection,
+    MaskDelete,
+    MaskApply,
+    /// Layer > Layer Mask > Disable / Enable.
+    MaskToggle,
     SelectAll,
     Deselect,
     Reselect,
@@ -281,6 +293,18 @@ impl Command {
             Self::CopyMerged => shift_cmd(Key::C),
             Self::Paste => cmd(Key::V),
             Self::PasteInPlace => shift_cmd(Key::V),
+            Self::PasteInto => Shortcut {
+                alt: true,
+                ..shift_cmd(Key::V)
+            },
+            Self::PasteOutside
+            | Self::MaskRevealAll
+            | Self::MaskHideAll
+            | Self::MaskRevealSelection
+            | Self::MaskHideSelection
+            | Self::MaskDelete
+            | Self::MaskApply
+            | Self::MaskToggle => return None,
             Self::SelectAll => cmd(Key::A),
             Self::Deselect => cmd(Key::D),
             Self::Reselect => shift_cmd(Key::D),
@@ -455,6 +479,21 @@ impl Command {
                 doc.is_some_and(|d| d.doc.selection().is_some() && d.doc.active_layer.is_some())
             }
             Self::Crop => doc.is_some_and(|d| d.doc.selection().is_some()),
+            Self::PasteInto | Self::PasteOutside => {
+                doc.is_some_and(|d| d.doc.selection().is_some())
+            }
+            Self::MaskRevealAll | Self::MaskHideAll => {
+                doc.is_some_and(|d| layer_ops::can_add_mask(&d.doc))
+            }
+            Self::MaskRevealSelection | Self::MaskHideSelection => {
+                doc.is_some_and(|d| layer_ops::can_add_mask(&d.doc) && d.doc.selection().is_some())
+            }
+            Self::MaskDelete | Self::MaskApply | Self::MaskToggle => doc.is_some_and(|d| {
+                d.doc
+                    .active_layer
+                    .and_then(|id| d.doc.layer(id))
+                    .is_some_and(|l| l.mask.is_some())
+            }),
             Self::TransformAgain => doc.is_some() && app.last_transform.is_some(),
             Self::LastFilter => doc.is_some() && app.last_filter.is_some(),
             Self::LayerFromBackground => doc.is_some_and(|d| d.doc.has_background()),
@@ -547,6 +586,7 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::SaveACopy,
     Command::Revert,
     Command::LastFilter,
+    Command::PasteInto,
     Command::CopyMerged,
     Command::PasteInPlace,
     Command::LayerViaCut,
@@ -649,6 +689,7 @@ pub fn from_shortcuts(ctx: &egui::Context, app: &AppState) -> Vec<Command> {
                     egui::Event::Cut => Command::Cut,
                     egui::Event::Copy if shift => Command::CopyMerged,
                     egui::Event::Copy => Command::Copy,
+                    egui::Event::Paste(_) if shift && i.modifiers.alt => Command::PasteInto,
                     egui::Event::Paste(_) if shift => Command::PasteInPlace,
                     egui::Event::Paste(_) => Command::Paste,
                     _ => continue,
@@ -725,7 +766,9 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
         | Command::Copy
         | Command::CopyMerged
         | Command::Paste
-        | Command::PasteInPlace => actions::clipboard(command, app, ppp),
+        | Command::PasteInPlace
+        | Command::PasteInto
+        | Command::PasteOutside => actions::clipboard(command, app, ppp),
         Command::LayerViaCopy | Command::LayerViaCut => {
             let [r, g, b, _] = app.background.to_rgba8();
             let Some(state) = app.active_doc.and_then(|id| app.docs.get_mut(&id)) else {
@@ -973,6 +1016,35 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                         state.record("Crop");
                     }
                 }
+                Command::MaskRevealAll
+                | Command::MaskHideAll
+                | Command::MaskRevealSelection
+                | Command::MaskHideSelection => {
+                    let kind = match command {
+                        Command::MaskRevealAll => layer_ops::NewMask::RevealAll,
+                        Command::MaskHideAll => layer_ops::NewMask::HideAll,
+                        Command::MaskRevealSelection => layer_ops::NewMask::RevealSelection,
+                        _ => layer_ops::NewMask::HideSelection,
+                    };
+                    if layer_ops::add_mask(&mut state.doc, kind) {
+                        state.record("Add Layer Mask");
+                    }
+                }
+                Command::MaskDelete => {
+                    if layer_ops::delete_mask(&mut state.doc) {
+                        state.record("Delete Layer Mask");
+                    }
+                }
+                Command::MaskApply => {
+                    if layer_ops::apply_mask(&mut state.doc) {
+                        state.record("Apply Layer Mask");
+                    }
+                }
+                Command::MaskToggle => match layer_ops::toggle_mask(&mut state.doc) {
+                    Some(true) => state.record("Enable Layer Mask"),
+                    Some(false) => state.record("Disable Layer Mask"),
+                    None => {}
+                },
                 Command::NewLayer => crate::panels::new_layer(state),
                 Command::DuplicateLayer => {
                     if layer_ops::duplicate(&mut state.doc).is_some() {

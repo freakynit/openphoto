@@ -87,6 +87,15 @@ const ALL_COMMANDS: &[Command] = &[
     Command::CopyMerged,
     Command::Paste,
     Command::PasteInPlace,
+    Command::PasteInto,
+    Command::PasteOutside,
+    Command::MaskRevealAll,
+    Command::MaskHideAll,
+    Command::MaskRevealSelection,
+    Command::MaskHideSelection,
+    Command::MaskDelete,
+    Command::MaskApply,
+    Command::MaskToggle,
     Command::SelectAll,
     Command::Deselect,
     Command::Reselect,
@@ -265,8 +274,8 @@ impl NativeMenu {
                     true,
                     &[
                         &item("Paste in Place", Command::PasteInPlace) as &dyn IsMenuItem,
-                        &todo("Paste Into", Some("CmdOrCtrl+Shift+Alt+V")),
-                        &todo("Paste Outside", None),
+                        &item("Paste Into", Command::PasteInto),
+                        &item("Paste Outside", Command::PasteOutside),
                     ],
                 )
                 .expect("static menu definition is valid"),
@@ -466,7 +475,24 @@ impl NativeMenu {
                 &todo("Harmonize", None),
                 &todo("Layer Content Options...", None),
                 &sep(),
-                &todo_sub("Layer Mask"),
+                &Submenu::with_items(
+                    "Layer Mask",
+                    true,
+                    &[
+                        &item("Reveal All", Command::MaskRevealAll) as &dyn IsMenuItem,
+                        &item("Hide All", Command::MaskHideAll),
+                        &item("Reveal Selection", Command::MaskRevealSelection),
+                        &item("Hide Selection", Command::MaskHideSelection),
+                        &todo("From Transparency", None),
+                        &sep(),
+                        &item("Delete", Command::MaskDelete),
+                        &item("Apply", Command::MaskApply),
+                        &sep(),
+                        &item("Disable", Command::MaskToggle),
+                        &todo("Link", None),
+                    ],
+                )
+                .expect("static menu definition is valid"),
                 &todo_sub("Vector Mask"),
                 &todo("Create Clipping Mask", Some("CmdOrCtrl+Alt+G")),
                 &todo("Mask All Objects", None),
@@ -866,6 +892,20 @@ impl NativeMenu {
                     Some(name) => format!("Redo {name}"),
                     None => "Redo".into(),
                 }),
+                // Disable or Enable, for the active layer's mask
+                Command::MaskToggle => {
+                    let mask = doc
+                        .and_then(|d| d.doc.active_layer.and_then(|id| d.doc.layer(id)))
+                        .and_then(|l| l.mask.as_ref());
+                    Some(
+                        if mask.is_some_and(|m| !m.enabled) {
+                            "Enable"
+                        } else {
+                            "Disable"
+                        }
+                        .into(),
+                    )
+                }
                 // Like Photoshop, the item names the last filter used
                 Command::LastFilter => Some(
                     app.last_filter
