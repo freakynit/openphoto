@@ -97,6 +97,8 @@ pub enum Command {
     SurfaceBlur,
     DustAndScratches,
     Fragment,
+    /// Filter > Other > Custom...
+    CustomFilter,
     /// Layer > New > Layer... (Shift+Cmd+N): opens the New Layer dialog.
     NewLayer,
     /// Alt+Shift+Cmd+N: a new layer without the dialog.
@@ -486,7 +488,8 @@ impl Command {
             | Self::Mosaic
             | Self::SurfaceBlur
             | Self::DustAndScratches
-            | Self::Fragment => return None,
+            | Self::Fragment
+            | Self::CustomFilter => return None,
             Self::Invert => cmd(Key::I),
             Self::Levels => cmd(Key::L),
             Self::Curves => cmd(Key::M),
@@ -784,6 +787,7 @@ impl Command {
             | Self::SurfaceBlur
             | Self::DustAndScratches
             | Self::Fragment
+            | Self::CustomFilter
             | Self::Twirl
             | Self::Pinch
             | Self::Spherize
@@ -1138,7 +1142,8 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
         | Command::Spherize
         | Command::PolarCoordinates
         | Command::SurfaceBlur
-        | Command::DustAndScratches => {
+        | Command::DustAndScratches
+        | Command::CustomFilter => {
             let (kind, name) = match command {
                 Command::Threshold => (AdjustKind::Threshold, "Threshold"),
                 Command::Posterize => (AdjustKind::Posterize, "Posterize"),
@@ -1173,6 +1178,7 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 Command::PolarCoordinates => (AdjustKind::PolarCoordinates, "Polar Coordinates"),
                 Command::SurfaceBlur => (AdjustKind::SurfaceBlur, "Surface Blur"),
                 Command::DustAndScratches => (AdjustKind::DustAndScratches, "Dust & Scratches"),
+                Command::CustomFilter => (AdjustKind::Custom, "Custom"),
                 _ => (AdjustKind::Mosaic, "Mosaic"),
             };
             let rgb = |c: op_core::Color| {

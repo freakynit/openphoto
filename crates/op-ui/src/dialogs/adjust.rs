@@ -15,8 +15,8 @@ use op_core::filter::{Filter, OffsetFill, SpherizeMode};
 
 use super::{
     appkit, black_white, brightness_contrast, channel_mixer, color_balance, common, curves,
-    exposure, filter_layout, gradient_map, hue_saturation, levels, photo_filter, selective_color,
-    threshold, uxp, vibrance,
+    custom_filter, exposure, filter_layout, gradient_map, hue_saturation, levels, photo_filter,
+    selective_color, threshold, uxp, vibrance,
 };
 use crate::theme::{self, color, pt};
 
@@ -202,6 +202,8 @@ pub enum Kind {
     PolarCoordinates,
     SurfaceBlur,
     DustAndScratches,
+    /// Filter > Other > Custom...
+    Custom,
 }
 
 impl Kind {
@@ -239,6 +241,7 @@ impl Kind {
             Self::PolarCoordinates => "Polar Coordinates",
             Self::SurfaceBlur => "Surface Blur",
             Self::DustAndScratches => "Dust & Scratches",
+            Self::Custom => "Custom",
         }
     }
 
@@ -258,7 +261,8 @@ impl Kind {
             | Self::PhotoFilter
             | Self::BlackWhite
             | Self::Threshold
-            | Self::GradientMap => &[],
+            | Self::GradientMap
+            | Self::Custom => &[],
             Self::GaussianBlur => GAUSSIAN_BLUR,
             Self::BoxBlur => BOX_BLUR,
             Self::UnsharpMask => UNSHARP_MASK,
@@ -321,6 +325,30 @@ fn text_width(ui: &Ui, text: &str) -> f32 {
         .size()
         .x
         / pt(1.0)
+}
+
+/// Custom's Load...: a Photoshop .acf kernel file.
+fn load_kernel(d: &mut custom_filter::Dialog) {
+    let path = rfd::FileDialog::new()
+        .add_filter("Custom Filter", &["acf"])
+        .pick_file();
+    if let Some(bytes) = path.and_then(|p| std::fs::read(p).ok()) {
+        d.load_acf(&bytes);
+    }
+}
+
+/// Custom's Save...: the kernel as a Photoshop .acf file.
+fn save_kernel(d: &custom_filter::Dialog) {
+    let Some(bytes) = d.to_acf() else {
+        return;
+    };
+    let path = rfd::FileDialog::new()
+        .add_filter("Custom Filter", &["acf"])
+        .set_file_name("Untitled.acf")
+        .save_file();
+    if let Some(path) = path {
+        let _ = std::fs::write(path, bytes);
+    }
 }
 
 /// The zoom controls under the preview pane: zoom out (dimmed at 100%),
@@ -405,6 +433,7 @@ enum Custom {
     BlackWhite(Box<black_white::Dialog>),
     Threshold(Box<threshold::Dialog>),
     GradientMap(gradient_map::Dialog),
+    Kernel(Box<custom_filter::Dialog>),
 }
 
 /// Some of Photoshop's fields drop trailing zeros (Add Noise shows 12.5,
@@ -454,6 +483,7 @@ impl AdjustDialog {
                     [0; 3], [255; 3],
                 )))),
                 Kind::SelectiveColor => Some(Custom::SelectiveColor(Default::default())),
+                Kind::Custom => Some(Custom::Kernel(Default::default())),
                 Kind::Curves => Some(Custom::Curves(Box::new(curves::Dialog::new([[0; 256]; 3])))),
                 _ => None,
             },
@@ -473,19 +503,25 @@ impl AdjustDialog {
     /// (Photoshop's filter dialogs remember their last values); `None` for
     /// the adjustments' own dialogs.
     pub fn settings(&self) -> Option<Vec<String>> {
-        self.custom.is_none().then(|| self.values.clone())
+        match &self.custom {
+            None => Some(self.values.clone()),
+            Some(Custom::Kernel(d)) => Some(d.settings()),
+            Some(_) => None,
+        }
     }
 
     /// Puts back settings from [`settings`](Self::settings).
     pub fn restore(&mut self, values: &[String]) {
-        if self.custom.is_none() && values.len() == self.values.len() {
-            self.values = values.to_vec();
+        match &mut self.custom {
+            None if values.len() == self.values.len() => self.values = values.to_vec(),
+            Some(Custom::Kernel(d)) => d.restore(values),
+            _ => {}
         }
     }
 
     /// Whether this dialog shows the classic preview pane.
     pub fn wants_pane(&self) -> bool {
-        self.kind.layout().is_some_and(|l| l.pane)
+        self.kind == Kind::Custom || self.kind.layout().is_some_and(|l| l.pane)
     }
 
     /// Gradient Map's two colors (the foreground and background colors).
@@ -530,6 +566,7 @@ impl AdjustDialog {
             Some(Custom::BlackWhite(d)) => return d.adjustment().map(Effect::Adjustment),
             Some(Custom::Threshold(d)) => return d.adjustment().map(Effect::Adjustment),
             Some(Custom::GradientMap(d)) => return Some(Effect::Adjustment(d.adjustment())),
+            Some(Custom::Kernel(d)) => return d.filter().map(Effect::Filter),
             None => {}
         }
         let v: Vec<f32> = (0..self.values.len())
@@ -631,6 +668,7 @@ impl AdjustDialog {
                     Some(Custom::BlackWhite(_)) => black_white::SIZE,
                     Some(Custom::Threshold(_)) => threshold::SIZE,
                     Some(Custom::GradientMap(_)) => gradient_map::SIZE,
+                    Some(Custom::Kernel(_)) => custom_filter::SIZE,
                     None => self.kind.size(),
                 };
                 let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
@@ -653,6 +691,15 @@ impl AdjustDialog {
     /// AppKit title bar.
     fn custom_ui(&mut self, ui: &mut Ui, frame: Rect) -> Outcome {
         common::frame(ui, frame, self.kind.title(), theme::dialog_bold(pt(13.0)));
+        if self.wants_pane() {
+            let at = |x: f32, y: f32| frame.min + vec2(pt(x), pt(y));
+            let pane = filter_layout::PANE;
+            self.pane_ui(
+                ui,
+                Rect::from_min_max(at(pane[0], pane[1]), at(pane[2], pane[3])),
+            );
+            zoom_controls(ui, at(0.0, filter_layout::ZOOM_Y).y, frame.left());
+        }
         let button = match self.custom.as_mut() {
             Some(Custom::BrightnessContrast(d)) => {
                 let pressed = d.ui(ui, frame, self.first_frame, &mut self.preview);
@@ -674,6 +721,15 @@ impl AdjustDialog {
             Some(Custom::BlackWhite(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
             Some(Custom::Threshold(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
             Some(Custom::GradientMap(d)) => d.ui(ui, frame, &mut self.preview),
+            Some(Custom::Kernel(d)) => {
+                let (button, request) = d.ui(ui, frame, self.first_frame, &mut self.preview);
+                match request {
+                    Some(custom_filter::Request::Load) => load_kernel(d),
+                    Some(custom_filter::Request::Save) => save_kernel(d),
+                    None => {}
+                }
+                button
+            }
             None => None,
         };
         match button {

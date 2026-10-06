@@ -882,6 +882,7 @@ fn screenshot_filter_dialogs() {
         (Command::DustAndScratches, "dust_and_scratches_dialog"),
         (Command::Mosaic, "mosaic_dialog"),
         (Command::BoxBlur, "box_blur_dialog"),
+        (Command::CustomFilter, "custom_filter_dialog"),
     ] {
         // A small flat document: the pane shows it whole, centered
         let mut h = harness(Vec::new());
@@ -3417,4 +3418,42 @@ fn filter_dialogs_remember_their_last_values() {
             radius: 1
         }))
     );
+}
+
+#[test]
+fn custom_filter_types_a_kernel_and_remembers_it() {
+    use crate::commands::Command;
+    use op_core::filter::Filter;
+    let mut h = harness(Vec::new());
+    color_document(&mut h, [120, 160, 200]);
+    run_command(&mut h, Command::CustomFilter);
+    // The top-left cell has the focus
+    h.event(egui::Event::Text("2".into()));
+    h.run_steps(2);
+    let kernel = |h: &Harness<'_, OpenPhotoApp>| match h
+        .state()
+        .state
+        .adjust_dialog
+        .as_ref()
+        .and_then(|d| d.effect())
+    {
+        Some(crate::dialogs::Effect::Filter(Filter::Custom { kernel, .. })) => kernel,
+        other => panic!("{other:?}"),
+    };
+    let k = kernel(&h);
+    assert_eq!((k[0], k[12], k[7]), (2, 5, -1));
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(last_history(&h), "Custom");
+    assert!(matches!(
+        h.state().state.last_filter,
+        Some(Filter::Custom {
+            scale: 1,
+            offset: 0,
+            ..
+        })
+    ));
+    // Opened again, it starts from the kernel just applied
+    run_command(&mut h, Command::CustomFilter);
+    assert_eq!(kernel(&h)[0], 2);
 }

@@ -82,6 +82,7 @@ const ALL_COMMANDS: &[Command] = &[
     Command::SurfaceBlur,
     Command::DustAndScratches,
     Command::Fragment,
+    Command::CustomFilter,
     Command::Blur,
     Command::BlurMore,
     Command::Sharpen,
@@ -851,7 +852,7 @@ impl NativeMenu {
                 &filter_sub(
                     "Other",
                     &[
-                        ("Custom...", None),
+                        ("Custom...", Some(Command::CustomFilter)),
                         ("High Pass...", Some(Command::HighPass)),
                         ("HSB/HSL", None),
                         ("Maximum...", Some(Command::Maximum)),
