@@ -1801,3 +1801,80 @@ fn screenshot_new_layer_dialog() {
     h.run_steps(3);
     shot(&mut h, "new_layer");
 }
+
+#[test]
+fn duplicate_layer_and_layer_from_background_dialogs() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    let center = |w: f32, hgt: f32| (675.0 - w / 2.0, 400.0 - hgt / 2.0);
+
+    // Duplicate Layer... into this document under a new name
+    run_command(&mut h, crate::commands::Command::DuplicateLayer);
+    assert!(h.state().state.duplicate_dialog.is_some());
+    h.event(egui::Event::Text("Copy A".into()));
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(layer_names(&h), ["Background", "Copy A"]);
+    assert_eq!(last_history(&h), "Duplicate Layer");
+
+    // ...and to a new document, which opens
+    let first = h.state().state.active_doc;
+    run_command(&mut h, crate::commands::Command::DuplicateLayer);
+    let (x0, y0) = center(447.0, 208.0);
+    click(&mut h, at_pt(x0 + 200.0, y0 + 121.5));
+    h.get_by_label("New").click();
+    h.run_steps(2);
+    click(&mut h, at_pt(x0 + 408.0, y0 + 51.0));
+    h.run_steps(2);
+    let app = &h.state().state;
+    assert_ne!(app.active_doc, first);
+    assert_eq!(app.docs.len(), 2);
+    // The next "Untitled-N" (the counter keeps counting, as in Photoshop)
+    assert!(active(&h).doc.title.starts_with("Untitled-"));
+    assert_eq!(layer_names(&h), ["Copy A copy"]);
+
+    // Back on the first document: Layer from Background... asks for a name
+    h.state_mut().state.active_doc = first;
+    h.run_steps(2);
+    run_command(&mut h, crate::commands::Command::LayerFromBackground);
+    assert!(
+        h.state()
+            .state
+            .new_layer_dialog
+            .as_ref()
+            .is_some_and(|d| d.is_from_background())
+    );
+    h.event(egui::Event::Text("Base".into()));
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(layer_names(&h), ["Base", "Copy A"]);
+    assert!(!active(&h).doc.layers[0].is_background);
+    assert_eq!(last_history(&h), "Layer From Background");
+}
+
+#[test]
+fn double_clicking_the_background_asks_for_a_name() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    double_click(&mut h, at_pt(1130.0, 652.0));
+    assert!(
+        h.state()
+            .state
+            .new_layer_dialog
+            .as_ref()
+            .is_some_and(|d| d.is_from_background())
+    );
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(active(&h).doc.layers[0].is_background);
+}
+
+#[test]
+#[ignore]
+fn screenshot_duplicate_layer_dialog() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    run_command(&mut h, crate::commands::Command::DuplicateLayer);
+    shot(&mut h, "duplicate_layer");
+}

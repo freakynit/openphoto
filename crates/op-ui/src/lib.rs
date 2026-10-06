@@ -329,8 +329,25 @@ impl OpenPhotoApp {
             dialogs::NewLayerOutcome::Cancel => {}
             dialogs::NewLayerOutcome::Create(layer) => {
                 if let Some(state) = self.state.active() {
-                    panels::new_layer_from(state, layer);
+                    if dialog.is_from_background() {
+                        panels::layer_from_background_with(state, layer);
+                    } else {
+                        panels::new_layer_from(state, layer);
+                    }
                 }
+            }
+        }
+    }
+
+    fn duplicate_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.state.duplicate_dialog.take() else {
+            return;
+        };
+        match dialog.show(ctx) {
+            dialogs::DuplicateOutcome::Open => self.state.duplicate_dialog = Some(dialog),
+            dialogs::DuplicateOutcome::Cancel => {}
+            dialogs::DuplicateOutcome::Duplicate { name, to } => {
+                actions::duplicate_layer(&mut self.state, &name, to);
             }
         }
     }
@@ -536,6 +553,7 @@ impl eframe::App for OpenPhotoApp {
         self.image_size_dialog(&ctx);
         self.new_guide_dialog(&ctx);
         self.new_layer_dialog(&ctx);
+        self.duplicate_dialog(&ctx);
         self.new_document_dialog(&ctx);
         self.modify_dialog(&ctx);
         self.adjust_dialog(&ctx);

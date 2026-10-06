@@ -1185,13 +1185,34 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 }
                 Command::NewLayerNoDialog => crate::panels::new_layer(state),
                 Command::DuplicateLayer => {
-                    if layer_ops::duplicate(&mut state.doc).is_some() {
-                        state.record("Duplicate Layer");
+                    let current = state.doc.id;
+                    let source = state
+                        .doc
+                        .active_layer
+                        .and_then(|id| state.doc.layer(id))
+                        .map(|l| l.name.clone());
+                    let name = layer_ops::duplicate_name(&state.doc);
+                    if let (Some(source), Some(name)) = (source, name) {
+                        // The current document first, then the others
+                        let mut documents: Vec<(op_core::DocId, String)> = Vec::new();
+                        for id in std::iter::once(current).chain(app.doc_order.iter().copied()) {
+                            if documents.iter().any(|(d, _)| *d == id) {
+                                continue;
+                            }
+                            if let Some(d) = app.docs.get(&id) {
+                                documents.push((id, d.doc.title.clone()));
+                            }
+                        }
+                        let title = format!("Untitled-{}", app.untitled_counter + 1);
+                        app.duplicate_dialog = Some(crate::dialogs::DuplicateLayerDialog::new(
+                            source, name, documents, title,
+                        ));
                     }
                 }
                 Command::LayerFromBackground => {
-                    if layer_ops::layer_from_background(&mut state.doc) {
-                        state.record("Layer From Background");
+                    if state.doc.has_background() {
+                        app.new_layer_dialog =
+                            Some(crate::dialogs::NewLayerDialog::from_background());
                     }
                 }
                 Command::DeleteHiddenLayers => {

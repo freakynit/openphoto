@@ -81,9 +81,14 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
     );
 
     let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list_rect));
-    egui::ScrollArea::vertical()
+    let from_background = egui::ScrollArea::vertical()
         .auto_shrink(false)
-        .show(&mut list_ui, |ui| layer_list(ui, state));
+        .show(&mut list_ui, |ui| layer_list(ui, state))
+        .inner;
+    if from_background {
+        app.new_layer_dialog = Some(crate::dialogs::NewLayerDialog::from_background());
+        return;
+    }
 
     if bottom_bar(ui, state, bar_rect) {
         let name = state.doc.next_layer_name();
@@ -418,7 +423,10 @@ fn lock_row(ui: &mut Ui, state: &mut DocState, full: Rect) {
     edits.apply(state);
 }
 
-fn layer_list(ui: &mut Ui, state: &mut DocState) {
+/// The rows. Returns true when double-clicking the background asks for
+/// the Layer from Background dialog.
+fn layer_list(ui: &mut Ui, state: &mut DocState) -> bool {
+    let mut from_background = false;
     ui.spacing_mut().item_spacing.y = 0.0;
     // Top to bottom, as listed
     let ids: Vec<LayerId> = state.doc.layers.iter().rev().map(|l| l.id).collect();
@@ -472,9 +480,7 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
             // Double-clicking the name renames the layer; on the background
             // it makes it a regular layer (Photoshop asks for a name first)
             if is_background {
-                if op_core::layer_ops::layer_from_background(&mut state.doc) {
-                    state.record("Layer From Background");
-                }
+                from_background = true;
             } else if let Some(l) = state.doc.layer(id) {
                 state.renaming = Some((id, l.name.clone()));
             }
@@ -650,6 +656,7 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
     if let (Some((from_row, pointer, released)), Some(top)) = (dragged, list_top) {
         drop_layer(ui, state, &ids, from_row, pointer, released, top);
     }
+    from_background
 }
 
 /// The inline text field for renaming a layer: Enter or clicking elsewhere
@@ -845,6 +852,22 @@ pub fn new_layer_from(state: &mut DocState, new: crate::dialogs::NewLayer) {
     layer.opacity = new.opacity;
     doc.insert_above_active(layer);
     state.record("New Layer");
+}
+
+/// Layer > New > Layer from Background... confirmed: the background
+/// becomes a regular layer with the dialog's name, color label, blend mode
+/// and opacity. Recorded as "Layer From Background".
+pub fn layer_from_background_with(state: &mut DocState, new: crate::dialogs::NewLayer) {
+    if !op_core::layer_ops::layer_from_background(&mut state.doc) {
+        return;
+    }
+    if let Some(layer) = state.doc.layers.first_mut() {
+        layer.name = new.name;
+        layer.color = new.color;
+        layer.blend_mode = new.mode;
+        layer.opacity = new.opacity;
+    }
+    state.record("Layer From Background");
 }
 
 pub fn new_layer(state: &mut DocState) {

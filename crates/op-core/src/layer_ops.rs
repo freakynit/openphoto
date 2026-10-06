@@ -3,7 +3,7 @@
 
 use crate::clipboard::{self, ClipError};
 use crate::document::Document;
-use crate::layer::{BlendMode, Layer, LayerId, LayerMask};
+use crate::layer::{BlendMode, Layer, LayerId, LayerKind, LayerMask};
 use crate::tile::TiledImage;
 
 /// Layer > Arrange.
@@ -51,6 +51,55 @@ pub fn duplicate(doc: &mut Document) -> Option<LayerId> {
     let id = layer.id;
     doc.insert_above_active(layer);
     Some(id)
+}
+
+/// The Duplicate Layer dialog's default "As" name for the active layer.
+pub fn duplicate_name(doc: &Document) -> Option<String> {
+    let source = &doc.layers[active_index(doc)?];
+    Some(copy_name(doc, &source.name))
+}
+
+/// Layer > Duplicate Layer... into the same document, named `name`.
+pub fn duplicate_named(doc: &mut Document, name: &str) -> Option<LayerId> {
+    let source = doc.layers[active_index(doc)?].clone();
+    let layer = copy_of(doc, &source, name.to_string());
+    let id = layer.id;
+    doc.insert_above_active(layer);
+    Some(id)
+}
+
+/// Layer > Duplicate Layer... into another document: a copy of `source`'s
+/// active layer named `name`, at the same pixel position, above `target`'s
+/// active layer. Pixels past `target`'s canvas stay on the layer; the mask
+/// is extended (revealing) or cut to the new canvas. A copy of the
+/// background is a regular layer.
+pub fn duplicate_into(source: &Document, target: &mut Document, name: &str) -> Option<LayerId> {
+    let mut layer = source.layers[active_index(source)?].clone();
+    layer.id = target.new_layer_id();
+    layer.name = name.to_string();
+    layer.is_background = false;
+    let (w, h) = (target.width, target.height);
+    let LayerKind::Raster(image) = &mut layer.kind;
+    *image = image.with_canvas(w, h, 0, 0, [0; 4]);
+    if let Some(mask) = &mut layer.mask {
+        mask.image = mask.image.with_canvas(w, h, 0, 0, [255; 4]).clipped();
+    }
+    let id = layer.id;
+    target.insert_above_active(layer);
+    Some(id)
+}
+
+/// Layer > Duplicate Layer... to a new document: one the size and
+/// resolution of `source`, titled `title`, holding only a copy of the
+/// active layer named `name`.
+pub fn duplicate_to_new(source: &Document, title: &str, name: &str) -> Option<Document> {
+    let mut doc =
+        Document::new_with_background(title, source.width, source.height, crate::Color::WHITE);
+    doc.resolution = source.resolution;
+    doc.layers.clear();
+    doc.active_layer = None;
+    duplicate_into(source, &mut doc, name)?;
+    Some(doc)
 }
 
 /// Layer > New > Layer Via Copy (Cmd+J). Without a selection the whole layer
@@ -538,5 +587,29 @@ mod tests {
         assert_eq!(names(&doc), ["Background"]);
         assert_eq!(doc.active_layer, Some(doc.layers[0].id));
         assert!(!delete_hidden(&mut doc));
+    }
+
+    #[test]
+    fn duplicate_layer_dialog_targets() {
+        let mut a = Document::new_with_background("a", 4, 4, crate::Color::WHITE);
+        assert_eq!(duplicate_name(&a).as_deref(), Some("Background copy"));
+        let id = duplicate_named(&mut a, "Sky").unwrap();
+        assert_eq!(a.layer(id).unwrap().name, "Sky");
+        assert!(!a.layer(id).unwrap().is_background);
+
+        // Into a smaller document: same position, the rest kept outside
+        let mut b = Document::new_with_background("b", 2, 2, crate::Color::BLACK);
+        let copied = duplicate_into(&a, &mut b, "From A").unwrap();
+        assert_eq!(b.layers.len(), 2);
+        assert_eq!(b.active_layer, Some(copied));
+        let LayerKind::Raster(image) = &b.layer(copied).unwrap().kind;
+        assert_eq!(image.content_bounds(), Some((0, 0, 4, 4)));
+
+        // To a new document
+        let c = duplicate_to_new(&a, "Untitled-1", "Sky").unwrap();
+        assert_eq!((c.title.as_str(), c.width, c.height), ("Untitled-1", 4, 4));
+        assert_eq!(c.layers.len(), 1);
+        assert_eq!(c.layers[0].name, "Sky");
+        assert_eq!(c.active_layer, Some(c.layers[0].id));
     }
 }

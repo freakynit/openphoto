@@ -125,12 +125,19 @@ pub fn dialog(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(DIALOG.into()))
 }
 
+/// Slightly heavier dialog text, as Photoshop's newer dialogs (New Layer)
+/// draw it.
+pub fn dialog_medium(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(DIALOG_MEDIUM.into()))
+}
+
 /// Bold dialog text (titles, the default button).
 pub fn dialog_bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(DIALOG_BOLD.into()))
 }
 
 const DIALOG: &str = "dialog";
+const DIALOG_MEDIUM: &str = "dialog-medium";
 const DIALOG_BOLD: &str = "dialog-bold";
 /// Where macOS keeps its system font, a variable font with a weight axis.
 const SYSTEM_FONT: &str = "/System/Library/Fonts/SFNS.ttf";
@@ -187,8 +194,9 @@ pub fn install_fonts(ctx: &egui::Context) {
     // the interface fonts behind it for anything it lacks
     let system = std::fs::read(SYSTEM_FONT).ok();
     for (family, weight, fallback) in [
-        // A little heavier than Regular, as macOS draws it in Photoshop
-        (DIALOG, 510.0, FontFamily::Proportional),
+        (DIALOG, 400.0, FontFamily::Proportional),
+        // A little heavier than Regular, as Photoshop's newer dialogs draw it
+        (DIALOG_MEDIUM, 510.0, FontFamily::Proportional),
         (DIALOG_BOLD, 700.0, FontFamily::Name(SEMIBOLD.into())),
     ] {
         let mut chain = Vec::new();

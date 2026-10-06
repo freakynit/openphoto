@@ -1,9 +1,11 @@
 //! Pieces shared by the modal dialogs: the window frame with its light title
 //! bar, and the pill-shaped buttons Photoshop uses in dialogs.
 
-use egui::{Align2, Color32, CornerRadius, FontId, Rect, Sense, Stroke, StrokeKind, Ui, vec2};
+use egui::{
+    Align2, Color32, CornerRadius, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, vec2,
+};
 
-use crate::theme::{color, pt};
+use crate::theme::{self, color, pt};
 
 pub const TITLE_BAR: f32 = pt(28.0);
 const TITLE_FILL: Color32 = Color32::from_rgb(0xd0, 0xd2, 0xd4);
@@ -199,4 +201,141 @@ pub fn dropdown(
             .selected_text(egui::RichText::new(selected).font(FontId::proportional(font)))
             .show_ui(ui, menu);
     });
+}
+
+// Photoshop 2026's dialog controls, measured on its New Layer dialog: text
+// in the system font (`theme::dialog`, 12 pt).
+
+const PS_TEXT: Color32 = Color32::from_gray(0xf1);
+const PS_TEXT_OFF: Color32 = Color32::from_gray(0x8e);
+const PS_BORDER: Color32 = Color32::from_gray(0x7a);
+const PS_CHECK_BORDER: Color32 = Color32::from_gray(0xa0);
+const PS_FONT: f32 = crate::theme::pt(12.0);
+
+/// A dialog dropdown: a rounded box with a 1 pt `#7a7a7a` border, content
+/// drawn by `content`, a chevron 14 pt from the right; clicking opens `menu`.
+pub fn ps_dropdown(
+    ui: &mut Ui,
+    rect: Rect,
+    id: &str,
+    content: impl FnOnce(&egui::Painter, Rect),
+    menu: impl FnOnce(&mut Ui),
+) {
+    let response = ui.interact(rect, ui.id().with(id), Sense::click());
+    let fill = if response.hovered() {
+        color::HOVER
+    } else {
+        color::PANEL
+    };
+    ui.painter().rect(
+        rect,
+        CornerRadius::same(pt(3.0) as u8),
+        fill,
+        Stroke::new(pt(1.0), PS_BORDER),
+        StrokeKind::Inside,
+    );
+    content(ui.painter(), rect);
+    crate::ps_icons::paint(
+        ui.painter(),
+        Pos2::new(rect.right() - pt(13.5), rect.center().y),
+        crate::ps_icons::Icon::DialogChevron,
+        PS_TEXT,
+        fill,
+    );
+    egui::Popup::menu(&response)
+        .id(ui.id().with((id, "menu")))
+        .show(menu);
+}
+
+/// A 12 pt dialog checkbox with its label 9.5 pt to the right.
+pub fn ps_checkbox(ui: &mut Ui, min: Pos2, label: &str, checked: &mut bool, enabled: bool) {
+    let font = theme::dialog_medium(PS_FONT);
+    let text = if enabled { PS_TEXT } else { PS_TEXT_OFF };
+    let galley = ui.painter().layout_no_wrap(label.to_string(), font, text);
+    let b = Rect::from_min_size(min, vec2(pt(12.0), pt(12.0)));
+    let hit = Rect::from_min_max(
+        b.min,
+        Pos2::new(b.right() + pt(9.5) + galley.size().x, b.bottom()),
+    );
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let response = ui.interact(hit, ui.id().with(("check", label)), sense);
+    if response.clicked() {
+        *checked = !*checked;
+    }
+    let painter = ui.painter();
+    let border = if enabled {
+        PS_CHECK_BORDER
+    } else {
+        Color32::from_gray(0x8e)
+    };
+    if *checked && enabled {
+        painter.rect_filled(b, pt(2.5), color::CHECKBOX);
+        let p = |x: f32, y: f32| b.min + vec2(pt(x), pt(y));
+        painter.add(egui::Shape::line(
+            vec![p(3.0, 6.0), p(5.25, 8.25), p(9.25, 3.75)],
+            Stroke::new(pt(1.7), color::CHECK_MARK),
+        ));
+    } else {
+        painter.rect_stroke(b, pt(2.5), Stroke::new(pt(1.0), border), StrokeKind::Inside);
+    }
+    painter.galley(
+        Pos2::new(b.right() + pt(9.5), b.center().y - galley.size().y / 2.0),
+        galley,
+        text,
+    );
+}
+
+/// Photoshop's dialog buttons: pills with a 1 pt border, bright for the
+/// default button (bold label) and dim for the others.
+pub fn ps_button(
+    ui: &mut Ui,
+    rect: Rect,
+    label: &str,
+    default: bool,
+    enabled: bool,
+    bold: bool,
+) -> egui::Response {
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let response = ui.interact(rect, ui.id().with(("button", label)), sense);
+    let fill = if enabled && response.is_pointer_button_down_on() {
+        color::TOOL_ACTIVE
+    } else if enabled && response.hovered() {
+        color::HOVER
+    } else {
+        color::PANEL
+    };
+    let border = match (enabled, default) {
+        (false, _) => Color32::from_gray(0x5e),
+        (true, true) => PS_TEXT,
+        (true, false) => Color32::from_gray(0x72),
+    };
+    // Photoshop's newer dialogs (New Layer) set every button in bold
+    let font = if bold {
+        theme::dialog_bold(pt(13.0))
+    } else {
+        theme::dialog(pt(13.0))
+    };
+    ui.painter().rect(
+        rect,
+        CornerRadius::same(255),
+        fill,
+        Stroke::new(pt(1.0), border),
+        StrokeKind::Inside,
+    );
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        label,
+        font,
+        if enabled { PS_TEXT } else { PS_TEXT_OFF },
+    );
+    response
 }

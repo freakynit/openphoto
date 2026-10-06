@@ -477,3 +477,40 @@ fn nudge_key(app: &mut AppState, key: Key, shift: bool) -> bool {
     }
     true
 }
+
+/// Layer > Duplicate Layer... confirmed: copies the active layer, named
+/// `name`, into the current document, another open one (which stays in the
+/// background, as in Photoshop) or a new one (which opens and becomes
+/// active). Recorded as "Duplicate Layer" in the document that gets it.
+pub fn duplicate_layer(app: &mut AppState, name: &str, to: crate::dialogs::Destination) {
+    use crate::dialogs::Destination;
+    use op_core::layer_ops;
+    let Some(source_id) = app.active_doc else {
+        return;
+    };
+    match to {
+        Destination::Document(target) if target == source_id => {
+            if let Some(state) = app.active()
+                && layer_ops::duplicate_named(&mut state.doc, name).is_some()
+            {
+                state.record("Duplicate Layer");
+            }
+        }
+        Destination::Document(target) => {
+            if let [Some(source), Some(state)] = app.docs.get_disjoint_mut([&source_id, &target])
+                && layer_ops::duplicate_into(&source.doc, &mut state.doc, name).is_some()
+            {
+                state.record("Duplicate Layer");
+            }
+        }
+        Destination::New(title) => {
+            let Some(source) = app.docs.get(&source_id) else {
+                return;
+            };
+            if let Some(doc) = layer_ops::duplicate_to_new(&source.doc, &title, name) {
+                app.untitled_counter += 1;
+                app.add_document(doc, "Duplicate Layer");
+            }
+        }
+    }
+}
