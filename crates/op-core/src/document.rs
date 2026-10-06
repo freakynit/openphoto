@@ -53,6 +53,7 @@ pub struct Guide {
 #[derive(Clone)]
 pub struct Snapshot {
     guides: Vec<Guide>,
+    quick_mask: Option<TiledImage>,
     width: u32,
     height: u32,
     resolution: f32,
@@ -89,6 +90,9 @@ pub struct Document {
     /// Edits go to the active layer's mask (its thumbnail was clicked in
     /// the Layers panel) rather than its pixels. Not part of the history.
     pub mask_target: bool,
+    /// Quick Mask mode (Q): the selection as a gray image being painted
+    /// (white selected, black not). Takes every pixel edit while on.
+    pub quick_mask: Option<TiledImage>,
 }
 
 /// Where pixel edits go: the active layer's pixels, or its mask.
@@ -119,6 +123,7 @@ impl Document {
             selection_revision: 0,
             guides: Vec::new(),
             mask_target: false,
+            quick_mask: None,
         }
     }
 
@@ -197,6 +202,7 @@ impl Document {
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
             guides: self.guides.clone(),
+            quick_mask: self.quick_mask.clone(),
             width: self.width,
             height: self.height,
             resolution: self.resolution,
@@ -217,6 +223,7 @@ impl Document {
         self.selection = s.selection;
         self.last_selection = s.last_selection;
         self.guides = s.guides;
+        self.quick_mask = s.quick_mask;
         self.selection_revision += 1;
         self.mark_dirty();
     }
@@ -288,9 +295,56 @@ impl Document {
         {
             *sel = selection(sel);
         }
+        if let Some(q) = &mut self.quick_mask {
+            *q = image(q);
+        }
         self.selection_revision += 1;
         self.width = width;
         self.height = height;
+        self.mark_dirty();
+    }
+
+    /// Select > Edit in Quick Mask Mode: the selection becomes a gray
+    /// image (no selection: everything white) and the selection goes away
+    /// until Quick Mask is left.
+    pub fn enter_quick_mask(&mut self) {
+        let (w, h) = (self.width, self.height);
+        let image = match &self.selection {
+            Some(s) => {
+                let mut pixels = Vec::with_capacity((w * h * 4) as usize);
+                for y in 0..h {
+                    for x in 0..w {
+                        let v = s.get(x, y);
+                        pixels.extend_from_slice(&[v, v, v, 255]);
+                    }
+                }
+                TiledImage::from_rgba8(w, h, &pixels)
+            }
+            None => TiledImage::filled(w, h, [255; 4]),
+        };
+        self.quick_mask = Some(image);
+        self.selection = None;
+        self.selection_revision += 1;
+        self.mark_dirty();
+    }
+
+    /// Leaves Quick Mask: the painted grays become the selection. A mask
+    /// that is all white or all black leaves no selection.
+    pub fn exit_quick_mask(&mut self) {
+        let Some(image) = self.quick_mask.take() else {
+            return;
+        };
+        let (w, h) = (self.width, self.height);
+        let mut mask = Vec::with_capacity((w * h) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                mask.push(image.pixel(x, y)[0]);
+            }
+        }
+        let all = mask.iter().all(|&v| v == 255);
+        let s = Selection::from_mask(w, h, mask, false);
+        self.selection = (!all && !s.is_empty()).then_some(s);
+        self.selection_revision += 1;
         self.mark_dirty();
     }
 
@@ -305,6 +359,18 @@ impl Document {
 
     /// The image pixel edits (painting, fills, gradients) go to.
     pub fn edit_target(&mut self) -> Option<EditTarget<'_>> {
+        match self.quick_mask {
+            Some(ref mut image) => Some(EditTarget {
+                image,
+                mask: true,
+                keep_alpha: true,
+            }),
+            None => self.layer_target(),
+        }
+    }
+
+    /// The active layer's pixels or mask (outside Quick Mask).
+    fn layer_target(&mut self) -> Option<EditTarget<'_>> {
         let editing_mask = self.editing_mask();
         let id = self.active_layer?;
         let layer = self.layers.iter_mut().find(|l| l.id == id)?;

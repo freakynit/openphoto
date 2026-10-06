@@ -51,6 +51,10 @@ impl Default for FillOptions {
 
 fn target(doc: &Document) -> Result<crate::layer::LayerId, FillError> {
     let id = doc.active_layer.ok_or(FillError::NoLayer)?;
+    // Quick Mask can be painted whatever the layer's state
+    if doc.quick_mask.is_some() {
+        return Ok(id);
+    }
     let layer = doc.layer(id).ok_or(FillError::NoLayer)?;
     if !layer.visible {
         return Err(FillError::Hidden);
@@ -139,7 +143,11 @@ pub fn clear(doc: &mut Document, background: [u8; 3]) -> Result<(), FillError> {
     let id = target(doc)?;
     let layer = doc.layer(id).expect("target layer exists");
     // A mask is cleared to the background color's gray
-    if layer.is_background || layer.lock_transparency || doc.editing_mask() {
+    if layer.is_background
+        || layer.lock_transparency
+        || doc.editing_mask()
+        || doc.quick_mask.is_some()
+    {
         return fill(doc, background, FillOptions::default());
     }
     let selection = doc.selection().cloned();

@@ -130,6 +130,8 @@ pub enum Command {
     ModifyFeather,
     Grow,
     Similar,
+    /// Select > Edit in Quick Mask Mode (Q in egui).
+    QuickMask,
     ZoomIn,
     ZoomOut,
     FitOnScreen,
@@ -321,7 +323,8 @@ impl Command {
             | Self::ModifyExpand
             | Self::ModifyContract
             | Self::Grow
-            | Self::Similar => return None,
+            | Self::Similar
+            | Self::QuickMask => return None,
             // Photoshop shows Cmd++ and also accepts Cmd+=
             Self::ZoomIn => cmd(Key::Equals),
             Self::ZoomOut => cmd(Key::Minus),
@@ -421,6 +424,10 @@ impl Command {
             Self::ToggleGuides => v.guides,
             Self::ToggleGrid => v.grid,
             Self::LockGuides => v.lock_guides,
+            Self::QuickMask => app
+                .active_doc
+                .and_then(|id| app.docs.get(&id))
+                .is_some_and(|d| d.doc.quick_mask.is_some()),
             _ => return None,
         })
     }
@@ -570,7 +577,8 @@ impl Command {
             | Self::ActualPixels
             | Self::Zoom200
             | Self::PrintSize
-            | Self::NewGuide => doc.is_some(),
+            | Self::NewGuide
+            | Self::QuickMask => doc.is_some(),
         }
     }
 }
@@ -943,6 +951,11 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 _ => ModifyKind::Feather,
             };
             app.modify_dialog = Some(crate::dialogs::ModifyDialog::new(kind));
+        }
+        Command::QuickMask => {
+            if let Some(state) = app.active() {
+                crate::toolbar::toggle_quick_mask(state);
+            }
         }
         Command::Grow | Command::Similar => {
             let options = app.wand.region;

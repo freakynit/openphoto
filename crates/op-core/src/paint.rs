@@ -128,10 +128,17 @@ impl StrokeError {
     }
 }
 
+/// What a stroke paints on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Target {
+    Pixels,
+    LayerMask,
+    QuickMask,
+}
+
 pub struct Stroke {
     layer: LayerId,
-    /// The stroke paints on the layer's mask.
-    on_mask: bool,
+    target: Target,
     /// The layer's pixels before the stroke.
     base: TiledImage,
     coverage: HashMap<(u32, u32), Box<[f32]>>,
@@ -158,34 +165,46 @@ impl Stroke {
     ) -> Result<Self, StrokeError> {
         let id = doc.active_layer.ok_or(StrokeError::NoLayer)?;
         let layer = doc.layer(id).ok_or(StrokeError::NoLayer)?;
-        if !layer.visible {
-            return Err(StrokeError::Hidden);
-        }
-        if layer.lock_pixels {
-            return Err(StrokeError::Locked);
-        }
-        let on_mask = doc.editing_mask();
-        let (base, kind) = match (&layer.mask, on_mask) {
-            // On a mask colors become grays, and erasing paints the
-            // background color's gray
-            (Some(mask), true) => {
-                let kind = match kind {
-                    StrokeKind::Paint(c) => StrokeKind::Paint(crate::adjust::mask_gray(c)),
-                    StrokeKind::Erase { background } => StrokeKind::Erase {
-                        background: crate::adjust::mask_gray(background),
-                    },
-                    other => other,
-                };
-                (mask.image.clone(), kind)
+        // Quick Mask can be painted whatever the layer's state
+        let target = if doc.quick_mask.is_some() {
+            Target::QuickMask
+        } else if doc.editing_mask() {
+            Target::LayerMask
+        } else {
+            Target::Pixels
+        };
+        if target != Target::QuickMask {
+            if !layer.visible {
+                return Err(StrokeError::Hidden);
             }
-            _ => {
+            if layer.lock_pixels {
+                return Err(StrokeError::Locked);
+            }
+        }
+        // On a mask colors become grays, and erasing paints the background
+        // color's gray
+        let gray = |kind| match kind {
+            StrokeKind::Paint(c) => StrokeKind::Paint(crate::adjust::mask_gray(c)),
+            StrokeKind::Erase { background } => StrokeKind::Erase {
+                background: crate::adjust::mask_gray(background),
+            },
+            other => other,
+        };
+        let (base, kind) = match target {
+            Target::QuickMask => (doc.quick_mask.clone().expect("checked"), gray(kind)),
+            Target::LayerMask => (
+                layer.mask.as_ref().expect("checked").image.clone(),
+                gray(kind),
+            ),
+            Target::Pixels => {
                 let LayerKind::Raster(image) = &layer.kind;
                 (image.clone(), kind)
             }
         };
+        let on_mask = target != Target::Pixels;
         Ok(Self {
             layer: id,
-            on_mask,
+            target,
             base,
             coverage: HashMap::new(),
             selection: doc.selection().cloned(),
@@ -235,14 +254,21 @@ impl Stroke {
         if x0 >= x1 || y0 >= y1 {
             return;
         }
-        let Some(layer) = doc.layer_mut(self.layer) else {
-            return;
-        };
-        let image = match (&mut layer.mask, self.on_mask) {
-            (Some(mask), true) => &mut mask.image,
-            _ => {
-                let LayerKind::Raster(image) = &mut layer.kind;
-                image
+        let image = if self.target == Target::QuickMask {
+            let Some(q) = &mut doc.quick_mask else {
+                return;
+            };
+            q
+        } else {
+            let Some(layer) = doc.layer_mut(self.layer) else {
+                return;
+            };
+            match (&mut layer.mask, self.target) {
+                (Some(mask), Target::LayerMask) => &mut mask.image,
+                _ => {
+                    let LayerKind::Raster(image) = &mut layer.kind;
+                    image
+                }
             }
         };
         for y in y0..y1 {
@@ -588,6 +614,27 @@ mod tests {
     fn one_dab(doc: &mut Document, kind: StrokeKind, strength: f32) {
         let mut s = Stroke::begin(doc, HARD, kind, strength, 1.0).unwrap();
         s.add_point(doc, 20.0, 20.0);
+    }
+
+    #[test]
+    fn quick_mask_round_trip() {
+        let mut doc = Document::new_with_background("t", 40, 40, Color::WHITE);
+        doc.layers[0].visible = false;
+        doc.enter_quick_mask();
+        assert!(doc.selection().is_none());
+        // Painting black masks a spot; even a hidden layer doesn't stop it
+        let mut s = Stroke::begin(&doc, HARD, StrokeKind::Paint([0, 0, 0]), 1.0, 1.0).unwrap();
+        s.add_point(&mut doc, 20.0, 20.0);
+        doc.exit_quick_mask();
+        let sel = doc.selection().unwrap();
+        assert_eq!(sel.get(20, 20), 0);
+        assert_eq!(sel.get(2, 2), 255);
+        assert!(doc.quick_mask.is_none());
+        // Nothing painted: no selection afterwards
+        doc.set_selection(None);
+        doc.enter_quick_mask();
+        doc.exit_quick_mask();
+        assert!(doc.selection().is_none());
     }
 
     #[test]

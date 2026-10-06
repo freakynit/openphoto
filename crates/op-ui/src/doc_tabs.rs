@@ -25,7 +25,12 @@ pub fn title(state: &DocState) -> String {
         "{} @ {} ({}/{}{}){}",
         d.title,
         document_view::zoom_label(state.view.zoom),
-        d.color_mode.short(),
+        // Photoshop shows the channel being edited in Quick Mask
+        if d.quick_mask.is_some() {
+            "Quick Mask"
+        } else {
+            d.color_mode.short()
+        },
         d.bit_depth.bits(),
         if state.untagged { "#" } else { "" },
         if state.is_dirty() { " *" } else { "" },

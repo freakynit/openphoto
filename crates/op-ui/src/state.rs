@@ -193,12 +193,33 @@ impl DocState {
         match &self.canvas {
             Some(img) if img.revision == rev => img.clone(),
             _ => {
+                let mut pixels = self.doc.composite_rgba8();
+                // Quick Mask: unselected areas tinted with 50% red, the
+                // default "Masked Areas" display
+                if let Some(q) = &self.doc.quick_mask {
+                    let w = self.doc.width;
+                    for (i, px) in pixels.chunks_mut(4).enumerate() {
+                        let (x, y) = (i as u32 % w, i as u32 / w);
+                        let t = 0.5 * (1.0 - q.pixel(x, y)[0] as f32 / 255.0);
+                        if t <= 0.0 {
+                            continue;
+                        }
+                        let a = px[3] as f32 / 255.0;
+                        let red = [255.0, 0.0, 0.0];
+                        for c in 0..3 {
+                            px[c] = (px[c] as f32 * a * (1.0 - t) + red[c] * t)
+                                .round()
+                                .clamp(0.0, 255.0) as u8;
+                        }
+                        px[3] = 255;
+                    }
+                }
                 let img = Arc::new(CanvasImage {
                     key: self.doc.id.0,
                     revision: rev,
                     width: self.doc.width,
                     height: self.doc.height,
-                    pixels: self.doc.composite_rgba8(),
+                    pixels,
                 });
                 self.canvas = Some(img.clone());
                 img
@@ -206,7 +227,6 @@ impl DocState {
         }
     }
 
-    /// Color of a composite pixel (for the eyedropper).
     /// The Eyedropper's color at (`x`, `y`): the average of a `size` ×
     /// `size` square (clipped to the canvas) of the merged image or, without
     /// `all_layers`, of the active layer. Averaged with alpha weighting, and

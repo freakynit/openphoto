@@ -100,7 +100,10 @@ pub fn gradient(
     colors: ([u8; 3], [u8; 3]),
     options: GradientOptions,
 ) -> Result<(), FillError> {
-    crate::adjust::check(doc)?;
+    // Quick Mask can be painted whatever the layer's state
+    if doc.quick_mask.is_none() {
+        crate::adjust::check(doc)?;
+    }
     let (c0, c1) = if options.reverse {
         (colors.1, colors.0)
     } else {

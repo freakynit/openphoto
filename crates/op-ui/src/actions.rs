@@ -357,6 +357,11 @@ pub fn handle_tool_keys(ctx: &egui::Context, app: &mut AppState) {
         }
         match key {
             Key::D if !shift => crate::toolbar::reset_colors(app),
+            Key::Q if !shift => {
+                if let Some(state) = app.active() {
+                    crate::toolbar::toggle_quick_mask(state);
+                }
+            }
             Key::X if !shift => crate::toolbar::swap_colors(app),
             _ => {
                 let name = key.name();

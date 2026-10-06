@@ -62,8 +62,17 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
     ui.add_space(14.0);
     ui.horizontal(|ui| {
         ui.add_space(x_pad);
-        widgets::icon_button(ui, icons::SELECTION_BACKGROUND, size::TOOL_BUTTON, false)
-            .on_hover_text("Edit in Quick Mask Mode (Q)");
+        let on = app
+            .active_doc
+            .and_then(|id| app.docs.get(&id))
+            .is_some_and(|d| d.doc.quick_mask.is_some());
+        if widgets::icon_button(ui, icons::SELECTION_BACKGROUND, size::TOOL_BUTTON, on)
+            .on_hover_text("Edit in Quick Mask Mode (Q)")
+            .clicked()
+            && let Some(state) = app.active()
+        {
+            toggle_quick_mask(state);
+        }
     });
     ui.add_space(2.0);
     ui.horizontal(|ui| {
@@ -242,6 +251,16 @@ pub fn swatch(painter: &egui::Painter, rect: Rect, c: Color) {
         Stroke::new(1.0, Color32::from_gray(0x30)),
         StrokeKind::Inside,
     );
+}
+
+/// Q: enters or leaves Quick Mask, recorded as "Quick Mask" either way.
+pub fn toggle_quick_mask(state: &mut crate::state::DocState) {
+    if state.doc.quick_mask.is_some() {
+        state.doc.exit_quick_mask();
+    } else {
+        state.doc.enter_quick_mask();
+    }
+    state.record("Quick Mask");
 }
 
 pub fn reset_colors(app: &mut AppState) {

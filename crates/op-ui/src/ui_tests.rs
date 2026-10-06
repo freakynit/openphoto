@@ -1297,3 +1297,42 @@ fn layer_masks() {
     assert!(active(&h).doc.layers[1].mask.is_none());
     assert_eq!(layer_pixel(&h, 1, 120, 120)[3], 0);
 }
+
+#[test]
+fn quick_mask_mode() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    select_rect(&mut h, 100.0, 100.0, 400.0, 400.0);
+    h.key_press(egui::Key::Q);
+    h.run_steps(2);
+    assert!(active(&h).doc.quick_mask.is_some());
+    assert_eq!(last_history(&h), "Quick Mask");
+    assert!(crate::doc_tabs::title(active(&h)).contains("(Quick Mask/8"));
+    // Outside the old selection is tinted red
+    let tinted = active_canvas_pixel(&mut h, 50, 50);
+    assert!(tinted[0] > tinted[1] + 50, "{tinted:?}");
+    // Paint black inside it with the brush
+    h.state_mut().state.foreground = Color::from_rgba8([0, 0, 0, 255]);
+    h.key_press(egui::Key::B);
+    h.run_steps(2);
+    let p = doc_point(&h, 250.0, 250.0);
+    click(&mut h, p);
+    shot(&mut h, "quick_mask");
+    h.key_press(egui::Key::Q);
+    h.run_steps(2);
+    let s = active(&h).doc.selection().unwrap();
+    // The soft brush leaves its center almost fully masked
+    assert!(s.get(250, 250) < 10);
+    assert_eq!(s.get(150, 150), 255);
+    assert_eq!(s.get(50, 50), 0);
+    assert!(active(&h).doc.quick_mask.is_none());
+}
+
+/// A pixel of the canvas as displayed (with the Quick Mask tint).
+fn active_canvas_pixel(h: &mut Harness<'_, OpenPhotoApp>, x: u32, y: u32) -> [u8; 4] {
+    let app = &mut h.state_mut().state;
+    let id = app.active_doc.unwrap();
+    let img = app.docs.get_mut(&id).unwrap().canvas_image();
+    let i = ((y * img.width + x) * 4) as usize;
+    img.pixels[i..i + 4].try_into().unwrap()
+}
