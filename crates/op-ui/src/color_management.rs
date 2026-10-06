@@ -7,9 +7,9 @@
 //! conversion Photoshop does. Neutral grays are the same in sRGB and Display
 //! P3, so the interface chrome keeps its exact values.
 
+use objc2::msg_send;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::msg_send;
 use objc2_core_graphics::{CGColorSpace, kCGColorSpaceSRGB};
 use objc2_quartz_core::{CALayer, CAMetalLayer};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
@@ -26,7 +26,10 @@ pub fn use_srgb(window: &impl HasWindowHandle) {
     // thread during app creation.
     let view: &AnyObject = unsafe { appkit.ns_view.cast::<AnyObject>().as_ref() };
     let root: Option<Retained<CALayer>> = unsafe { msg_send![view, layer] };
-    let (Some(root), Some(srgb)) = (root, CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB }))) else {
+    let (Some(root), Some(srgb)) = (
+        root,
+        CGColorSpace::with_name(Some(unsafe { kCGColorSpaceSRGB })),
+    ) else {
         return;
     };
     let tagged = tag(&root, &srgb);
