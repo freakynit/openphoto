@@ -41,10 +41,37 @@ pub fn reorient(doc: &mut Document, orientation: Orientation) {
         Orientation::FlipHorizontal => (w - 1 - x, y),
         Orientation::FlipVertical => (x, h - 1 - y),
     };
+    // Where each source pixel lands, for pixels outside the canvas, which
+    // turn with it (as in Photoshop)
+    let (sw, sh) = (w as i64, h as i64);
+    let dest = move |x: i64, y: i64| match orientation {
+        Orientation::Rotate180 => (sw - 1 - x, sh - 1 - y),
+        Orientation::Rotate90Clockwise => (sh - 1 - y, x),
+        Orientation::Rotate90CounterClockwise => (y, sw - 1 - x),
+        Orientation::FlipHorizontal => (sw - 1 - x, y),
+        Orientation::FlipVertical => (x, sh - 1 - y),
+    };
     doc.transform_canvas(
         nw,
         nh,
-        |image| image.remapped(nw, nh, source),
+        |image| {
+            if !image.has_pixels_outside() {
+                return image.remapped(nw, nh, source);
+            }
+            let mut out = crate::tile::TiledImage::new(nw, nh);
+            if let Some((x0, y0, x1, y1)) = image.content_bounds() {
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        let px = image.pixel_at(x, y);
+                        if px[3] > 0 {
+                            let (dx, dy) = dest(x, y);
+                            out.set_pixel_at(dx, dy, px);
+                        }
+                    }
+                }
+            }
+            out
+        },
         |selection| selection.remapped(nw, nh, source),
     );
     let (w, h) = (w as f32, h as f32);
@@ -253,6 +280,9 @@ pub fn resize(doc: &mut Document, width: u32, height: u32, method: Resample) {
         width,
         height,
         |image| {
+            if image.has_pixels_outside() {
+                return resize_with_outside(image, kx, ky, width, height, method);
+            }
             let raw = image.to_rgba8();
             let src: Vec<f32> = raw
                 .as_chunks::<4>()
@@ -296,6 +326,60 @@ pub fn resize(doc: &mut Document, width: u32, height: u32, method: Resample) {
             crate::selection::Selection::from_mask(width, height, mask, false)
         },
     );
+}
+
+/// Image Size for a layer with pixels outside the canvas: the canvas and
+/// everything around it are scaled together, so those pixels stay in
+/// place relative to the image (as in Photoshop).
+fn resize_with_outside(
+    image: &crate::tile::TiledImage,
+    kx: f32,
+    ky: f32,
+    width: u32,
+    height: u32,
+    method: Resample,
+) -> crate::tile::TiledImage {
+    let (cw, ch) = (image.width() as i64, image.height() as i64);
+    let (x0, y0, x1, y1) = image.content_bounds().map_or((0, 0, cw, ch), |b| {
+        (b.0.min(0), b.1.min(0), b.2.max(cw), b.3.max(ch))
+    });
+    let (rw, rh) = ((x1 - x0) as usize, (y1 - y0) as usize);
+    let raw = image.region_rgba8(x0, y0, rw as u32, rh as u32);
+    let src: Vec<f32> = raw
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|&[r, g, b, a]| {
+            let k = a as f32 / 255.0;
+            [r as f32 * k, g as f32 * k, b as f32 * k, a as f32]
+        })
+        .collect();
+    let dw = ((rw as f32 * kx).round() as usize).max(1);
+    let dh = ((rh as f32 * ky).round() as usize).max(1);
+    let out = resample_buffer(&src, rw, rh, dw, dh, 4, method);
+    let pixels: Vec<u8> = out
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .flat_map(|&[r, g, b, a]| {
+            let a = a.clamp(0.0, 255.0);
+            if a < 0.5 {
+                return [0; 4];
+            }
+            let k = 255.0 / a;
+            [
+                (r * k).round().clamp(0.0, 255.0) as u8,
+                (g * k).round().clamp(0.0, 255.0) as u8,
+                (b * k).round().clamp(0.0, 255.0) as u8,
+                a.round() as u8,
+            ]
+        })
+        .collect();
+    let (dx0, dy0) = (
+        (x0 as f32 * kx).round() as i64,
+        (y0 as f32 * ky).round() as i64,
+    );
+    crate::tile::TiledImage::from_region(width, height, dx0, dy0, dw as u32, dh as u32, &pixels)
 }
 
 /// What Image > Trim removes ("Based On").
@@ -392,6 +476,41 @@ mod tests {
     use super::*;
     use crate::color::Color;
     use crate::selection::{Rect, Selection};
+
+    /// Photoshop 2026 on a 100×100 document: A's square half past the left
+    /// edge, B merged into it, then rotated, halved and flipped; the layer's
+    /// bounds after each step, pixels outside the canvas included.
+    #[test]
+    fn pixels_outside_the_canvas_follow_merges_rotation_and_image_size() {
+        let mut doc = Document::new_with_background("t", 100, 100, Color::WHITE);
+        let square = |x0: i64, y0: i64, x1: i64, y1: i64| {
+            let mut image = crate::tile::TiledImage::new(100, 100);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    image.set_pixel_at(x, y, [255, 0, 0, 255]);
+                }
+            }
+            image
+        };
+        let a = doc.new_layer_id();
+        doc.layers
+            .push(crate::Layer::raster(a, "A", square(-20, 10, 10, 40)));
+        let b = doc.new_layer_id();
+        doc.layers
+            .push(crate::Layer::raster(b, "B", square(50, 50, 60, 60)));
+        doc.select_layer(b);
+        let bounds = |doc: &Document| doc.layer(a).unwrap().image().unwrap().content_bounds();
+        assert!(crate::layer_ops::merge_down(&mut doc));
+        assert_eq!(bounds(&doc), Some((-20, 10, 60, 60)));
+        reorient(&mut doc, Orientation::Rotate90Clockwise);
+        assert_eq!(bounds(&doc), Some((40, -20, 90, 60)));
+        resize(&mut doc, 50, 50, Resample::NearestNeighbor);
+        assert_eq!(bounds(&doc), Some((20, -10, 45, 30)));
+        reorient(&mut doc, Orientation::FlipHorizontal);
+        assert_eq!(bounds(&doc), Some((5, -10, 30, 30)));
+        // The background never keeps anything outside
+        assert!(!doc.layers[0].image().unwrap().has_pixels_outside());
+    }
 
     /// 3×2 white background with red at (0, 0) and blue at (2, 1).
     fn doc() -> Document {

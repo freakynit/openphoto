@@ -508,9 +508,42 @@ pub fn rename(doc: &mut Document, id: LayerId, name: &str) -> bool {
     true
 }
 
-/// The visible pixels of `layers` merged, as one image.
+/// The visible pixels of `layers` merged, as one image. Pixels outside the
+/// canvas are merged and kept too, as in Photoshop (the background, which
+/// ends at the canvas, adds none there).
 fn merged(doc: &Document, layers: &[Layer]) -> TiledImage {
-    TiledImage::from_rgba8(doc.width, doc.height, &doc.composite_layers_rgba8(layers))
+    let (cw, ch) = (doc.width as i64, doc.height as i64);
+    let (x0, y0, x1, y1) = layers
+        .iter()
+        .filter_map(|l| l.image()?.content_bounds())
+        .fold((0, 0, cw, ch), |a, b| {
+            (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))
+        });
+    if (x0, y0, x1, y1) == (0, 0, cw, ch) {
+        return TiledImage::from_rgba8(doc.width, doc.height, &doc.composite_layers_rgba8(layers));
+    }
+    // Composite on a canvas grown to cover them all, then put the result
+    // back in place
+    let (w, h) = ((x1 - x0) as u32, (y1 - y0) as u32);
+    let mut grown = Document::empty("", doc.width, doc.height);
+    grown.layers = layers.to_vec();
+    for layer in &mut grown.layers {
+        layer.is_background = false;
+    }
+    grown.place_canvas(w, h, -x0, -y0, crate::Color::WHITE);
+    let pixels = grown.composite_layers_rgba8(&grown.layers);
+    TiledImage::from_rgba8(w, h, &pixels).with_canvas(doc.width, doc.height, x0, y0, [0; 4])
+}
+
+/// Gives `layer` the merged `image`; the background keeps only what is on
+/// the canvas.
+fn set_merged(layer: &mut Layer, image: TiledImage) {
+    let image = if layer.is_background {
+        image.clipped()
+    } else {
+        image
+    };
+    layer.kind = crate::layer::LayerKind::Raster(image);
 }
 
 /// Whether Layer > Merge Down can run: the active layer and the one below
@@ -534,7 +567,7 @@ pub fn merge_down(doc: &mut Document) -> bool {
     let image = merged(doc, &[lower, doc.layers[i].clone()]);
     doc.layers.remove(i);
     let target = &mut doc.layers[i - 1];
-    target.kind = crate::layer::LayerKind::Raster(image);
+    set_merged(target, image);
     // Both layers' masks are in the merged pixels
     target.mask = None;
     doc.active_layer = Some(target.id);
@@ -615,7 +648,7 @@ pub fn merge_selected(doc: &mut Document) -> bool {
     doc.layers
         .retain(|l| l.id == target_id || !merging.iter().any(|m| m.id == l.id));
     let layer = doc.layer_mut(target_id).expect("kept");
-    layer.kind = crate::layer::LayerKind::Raster(image);
+    set_merged(layer, image);
     layer.mask = None;
     layer.opacity = 1.0;
     layer.fill = 1.0;
@@ -817,7 +850,7 @@ pub fn merge_visible(doc: &mut Document) -> bool {
     let target_id = doc.layers[target].id;
     doc.layers.retain(|l| !l.visible || l.id == target_id);
     let layer = doc.layer_mut(target_id).expect("kept");
-    layer.kind = crate::layer::LayerKind::Raster(image);
+    set_merged(layer, image);
     layer.mask = None;
     layer.opacity = 1.0;
     layer.fill = 1.0;

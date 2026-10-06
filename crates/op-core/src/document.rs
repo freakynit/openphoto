@@ -111,7 +111,7 @@ pub struct EditTarget<'a> {
 }
 
 impl Document {
-    fn empty(title: impl Into<String>, width: u32, height: u32) -> Self {
+    pub(crate) fn empty(title: impl Into<String>, width: u32, height: u32) -> Self {
         Self {
             id: DocId(next_id()),
             title: title.into(),
