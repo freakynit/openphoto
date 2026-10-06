@@ -33,6 +33,7 @@ pub enum Command {
     Redo,
     ToggleLastState,
     CanvasSize,
+    ImageSize,
     Rotate180,
     Rotate90Clockwise,
     Rotate90CounterClockwise,
@@ -213,6 +214,7 @@ impl Command {
             Self::Redo => shift_cmd(Key::Z),
             Self::ToggleLastState => alt_cmd(Key::Z),
             Self::CanvasSize => alt_cmd(Key::C),
+            Self::ImageSize => alt_cmd(Key::I),
             Self::NewLayer => shift_cmd(Key::N),
             Self::ToggleLayerVisibility => cmd(Key::Comma),
             Self::LayerViaCopy => cmd(Key::J),
@@ -409,6 +411,7 @@ impl Command {
             | Self::CloseAll
             | Self::ExportAs
             | Self::CanvasSize
+            | Self::ImageSize
             | Self::Rotate180
             | Self::Rotate90Clockwise
             | Self::Rotate90CounterClockwise
@@ -469,6 +472,7 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::ToggleLastState,
     Command::NewLayer,
     Command::CanvasSize,
+    Command::ImageSize,
     Command::CloseAll,
     Command::CloseOthers,
     Command::Undo,
@@ -768,6 +772,13 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                     app.last_transform = Some(affine);
                 }
                 Err(e) => app.alert = Some(e.message(name)),
+            }
+        }
+        Command::ImageSize => {
+            if let Some(state) = app.active() {
+                let d = &state.doc;
+                let dialog = crate::dialogs::ImageSizeDialog::new(d.width, d.height, d.resolution);
+                app.image_size_dialog = Some(dialog);
             }
         }
         Command::Trim => {

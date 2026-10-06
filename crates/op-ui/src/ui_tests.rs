@@ -1077,3 +1077,23 @@ fn crop_tool_crops_to_the_box() {
     h.run_steps(2);
     assert!(active(&h).crop.is_none());
 }
+
+#[test]
+fn image_size_resamples_proportionally() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, egui::Key::I);
+    h.run_steps(3);
+    assert!(h.state().state.image_size_dialog.is_some());
+    // Width has focus with its text selected; the chain updates Height
+    h.event(egui::Event::Text("367".into()));
+    h.run_steps(3);
+    shot(&mut h, "image_size");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(h.state().state.image_size_dialog.is_none());
+    let d = &active(&h).doc;
+    assert_eq!((d.width, d.height), (367, 406));
+    assert_eq!(last_history(&h), "Image Size");
+    assert_eq!(composite_pixel(&mut h, 100, 100), [0x14, 0x14, 0x14, 255]);
+}

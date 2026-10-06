@@ -238,6 +238,41 @@ impl OpenPhotoApp {
         }
     }
 
+    fn image_size_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.state.image_size_dialog.take() else {
+            return;
+        };
+        match dialog.show(ctx) {
+            dialogs::ImageSizeOutcome::Open => self.state.image_size_dialog = Some(dialog),
+            dialogs::ImageSizeOutcome::Cancel => {}
+            dialogs::ImageSizeOutcome::Apply {
+                width,
+                height,
+                resolution,
+                resample,
+            } => {
+                let Some(state) = self.state.active() else {
+                    return;
+                };
+                let mut changed = false;
+                if let Some(method) = resample
+                    && (width, height) != (state.doc.width, state.doc.height)
+                {
+                    op_core::image_ops::resize(&mut state.doc, width, height, method);
+                    changed = true;
+                }
+                if resolution != state.doc.resolution {
+                    state.doc.resolution = resolution;
+                    state.doc.mark_dirty();
+                    changed = true;
+                }
+                if changed {
+                    state.record("Image Size");
+                }
+            }
+        }
+    }
+
     fn trim_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.state.trim_dialog.take() else {
             return;
@@ -419,6 +454,7 @@ impl eframe::App for OpenPhotoApp {
         self.canvas_size_dialog(&ctx);
         self.fill_dialog(&ctx);
         self.trim_dialog(&ctx);
+        self.image_size_dialog(&ctx);
         self.adjust_dialog(&ctx);
         self.save_prompt(&ctx);
         self.color_picker(&ctx);

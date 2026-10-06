@@ -26,6 +26,7 @@ const ALL_COMMANDS: &[Command] = &[
     Command::Redo,
     Command::ToggleLastState,
     Command::CanvasSize,
+    Command::ImageSize,
     Command::Rotate180,
     Command::Rotate90Clockwise,
     Command::Rotate90CounterClockwise,
@@ -346,7 +347,7 @@ impl NativeMenu {
                 &todo("Auto Contrast", Some("CmdOrCtrl+Shift+Alt+L")),
                 &todo("Auto Color", Some("CmdOrCtrl+Shift+B")),
                 &sep(),
-                &todo("Image Size...", Some("CmdOrCtrl+Alt+I")),
+                &item("Image Size...", Command::ImageSize),
                 &todo("Generative Upscale...", Some("CmdOrCtrl+Shift+Alt+U")),
                 &item("Canvas Size...", Command::CanvasSize),
                 &Submenu::with_items(
