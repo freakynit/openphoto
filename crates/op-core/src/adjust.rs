@@ -41,6 +41,50 @@ pub enum Adjustment {
         offset: f32,
         gamma: f32,
     },
+    /// Brightness −150–150 and contrast −50–100 (the non-legacy behavior,
+    /// approximated without clipping: brightness bends the tones with a
+    /// gamma, contrast with an S-curve).
+    BrightnessContrast {
+        brightness: i32,
+        contrast: i32,
+    },
+    /// Color Balance on the midtones: cyan–red, magenta–green and
+    /// yellow–blue shifts (−100–100); Preserve Luminosity keeps each pixel's
+    /// luminosity.
+    ColorBalance {
+        midtones: [i32; 3],
+        preserve_luminosity: bool,
+    },
+    /// Black & White: how bright reds, yellows, greens, cyans, blues and
+    /// magentas turn (percent, −200–300).
+    BlackWhite {
+        weights: [i32; 6],
+    },
+    /// Vibrance (boosts muted colors most) and Saturation, −100–100 each.
+    Vibrance {
+        vibrance: i32,
+        saturation: i32,
+    },
+    /// Photo Filter: a color multiplied in at `density` percent.
+    PhotoFilter {
+        color: [u8; 3],
+        density: u8,
+        preserve_luminosity: bool,
+    },
+    /// Gradient Map: luminosity mapped from `from` (shadows) to `to`.
+    GradientMap {
+        from: [u8; 3],
+        to: [u8; 3],
+    },
+    /// Image > Auto Tone: each channel stretched to the full range,
+    /// ignoring the darkest and lightest 0.1%.
+    AutoTone,
+    /// Image > Auto Contrast: all channels stretched together, so colors
+    /// keep their balance.
+    AutoContrast,
+    /// Image > Auto Color: here each channel stretched like Auto Tone
+    /// (Photoshop also neutralizes the midtones).
+    AutoColor,
 }
 
 impl Adjustment {
@@ -55,6 +99,15 @@ impl Adjustment {
             Self::Levels { .. } => "Levels",
             Self::HueSaturation { .. } => "Hue/Saturation",
             Self::Exposure { .. } => "Exposure",
+            Self::BrightnessContrast { .. } => "Brightness/Contrast",
+            Self::ColorBalance { .. } => "Color Balance",
+            Self::BlackWhite { .. } => "Black & White",
+            Self::Vibrance { .. } => "Vibrance",
+            Self::PhotoFilter { .. } => "Photo Filter",
+            Self::GradientMap { .. } => "Gradient Map",
+            Self::AutoTone => "Auto Tone",
+            Self::AutoContrast => "Auto Contrast",
+            Self::AutoColor => "Auto Color",
         }
     }
 
@@ -77,6 +130,24 @@ impl Adjustment {
                 Box::new(move |v| {
                     let t = ((v - ib) / (iw - ib)).clamp(0.0, 1.0).powf(1.0 / gamma);
                     ob + t * (ow - ob)
+                })
+            }
+            Self::BrightnessContrast {
+                brightness,
+                contrast,
+            } => {
+                let g = 2f32.powf(-brightness as f32 / 100.0);
+                let k = contrast as f32 / 100.0;
+                Box::new(move |v| {
+                    let mut t = (v / 255.0).powf(g);
+                    t = if k >= 0.0 {
+                        // Toward a smooth S-curve: darker darks, lighter lights
+                        let s = t * t * (3.0 - 2.0 * t);
+                        t + (s - t) * k
+                    } else {
+                        0.5 + (t - 0.5) * (1.0 + k)
+                    };
+                    t * 255.0
                 })
             }
             Self::Exposure {
@@ -161,6 +232,161 @@ pub(crate) fn hsl_to_rgb([h, s, l]: [f32; 3]) -> [f32; 3] {
     };
     let h = h / 360.0;
     [channel(h + 1.0 / 3.0), channel(h), channel(h - 1.0 / 3.0)]
+}
+
+/// Moves every channel by the same amount so the pixel's luminosity is
+/// `target` again.
+fn keep_luminosity(rgb: [f32; 3], target: f32) -> [f32; 3] {
+    let l = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2];
+    rgb.map(|v| v + (target - l))
+}
+
+fn to_u8(rgb: [f32; 3], a: u8) -> [u8; 4] {
+    let [r, g, b] = rgb.map(|v| (v * 255.0).round().clamp(0.0, 255.0) as u8);
+    [r, g, b, a]
+}
+
+/// The per-pixel adjustments that mix channels.
+fn color_adjust(adjustment: Adjustment, px: [u8; 4]) -> [u8; 4] {
+    let rgb = [px[0], px[1], px[2]].map(|v| v as f32 / 255.0);
+    let lum = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2];
+    match adjustment {
+        Adjustment::ColorBalance {
+            midtones,
+            preserve_luminosity,
+        } => {
+            // Each channel moves most in the midtones
+            let mut out = [0, 1, 2].map(|c| {
+                let v = rgb[c];
+                v + midtones[c] as f32 / 100.0 * 0.4 * 4.0 * v * (1.0 - v)
+            });
+            if preserve_luminosity {
+                out = keep_luminosity(out, lum);
+            }
+            to_u8(out, px[3])
+        }
+        Adjustment::BlackWhite { weights } => {
+            // The gray is the darkest channel plus the primary and the
+            // secondary hue's shares, each weighted
+            let (r, g, b) = (rgb[0], rgb[1], rgb[2]);
+            let max = r.max(g).max(b);
+            let min = r.min(g).min(b);
+            let mid = r + g + b - max - min;
+            let w = |i: usize| weights[i] as f32 / 100.0;
+            let primary = if max == r {
+                w(0)
+            } else if max == g {
+                w(2)
+            } else {
+                w(4)
+            };
+            // Yellow (red+green), cyan (green+blue) or magenta (red+blue)
+            let secondary = if min == b {
+                w(1)
+            } else if min == r {
+                w(3)
+            } else {
+                w(5)
+            };
+            let gray = min + (mid - min) * secondary + (max - mid) * primary;
+            to_u8([gray; 3], px[3])
+        }
+        Adjustment::Vibrance {
+            vibrance,
+            saturation,
+        } => {
+            let [h, s, l] = rgb_to_hsl(rgb);
+            let v = vibrance as f32 / 100.0;
+            // Vibrance acts most on muted colors
+            let s = (s * (1.0 + v * (1.0 - s))).clamp(0.0, 1.0);
+            let s = (s * (1.0 + saturation as f32 / 100.0)).clamp(0.0, 1.0);
+            to_u8(hsl_to_rgb([h, s, l]), px[3])
+        }
+        Adjustment::PhotoFilter {
+            color,
+            density,
+            preserve_luminosity,
+        } => {
+            let d = density as f32 / 100.0;
+            let mut out = [0, 1, 2].map(|c| {
+                let v = rgb[c];
+                v + (v * color[c] as f32 / 255.0 - v) * d
+            });
+            if preserve_luminosity {
+                out = keep_luminosity(out, lum);
+            }
+            to_u8(out, px[3])
+        }
+        Adjustment::GradientMap { from, to } => {
+            let out =
+                [0, 1, 2].map(|c| (from[c] as f32 + (to[c] as f32 - from[c] as f32) * lum) / 255.0);
+            to_u8(out, px[3])
+        }
+        _ => px,
+    }
+}
+
+/// Auto Tone / Auto Contrast lookup tables: a channel's range without its
+/// darkest and lightest 0.1% stretched to 0–255.
+fn auto_tables(doc: &Document, per_channel: bool) -> [[u8; 256]; 3] {
+    let mut hists = [[0u64; 256]; 3];
+    if let Some(layer) = doc.active_layer.and_then(|id| doc.layer(id)) {
+        let LayerKind::Raster(image) = &layer.kind;
+        let selection = doc.selection();
+        for y in 0..doc.height {
+            for x in 0..doc.width {
+                if selection.is_some_and(|s| s.get(x, y) == 0) {
+                    continue;
+                }
+                let px = image.pixel(x, y);
+                if px[3] == 0 {
+                    continue;
+                }
+                for c in 0..3 {
+                    hists[c][px[c] as usize] += 1;
+                }
+            }
+        }
+    }
+    let range = |hist: &[u64; 256]| -> (usize, usize) {
+        let total: u64 = hist.iter().sum();
+        let clip = total / 1000;
+        let mut acc = 0;
+        let lo = (0..256).find(|&i| {
+            acc += hist[i];
+            acc > clip
+        });
+        acc = 0;
+        let hi = (0..256).rev().find(|&i| {
+            acc += hist[i];
+            acc > clip
+        });
+        (lo.unwrap_or(0), hi.unwrap_or(255))
+    };
+    let table = |(lo, hi): (usize, usize)| {
+        let mut t = [0u8; 256];
+        for (i, v) in t.iter_mut().enumerate() {
+            *v = if hi <= lo {
+                i as u8
+            } else {
+                ((i as f32 - lo as f32) / (hi - lo) as f32 * 255.0)
+                    .round()
+                    .clamp(0.0, 255.0) as u8
+            };
+        }
+        t
+    };
+    if per_channel {
+        hists.map(|h| table(range(&h)))
+    } else {
+        let mut all = [0u64; 256];
+        for h in &hists {
+            for (a, v) in all.iter_mut().zip(h) {
+                *a += v;
+            }
+        }
+        [table(range(&all)); 3]
+    }
 }
 
 /// Hue/Saturation on one pixel: hue rotates and saturation scales in HSL;
@@ -293,6 +519,11 @@ pub fn apply(doc: &mut Document, adjustment: Adjustment) -> Result<(), FillError
         Adjustment::Equalize => Some(equalize_table(&channel_histogram(doc))),
         other => other.table(),
     };
+    let auto = match adjustment {
+        Adjustment::AutoTone | Adjustment::AutoColor => Some(auto_tables(doc, true)),
+        Adjustment::AutoContrast => Some(auto_tables(doc, false)),
+        _ => None,
+    };
     let map = |px: [u8; 4]| -> [u8; 4] {
         let [r, g, b, a] = px;
         match adjustment {
@@ -311,10 +542,22 @@ pub fn apply(doc: &mut Document, adjustment: Adjustment) -> Result<(), FillError
                 posterize(b, levels),
                 a,
             ],
-            Adjustment::Equalize | Adjustment::Levels { .. } | Adjustment::Exposure { .. } => {
+            Adjustment::Equalize
+            | Adjustment::Levels { .. }
+            | Adjustment::Exposure { .. }
+            | Adjustment::BrightnessContrast { .. } => {
                 let t = table.as_ref().expect("computed above");
                 [t[r as usize], t[g as usize], t[b as usize], a]
             }
+            Adjustment::AutoTone | Adjustment::AutoContrast | Adjustment::AutoColor => {
+                let t = auto.as_ref().expect("computed above");
+                [t[0][r as usize], t[1][g as usize], t[2][b as usize], a]
+            }
+            Adjustment::ColorBalance { .. }
+            | Adjustment::BlackWhite { .. }
+            | Adjustment::Vibrance { .. }
+            | Adjustment::PhotoFilter { .. }
+            | Adjustment::GradientMap { .. } => color_adjust(adjustment, px),
             Adjustment::HueSaturation {
                 hue,
                 saturation,
@@ -459,6 +702,87 @@ mod tests {
         };
         apply(&mut d, exposure).unwrap();
         assert_eq!(first(&d), [176, 176, 176, 255]);
+    }
+
+    #[test]
+    fn color_adjustments() {
+        // Brightness up lightens the midtones, contrast spreads them
+        let mut d = doc([128, 128, 128, 255]);
+        let bc = Adjustment::BrightnessContrast {
+            brightness: 100,
+            contrast: 0,
+        };
+        apply(&mut d, bc).unwrap();
+        assert!(first(&d)[0] > 170);
+        let mut d = doc([200, 60, 60, 255]);
+        let bc = Adjustment::BrightnessContrast {
+            brightness: 0,
+            contrast: 100,
+        };
+        apply(&mut d, bc).unwrap();
+        assert!(first(&d)[0] > 200 && first(&d)[1] < 60);
+
+        // Black & White with the default weights: pure red at 40% is 102
+        let mut d = doc([255, 0, 0, 255]);
+        let bw = Adjustment::BlackWhite {
+            weights: [40, 60, 40, 60, 20, 80],
+        };
+        apply(&mut d, bw).unwrap();
+        assert_eq!(first(&d), [102, 102, 102, 255]);
+        // Yellow uses the yellows weight
+        let mut d = doc([255, 255, 0, 255]);
+        apply(&mut d, bw).unwrap();
+        assert_eq!(first(&d)[0], 153);
+
+        // Gradient map: black to red
+        let mut d = doc([255, 255, 255, 255]);
+        let gm = Adjustment::GradientMap {
+            from: [0, 0, 0],
+            to: [255, 0, 0],
+        };
+        apply(&mut d, gm).unwrap();
+        assert_eq!(first(&d), [255, 0, 0, 255]);
+
+        // Color balance toward red keeps luminosity when asked
+        let mut d = doc([128, 128, 128, 255]);
+        let cb = Adjustment::ColorBalance {
+            midtones: [100, 0, 0],
+            preserve_luminosity: true,
+        };
+        apply(&mut d, cb).unwrap();
+        let px = first(&d);
+        assert!(px[0] > px[1]);
+        assert!((luminosity(px) as i32 - 128).abs() <= 1);
+
+        // Vibrance saturates a muted color more than a vivid one
+        let mut muted = doc([140, 120, 120, 255]);
+        let vib = Adjustment::Vibrance {
+            vibrance: 100,
+            saturation: 0,
+        };
+        apply(&mut muted, vib).unwrap();
+        assert!(first(&muted)[0] - first(&muted)[1] > 20);
+
+        // Photo filter: a blue filter takes red out
+        let mut d = doc([200, 200, 200, 255]);
+        let pf = Adjustment::PhotoFilter {
+            color: [0, 0, 255],
+            density: 50,
+            preserve_luminosity: false,
+        };
+        apply(&mut d, pf).unwrap();
+        assert_eq!(first(&d), [100, 100, 200, 255]);
+    }
+
+    #[test]
+    fn auto_tone_stretches_each_channel() {
+        let mut d = doc([50, 100, 150, 255]);
+        let id = d.active_layer.unwrap();
+        let LayerKind::Raster(image) = &mut d.layer_mut(id).unwrap().kind;
+        image.set_pixel(1, 0, [100, 200, 250, 255]);
+        apply(&mut d, Adjustment::AutoTone).unwrap();
+        assert_eq!(first(&d), [0, 0, 0, 255]);
+        assert_eq!(&d.composite_rgba8()[4..8], [255, 255, 255, 255]);
     }
 
     #[test]

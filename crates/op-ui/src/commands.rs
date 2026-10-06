@@ -53,6 +53,15 @@ pub enum Command {
     Levels,
     HueSaturation,
     Exposure,
+    BrightnessContrast,
+    ColorBalance,
+    BlackWhite,
+    Vibrance,
+    PhotoFilter,
+    GradientMap,
+    AutoTone,
+    AutoContrast,
+    AutoColor,
     /// Filter > Last Filter: the last filter again, with its settings.
     LastFilter,
     Average,
@@ -370,6 +379,20 @@ impl Command {
             Self::Invert => cmd(Key::I),
             Self::Levels => cmd(Key::L),
             Self::HueSaturation => cmd(Key::U),
+            Self::ColorBalance => cmd(Key::B),
+            Self::BlackWhite => Shortcut {
+                shift: true,
+                ..alt_cmd(Key::B)
+            },
+            Self::AutoTone => shift_cmd(Key::L),
+            Self::AutoContrast => Shortcut {
+                shift: true,
+                ..alt_cmd(Key::L)
+            },
+            Self::AutoColor => shift_cmd(Key::B),
+            Self::BrightnessContrast | Self::Vibrance | Self::PhotoFilter | Self::GradientMap => {
+                return None;
+            }
             Self::LastFilter => Shortcut {
                 cmd: true,
                 shift: false,
@@ -557,6 +580,15 @@ impl Command {
             | Self::Levels
             | Self::HueSaturation
             | Self::Exposure
+            | Self::BrightnessContrast
+            | Self::ColorBalance
+            | Self::BlackWhite
+            | Self::Vibrance
+            | Self::PhotoFilter
+            | Self::GradientMap
+            | Self::AutoTone
+            | Self::AutoContrast
+            | Self::AutoColor
             | Self::Average
             | Self::Solarize
             | Self::GaussianBlur
@@ -587,6 +619,8 @@ impl Command {
 /// extra Shift/Alt when matching, so Shift+Cmd+Z must be checked before Cmd+Z.
 const SHORTCUT_ORDER: &[Command] = &[
     Command::ExportAs,
+    Command::BlackWhite,
+    Command::AutoContrast,
     Command::ModifyFeather,
     Command::HideApp,
     Command::LockGuides,
@@ -608,6 +642,8 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::Reselect,
     Command::SelectInverse,
     Command::Desaturate,
+    Command::AutoTone,
+    Command::AutoColor,
     Command::Redo,
     Command::ToggleLastState,
     Command::NewLayer,
@@ -622,6 +658,7 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::Invert,
     Command::Levels,
     Command::HueSaturation,
+    Command::ColorBalance,
     Command::LayerViaCopy,
     Command::BringForward,
     Command::SendBackward,
@@ -795,10 +832,18 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 Err(e) => app.alert = Some(e.message(name)),
             }
         }
-        Command::Invert | Command::Desaturate | Command::Equalize => {
+        Command::Invert
+        | Command::Desaturate
+        | Command::Equalize
+        | Command::AutoTone
+        | Command::AutoContrast
+        | Command::AutoColor => {
             let adjustment = match command {
                 Command::Invert => Adjustment::Invert,
                 Command::Desaturate => Adjustment::Desaturate,
+                Command::AutoTone => Adjustment::AutoTone,
+                Command::AutoContrast => Adjustment::AutoContrast,
+                Command::AutoColor => Adjustment::AutoColor,
                 _ => Adjustment::Equalize,
             };
             if let Some(state) = app.active_doc.and_then(|id| app.docs.get_mut(&id)) {
@@ -832,6 +877,12 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
         | Command::Levels
         | Command::HueSaturation
         | Command::Exposure
+        | Command::BrightnessContrast
+        | Command::ColorBalance
+        | Command::BlackWhite
+        | Command::Vibrance
+        | Command::PhotoFilter
+        | Command::GradientMap
         | Command::GaussianBlur
         | Command::BoxBlur
         | Command::UnsharpMask
@@ -848,6 +899,14 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 Command::Levels => (AdjustKind::Levels, "Levels"),
                 Command::HueSaturation => (AdjustKind::HueSaturation, "Hue/Saturation"),
                 Command::Exposure => (AdjustKind::Exposure, "Exposure"),
+                Command::BrightnessContrast => {
+                    (AdjustKind::BrightnessContrast, "Brightness/Contrast")
+                }
+                Command::ColorBalance => (AdjustKind::ColorBalance, "Color Balance"),
+                Command::BlackWhite => (AdjustKind::BlackWhite, "Black & White"),
+                Command::Vibrance => (AdjustKind::Vibrance, "Vibrance"),
+                Command::PhotoFilter => (AdjustKind::PhotoFilter, "Photo Filter"),
+                Command::GradientMap => (AdjustKind::GradientMap, "Gradient Map"),
                 Command::GaussianBlur => (AdjustKind::GaussianBlur, "Gaussian Blur"),
                 Command::BoxBlur => (AdjustKind::BoxBlur, "Box Blur"),
                 Command::UnsharpMask => (AdjustKind::UnsharpMask, "Unsharp Mask"),
@@ -859,6 +918,11 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 Command::Offset => (AdjustKind::Offset, "Offset"),
                 _ => (AdjustKind::Mosaic, "Mosaic"),
             };
+            let rgb = |c: op_core::Color| {
+                let [r, g, b, _] = c.to_rgba8();
+                [r, g, b]
+            };
+            let colors = (rgb(app.foreground), rgb(app.background));
             if let Some(state) = app.active_doc.and_then(|id| app.docs.get_mut(&id)) {
                 match adjust::check(&state.doc) {
                     Ok(()) => {
@@ -868,7 +932,10 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                             adjust::luminosity_histogram(&state.doc)
                         };
                         let before = state.doc.snapshot();
-                        app.adjust_dialog = Some(AdjustDialog::new(kind, histogram, before));
+                        let mut dialog = AdjustDialog::new(kind, histogram, before);
+                        // Gradient Map runs from the foreground to the background color
+                        dialog.colors = colors;
+                        app.adjust_dialog = Some(dialog);
                     }
                     Err(e) => app.alert = Some(e.message(name)),
                 }

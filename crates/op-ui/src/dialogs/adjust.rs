@@ -127,6 +127,67 @@ const EXPOSURE: &[Param] = &[
     param("Offset:", -0.5, 0.5, 0.0, 4),
     param("Gamma Correction:", 0.01, 9.99, 1.0, 2),
 ];
+const BRIGHTNESS_CONTRAST: &[Param] = &[
+    param("Brightness:", -150.0, 150.0, 0.0, 0),
+    param("Contrast:", -50.0, 100.0, 0.0, 0),
+];
+const COLOR_BALANCE: &[Param] = &[
+    param("Cyan — Red:", -100.0, 100.0, 0.0, 0),
+    param("Magenta — Green:", -100.0, 100.0, 0.0, 0),
+    param("Yellow — Blue:", -100.0, 100.0, 0.0, 0),
+    check("Preserve Luminosity", true),
+];
+/// Photoshop's Black & White default preset.
+const BLACK_WHITE: &[Param] = &[
+    param("Reds (%):", -200.0, 300.0, 40.0, 0),
+    param("Yellows (%):", -200.0, 300.0, 60.0, 0),
+    param("Greens (%):", -200.0, 300.0, 40.0, 0),
+    param("Cyans (%):", -200.0, 300.0, 60.0, 0),
+    param("Blues (%):", -200.0, 300.0, 20.0, 0),
+    param("Magentas (%):", -200.0, 300.0, 80.0, 0),
+];
+const VIBRANCE: &[Param] = &[
+    param("Vibrance:", -100.0, 100.0, 0.0, 0),
+    param("Saturation:", -100.0, 100.0, 0.0, 0),
+];
+/// Photoshop's Photo Filter presets and their colors.
+const PHOTO_FILTERS: [(&str, [u8; 3]); 20] = [
+    ("Warming Filter (85)", [0xec, 0x8a, 0x00]),
+    ("Warming Filter (LBA)", [0xfa, 0x96, 0x00]),
+    ("Warming Filter (81)", [0xeb, 0xb1, 0x13]),
+    ("Cooling Filter (80)", [0x00, 0x6d, 0xff]),
+    ("Cooling Filter (LBB)", [0x00, 0x5d, 0xff]),
+    ("Cooling Filter (82)", [0x00, 0xb5, 0xff]),
+    ("Red", [0xea, 0x1a, 0x1a]),
+    ("Orange", [0xf3, 0x84, 0x17]),
+    ("Yellow", [0xf9, 0xe3, 0x1c]),
+    ("Green", [0x19, 0xc9, 0x19]),
+    ("Cyan", [0x1d, 0xcb, 0xea]),
+    ("Blue", [0x1d, 0x35, 0xea]),
+    ("Violet", [0x9b, 0x1d, 0xea]),
+    ("Magenta", [0xe3, 0x18, 0xe3]),
+    ("Sepia", [0xac, 0x7a, 0x33]),
+    ("Deep Red", [0xff, 0x00, 0x00]),
+    ("Deep Blue", [0x00, 0x22, 0xcd]),
+    ("Deep Emerald", [0x00, 0x8c, 0x00]),
+    ("Deep Yellow", [0xff, 0xd5, 0x00]),
+    ("Underwater", [0x00, 0xc1, 0xb1]),
+];
+const PHOTO_FILTER_NAMES: [&str; 20] = {
+    let mut names = [""; 20];
+    let mut i = 0;
+    while i < 20 {
+        names[i] = PHOTO_FILTERS[i].0;
+        i += 1;
+    }
+    names
+};
+const PHOTO_FILTER: &[Param] = &[
+    choice("Filter:", &PHOTO_FILTER_NAMES, 0),
+    param("Density (%):", 1.0, 100.0, 25.0, 0),
+    check("Preserve Luminosity", true),
+];
+const GRADIENT_MAP: &[Param] = &[check("Reverse", false)];
 const GAUSSIAN_BLUR: &[Param] = &[param("Radius (pixels):", 0.1, 1000.0, 1.0, 1)];
 const BOX_BLUR: &[Param] = &[param("Radius (pixels):", 1.0, 2000.0, 1.0, 0)];
 const UNSHARP_MASK: &[Param] = &[
@@ -159,6 +220,12 @@ pub enum Kind {
     Levels,
     HueSaturation,
     Exposure,
+    BrightnessContrast,
+    ColorBalance,
+    BlackWhite,
+    Vibrance,
+    PhotoFilter,
+    GradientMap,
     GaussianBlur,
     BoxBlur,
     UnsharpMask,
@@ -179,6 +246,12 @@ impl Kind {
             Self::Levels => "Levels",
             Self::HueSaturation => "Hue/Saturation",
             Self::Exposure => "Exposure",
+            Self::BrightnessContrast => "Brightness/Contrast",
+            Self::ColorBalance => "Color Balance",
+            Self::BlackWhite => "Black and White",
+            Self::Vibrance => "Vibrance",
+            Self::PhotoFilter => "Photo Filter",
+            Self::GradientMap => "Gradient Map",
             Self::GaussianBlur => "Gaussian Blur",
             Self::BoxBlur => "Box Blur",
             Self::UnsharpMask => "Unsharp Mask",
@@ -199,6 +272,12 @@ impl Kind {
             Self::Levels => LEVELS,
             Self::HueSaturation => HUE_SATURATION,
             Self::Exposure => EXPOSURE,
+            Self::BrightnessContrast => BRIGHTNESS_CONTRAST,
+            Self::ColorBalance => COLOR_BALANCE,
+            Self::BlackWhite => BLACK_WHITE,
+            Self::Vibrance => VIBRANCE,
+            Self::PhotoFilter => PHOTO_FILTER,
+            Self::GradientMap => GRADIENT_MAP,
             Self::GaussianBlur => GAUSSIAN_BLUR,
             Self::BoxBlur => BOX_BLUR,
             Self::UnsharpMask => UNSHARP_MASK,
@@ -227,6 +306,8 @@ impl Kind {
 fn row_height(p: &Param) -> f32 {
     match p.kind {
         ParamKind::Number => pt(52.0),
+        // Long lists are a dropdown, short ones radio buttons
+        ParamKind::Choice(options) if options.len() > 4 => pt(36.0),
         ParamKind::Choice(options) => pt(24.0) * (options.len() + 1) as f32,
         ParamKind::Check => pt(28.0),
     }
@@ -249,6 +330,8 @@ pub struct AdjustDialog {
     pub previewing: Option<Effect>,
     /// The document before any preview, restored on Cancel.
     pub before: op_core::Snapshot,
+    /// Gradient Map's colors (the foreground and background colors).
+    pub colors: ([u8; 3], [u8; 3]),
 }
 
 fn format(v: f32, decimals: usize) -> String {
@@ -269,6 +352,7 @@ impl AdjustDialog {
             first_frame: true,
             previewing: None,
             before,
+            colors: ([0; 3], [255; 3]),
         }
     }
 
@@ -355,6 +439,31 @@ impl AdjustDialog {
                 offset: v[1],
                 gamma: v[2],
             },
+            Kind::BrightnessContrast => Adjustment::BrightnessContrast {
+                brightness: v[0] as i32,
+                contrast: v[1] as i32,
+            },
+            Kind::ColorBalance => Adjustment::ColorBalance {
+                midtones: [v[0] as i32, v[1] as i32, v[2] as i32],
+                preserve_luminosity: v[3] == 1.0,
+            },
+            Kind::BlackWhite => Adjustment::BlackWhite {
+                weights: [0, 1, 2, 3, 4, 5].map(|i| v[i] as i32),
+            },
+            Kind::Vibrance => Adjustment::Vibrance {
+                vibrance: v[0] as i32,
+                saturation: v[1] as i32,
+            },
+            Kind::PhotoFilter => Adjustment::PhotoFilter {
+                color: PHOTO_FILTERS[(v[0] as usize).min(PHOTO_FILTERS.len() - 1)].1,
+                density: v[1] as u8,
+                preserve_luminosity: v[2] == 1.0,
+            },
+            Kind::GradientMap => {
+                let (a, b) = self.colors;
+                let (from, to) = if v[0] == 1.0 { (b, a) } else { (a, b) };
+                Adjustment::GradientMap { from, to }
+            }
             _ => return None,
         })
     }
@@ -406,8 +515,29 @@ impl AdjustDialog {
 
     /// A label with radio buttons under it.
     fn choice_row(&mut self, ui: &mut Ui, i: usize, options: &[&str], left_center: Pos2) {
-        self.label(ui, self.kind.params()[i].label, left_center);
+        let label = self.label(ui, self.kind.params()[i].label, left_center);
         let mut chosen = self.value(i).unwrap_or(0.0) as usize;
+        if options.len() > 4 {
+            let rect = Rect::from_min_size(
+                Pos2::new(label.right() + pt(8.0), left_center.y - FIELD_H / 2.0),
+                vec2(pt(200.0), FIELD_H),
+            );
+            common::dropdown(
+                ui,
+                rect,
+                ("adjust-choice", i),
+                options[chosen.min(options.len() - 1)],
+                FONT,
+                true,
+                |ui| {
+                    for (k, option) in options.iter().enumerate() {
+                        ui.selectable_value(&mut chosen, k, *option);
+                    }
+                },
+            );
+            self.values[i] = chosen.to_string();
+            return;
+        }
         for (k, option) in options.iter().enumerate() {
             let center = left_center + vec2(pt(12.0), pt(24.0) * (k + 1) as f32);
             let rect = Rect::from_min_size(center - vec2(0.0, pt(9.0)), vec2(pt(220.0), pt(18.0)));

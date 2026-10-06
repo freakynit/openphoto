@@ -1439,3 +1439,37 @@ fn new_document_dialog() {
     assert_eq!(d.resolution, 150.0);
     assert_eq!(composite_pixel(&mut h, 10, 10)[3], 0);
 }
+
+#[test]
+fn more_adjustments() {
+    use crate::commands::Command;
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.state_mut().state.foreground = Color::from_rgba8([255, 0, 0, 255]);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.run_steps(2);
+    // Black & White (Alt+Shift+Cmd+B) with the default preset: red is 40%
+    h.key_press_modifiers(
+        Modifiers::COMMAND | Modifiers::ALT | Modifiers::SHIFT,
+        egui::Key::B,
+    );
+    h.run_steps(3);
+    assert!(h.state().state.adjust_dialog.is_some());
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(composite_pixel(&mut h, 5, 5), [102, 102, 102, 255]);
+    assert_eq!(last_history(&h), "Black & White");
+
+    // Gradient Map from the foreground (black) to the background (white)
+    h.state_mut().state.foreground = Color::from_rgba8([0, 0, 0, 255]);
+    run_command(&mut h, Command::GradientMap);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    let px = composite_pixel(&mut h, 5, 5);
+    assert!(px[0] == px[1] && px[0] > 90 && px[0] < 115, "{px:?}");
+
+    run_command(&mut h, Command::PhotoFilter);
+    shot(&mut h, "photo_filter");
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+}
