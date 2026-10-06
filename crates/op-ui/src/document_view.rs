@@ -283,6 +283,14 @@ fn to_doc(state: &DocState, p: Pos2, ppp: f32) -> Pos2 {
     Pos2::new(d.x, d.y)
 }
 
+/// The part of the document shown in the window, in document pixels
+/// (x0, y0, x1, y1; may extend past the canvas).
+pub fn visible_rect(state: &DocState, ppp: f32) -> [f32; 4] {
+    let min = to_doc(state, state.view.viewport.min, ppp);
+    let max = to_doc(state, state.view.viewport.max, ppp);
+    [min.x, min.y, max.x, max.y]
+}
+
 /// Document pixel → screen point.
 fn to_screen(state: &DocState, d: Pos2, ppp: f32) -> Pos2 {
     origin(state, ppp) + d.to_vec2() * state.view.zoom / ppp

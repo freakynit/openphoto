@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use egui::Key;
 use op_core::{Color, Document};
 
+use crate::commands::Command;
 use crate::state::AppState;
 
 pub fn open_paths(app: &mut AppState, paths: Vec<PathBuf>) {
@@ -25,6 +26,50 @@ pub fn open_dialog(app: &mut AppState) {
         .pick_files();
     if let Some(paths) = paths {
         open_paths(app, paths);
+    }
+}
+
+/// Edit > Cut, Copy, Copy Merged, Paste and Paste in Place.
+pub fn clipboard(command: Command, app: &mut AppState, ppp: f32) {
+    if app.typing {
+        // A text field has focus: the menu item acts on its text
+        let event = match command {
+            Command::Cut => Some(egui::Event::Cut),
+            Command::Copy | Command::CopyMerged => Some(egui::Event::Copy),
+            _ => app.clipboard.text().map(egui::Event::Paste),
+        };
+        app.forward_events.extend(event);
+        return;
+    }
+    let [r, g, b, _] = app.background.to_rgba8();
+    let Some(state) = app.active_doc.and_then(|id| app.docs.get_mut(&id)) else {
+        return;
+    };
+    let (name, result) = match command {
+        Command::Cut => ("Cut", op_core::clipboard::cut(&mut state.doc, [r, g, b])),
+        Command::Copy => ("Copy", op_core::clipboard::copy(&state.doc)),
+        Command::CopyMerged => ("Copy Merged", op_core::clipboard::copy_merged(&state.doc)),
+        _ => {
+            let Some(clip) = app.clipboard.get() else {
+                return;
+            };
+            let (w, h) = (state.doc.width, state.doc.height);
+            let visible = crate::document_view::visible_rect(state, ppp);
+            let in_place = command == Command::PasteInPlace;
+            let at = op_core::clipboard::placement(&clip, w, h, visible, in_place);
+            op_core::clipboard::paste(&mut state.doc, &clip, at);
+            state.record("Paste");
+            return;
+        }
+    };
+    match result {
+        Ok(clip) => {
+            if command == Command::Cut {
+                state.record("Cut");
+            }
+            app.clipboard.set(clip);
+        }
+        Err(e) => app.alert = Some(e.message(name)),
     }
 }
 

@@ -367,26 +367,12 @@ pub fn toggle_active_visibility(state: &mut DocState) {
 
 pub fn new_layer(state: &mut DocState) {
     let doc = &mut state.doc;
-    // Like Photoshop: one more than the highest existing "Layer N"
-    let n = doc
-        .layers
-        .iter()
-        .filter_map(|l| l.name.strip_prefix("Layer ")?.parse::<u32>().ok())
-        .max()
-        .map_or(1, |max| max + 1);
-    let id = doc.new_layer_id();
     let layer = Layer::raster(
-        id,
-        format!("Layer {n}"),
+        doc.new_layer_id(),
+        doc.next_layer_name(),
         TiledImage::new(doc.width, doc.height),
     );
-    let index = doc
-        .active_layer
-        .and_then(|a| doc.layers.iter().position(|l| l.id == a))
-        .map_or(doc.layers.len(), |i| i + 1);
-    doc.layers.insert(index, layer);
-    doc.active_layer = Some(id);
-    doc.mark_dirty();
+    doc.insert_above_active(layer);
     state.record("New Layer");
 }
 

@@ -4,6 +4,7 @@
 //! the data structures defined here.
 
 pub mod blend;
+pub mod clipboard;
 pub mod color;
 pub mod document;
 pub mod fill;

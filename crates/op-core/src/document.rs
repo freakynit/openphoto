@@ -131,6 +131,30 @@ impl Document {
         LayerId(next_id())
     }
 
+    /// Name for a new layer, like Photoshop: one more than the highest
+    /// existing "Layer N".
+    pub fn next_layer_name(&self) -> String {
+        let n = self
+            .layers
+            .iter()
+            .filter_map(|l| l.name.strip_prefix("Layer ")?.parse::<u32>().ok())
+            .max()
+            .map_or(1, |max| max + 1);
+        format!("Layer {n}")
+    }
+
+    /// Adds `layer` directly above the active layer (on top without one)
+    /// and makes it active.
+    pub fn insert_above_active(&mut self, layer: Layer) {
+        let index = self
+            .active_layer
+            .and_then(|a| self.layers.iter().position(|l| l.id == a))
+            .map_or(self.layers.len(), |i| i + 1);
+        self.active_layer = Some(layer.id);
+        self.layers.insert(index, layer);
+        self.mark_dirty();
+    }
+
     pub fn revision(&self) -> u64 {
         self.revision
     }

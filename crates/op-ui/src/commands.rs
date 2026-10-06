@@ -31,6 +31,12 @@ pub enum Command {
     FillBackground,
     /// Edit > Clear (Delete).
     Clear,
+    Cut,
+    Copy,
+    CopyMerged,
+    Paste,
+    /// Edit > Paste Special > Paste in Place.
+    PasteInPlace,
     SelectAll,
     Deselect,
     Reselect,
@@ -138,6 +144,11 @@ impl Command {
                 alt: false,
                 key: Key::Backspace,
             },
+            Self::Cut => cmd(Key::X),
+            Self::Copy => cmd(Key::C),
+            Self::CopyMerged => shift_cmd(Key::C),
+            Self::Paste => cmd(Key::V),
+            Self::PasteInPlace => shift_cmd(Key::V),
             Self::SelectAll => cmd(Key::A),
             Self::Deselect => cmd(Key::D),
             Self::Reselect => shift_cmd(Key::D),
@@ -151,9 +162,21 @@ impl Command {
         })
     }
 
+    fn is_clipboard(self) -> bool {
+        matches!(
+            self,
+            Self::Cut | Self::Copy | Self::CopyMerged | Self::Paste | Self::PasteInPlace
+        )
+    }
+
     /// Whether the command can run in the current state (also drives menu
     /// item enabled states).
     pub fn enabled(self, app: &AppState) -> bool {
+        // With a text field focused, Cut/Copy/Paste edit its text (even in
+        // a dialog)
+        if app.typing && self.is_clipboard() {
+            return true;
+        }
         // Menus are disabled while a modal dialog is open, as in Photoshop
         if app.modal_open() {
             return false;
@@ -177,6 +200,11 @@ impl Command {
             | Self::FillForeground
             | Self::FillBackground
             | Self::Clear
+            | Self::Cut
+            | Self::Copy
+            | Self::CopyMerged
+            | Self::Paste
+            | Self::PasteInPlace
             | Self::SelectAll
             | Self::CloseAll
             | Self::ExportAs
@@ -194,6 +222,8 @@ impl Command {
 /// extra Shift/Alt when matching, so Shift+Cmd+Z must be checked before Cmd+Z.
 const SHORTCUT_ORDER: &[Command] = &[
     Command::ExportAs,
+    Command::CopyMerged,
+    Command::PasteInPlace,
     Command::Fill,
     Command::FillForeground,
     Command::FillBackground,
@@ -206,6 +236,9 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::CloseAll,
     Command::CloseOthers,
     Command::Undo,
+    Command::Cut,
+    Command::Copy,
+    Command::Paste,
     Command::New,
     Command::Open,
     Command::Close,
@@ -239,8 +272,12 @@ pub fn from_shortcuts(ctx: &egui::Context) -> Vec<Command> {
     let typing = ctx.egui_wants_keyboard_input();
     ctx.input_mut(|i| {
         for &command in SHORTCUT_ORDER {
-            // Delete-key fills would eat text editing keys
-            if typing && matches!(command, Command::FillForeground | Command::FillBackground) {
+            // Delete-key fills would eat text editing keys, and text fields
+            // handle their own Cut/Copy/Paste
+            if typing
+                && (command.is_clipboard()
+                    || matches!(command, Command::FillForeground | Command::FillBackground))
+            {
                 continue;
             }
             let s = command.shortcut().expect("listed commands have shortcuts");
@@ -251,6 +288,20 @@ pub fn from_shortcuts(ctx: &egui::Context) -> Vec<Command> {
             }
             if hit {
                 out.push(command);
+            }
+        }
+        // egui-winit turns Cmd+X/C/V into these events instead of key presses
+        if !typing {
+            let shift = i.modifiers.shift;
+            for event in &i.events {
+                out.push(match event {
+                    egui::Event::Cut => Command::Cut,
+                    egui::Event::Copy if shift => Command::CopyMerged,
+                    egui::Event::Copy => Command::Copy,
+                    egui::Event::Paste(_) if shift => Command::PasteInPlace,
+                    egui::Event::Paste(_) => Command::Paste,
+                    _ => continue,
+                });
             }
         }
         if !typing
@@ -308,6 +359,11 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 }
             }
         }
+        Command::Cut
+        | Command::Copy
+        | Command::CopyMerged
+        | Command::Paste
+        | Command::PasteInPlace => actions::clipboard(command, app, ppp),
         Command::CanvasSize => {
             if let Some(state) = app.active() {
                 let dialog = crate::dialogs::CanvasSizeDialog::new(&state.doc);

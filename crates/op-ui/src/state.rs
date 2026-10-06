@@ -411,6 +411,12 @@ pub struct AppState {
     pub color_picker: Option<PickerSession>,
     /// Swatches panel contents; "Add to Swatches" appends here.
     pub swatches: Vec<Color>,
+    pub clipboard: crate::clipboard::Clipboard,
+    /// A text field has keyboard focus (as of the last frame).
+    pub typing: bool,
+    /// Input events for egui's next frame: menu Cut/Copy/Paste passed on to
+    /// the focused text field.
+    pub forward_events: Vec<egui::Event>,
 }
 
 impl Default for AppState {
@@ -444,6 +450,9 @@ impl Default for AppState {
                     Color::from_rgba8([(hex >> 16) as u8, (hex >> 8) as u8, hex as u8, 255])
                 })
                 .collect(),
+            clipboard: crate::clipboard::Clipboard::new(false),
+            typing: false,
+            forward_events: Vec::new(),
         }
     }
 }

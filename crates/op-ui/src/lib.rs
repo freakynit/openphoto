@@ -4,9 +4,10 @@
 //! the resulting state.
 
 mod actions;
-mod commands;
+mod clipboard;
 #[cfg(target_os = "macos")]
 mod color_management;
+mod commands;
 mod dialogs;
 mod doc_tabs;
 mod document_view;
@@ -42,6 +43,7 @@ pub struct OpenPhotoApp {
 impl OpenPhotoApp {
     pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>) -> Self {
         let mut app = Self::new_headless(cc, files);
+        app.state.clipboard = clipboard::Clipboard::new(true);
         #[cfg(target_os = "macos")]
         {
             app.menu = Some(menu::NativeMenu::install(&cc.egui_ctx));
@@ -83,6 +85,7 @@ impl OpenPhotoApp {
     /// Runs commands from the native menu bar (macOS) or from egui shortcuts
     /// (other platforms, where there is no native menu).
     fn run_commands(&mut self, ctx: &egui::Context) {
+        self.state.typing = ctx.egui_wants_keyboard_input();
         #[cfg(target_os = "macos")]
         let commands = match &self.menu {
             Some(menu) => {
@@ -96,6 +99,9 @@ impl OpenPhotoApp {
         let commands = commands::from_shortcuts(ctx);
         for command in commands {
             commands::run(command, ctx, &mut self.state);
+        }
+        if !self.state.forward_events.is_empty() {
+            ctx.request_repaint();
         }
     }
 
@@ -224,6 +230,10 @@ impl OpenPhotoApp {
 }
 
 impl eframe::App for OpenPhotoApp {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        raw_input.events.append(&mut self.state.forward_events);
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 

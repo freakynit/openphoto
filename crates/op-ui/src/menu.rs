@@ -26,6 +26,11 @@ const ALL_COMMANDS: &[Command] = &[
     Command::ToggleLayerVisibility,
     Command::Fill,
     Command::Clear,
+    Command::Cut,
+    Command::Copy,
+    Command::CopyMerged,
+    Command::Paste,
+    Command::PasteInPlace,
     Command::SelectAll,
     Command::Deselect,
     Command::Reselect,
@@ -136,13 +141,21 @@ impl NativeMenu {
                 &sep(),
                 &todo("Fade...", Some("CmdOrCtrl+Shift+F")),
                 &sep(),
-                // Cut/Copy/Paste are listed without key equivalents so
-                // Cmd+C/V keep working in text fields
-                &todo("Cut", None),
-                &todo("Copy", None),
-                &todo("Copy Merged", None),
-                &todo("Paste", None),
-                &todo_sub("Paste Special"),
+                // With a text field focused these pass the edit on to it
+                &item("Cut", Command::Cut),
+                &item("Copy", Command::Copy),
+                &item("Copy Merged", Command::CopyMerged),
+                &item("Paste", Command::Paste),
+                &Submenu::with_items(
+                    "Paste Special",
+                    true,
+                    &[
+                        &item("Paste in Place", Command::PasteInPlace) as &dyn IsMenuItem,
+                        &todo("Paste Into", Some("CmdOrCtrl+Shift+Alt+V")),
+                        &todo("Paste Outside", None),
+                    ],
+                )
+                .expect("static menu definition is valid"),
                 &plain_item("Clear", Command::Clear),
                 &sep(),
                 &todo("Search", None),

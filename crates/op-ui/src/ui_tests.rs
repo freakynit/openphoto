@@ -461,3 +461,47 @@ fn screenshot_main_window() {
     reference_document(&mut h);
     shot(&mut h, "main_window");
 }
+
+fn layer_pixel(h: &Harness<'_, OpenPhotoApp>, layer: usize, x: u32, y: u32) -> [u8; 4] {
+    let op_core::LayerKind::Raster(image) = &active(h).doc.layers[layer].kind;
+    image.pixel(x, y)
+}
+
+#[test]
+fn copy_and_paste_stack_a_new_layer() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.state_mut().state.foreground = Color::from_rgba8([255, 0, 0, 255]);
+    select_rect(&mut h, 100.0, 100.0, 140.0, 140.0);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::C);
+    h.run_steps(2);
+    // egui-winit delivers Cmd+V as a Paste event
+    h.event(egui::Event::Paste(String::new()));
+    h.run_steps(2);
+    let doc = &active(&h).doc;
+    assert_eq!(doc.layers.len(), 2);
+    assert_eq!(doc.layers[1].name, "Layer 1");
+    assert!(doc.selection().is_none());
+    assert_eq!(active(&h).history.states().last().unwrap().name, "Paste");
+    // Pasted in place over the original; nothing outside it
+    assert_eq!(layer_pixel(&h, 1, 120, 120), [255, 0, 0, 255]);
+    assert_eq!(layer_pixel(&h, 1, 150, 120), [0, 0, 0, 0]);
+
+    // Cut on the new layer leaves a hole that shows the background
+    select_rect(&mut h, 100.0, 100.0, 120.0, 140.0);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::X);
+    h.run_steps(2);
+    assert_eq!(layer_pixel(&h, 1, 110, 120)[3], 0);
+    assert_eq!(layer_pixel(&h, 1, 130, 120), [255, 0, 0, 255]);
+    assert_eq!(active(&h).history.states().last().unwrap().name, "Cut");
+
+    // Copying only transparent pixels is refused like in Photoshop
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::C);
+    h.run_steps(2);
+    assert_eq!(
+        h.state().state.alert.as_deref(),
+        Some("Could not complete the Copy command because the selected area is empty.")
+    );
+}
