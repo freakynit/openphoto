@@ -83,8 +83,16 @@ pub enum Icon {
     NewGroup,
     NewLayer,
     DeleteLayer,
+    /// Hue/Saturation's targeted adjustment hand.
+    TargetedHand,
+    Eyedropper,
+    EyedropperPlus,
+    EyedropperMinus,
+    /// The presets menu button (three bars and a corner).
+    PresetMenu,
 }
 
+#[derive(Clone, Copy)]
 struct Pen<'a> {
     painter: &'a Painter,
     center: Pos2,
@@ -681,6 +689,48 @@ pub fn paint_scaled(
         Icon::CropCancel => {
             pen.ring(0.0, 0.0, 13.0, 4.0);
             pen.line(&[(-9.0, -9.0), (9.0, 9.0)], 4.0);
+        }
+        Icon::TargetedHand => {
+            // Traced from Photoshop 2026's Hue/Saturation at 2x
+            pen.poly(&[(-13.0, -8.75), (-9.5, -10.5), (-9.5, -7.0)]);
+            pen.poly(&[(10.5, -8.75), (7.0, -10.5), (7.0, -7.0)]);
+            pen.round_line((-1.0, -9.0), (-1.0, 4.0), 3.5);
+            pen.round_line((-8.0, -0.5), (-1.0, 10.0), 4.0);
+            pen.painter.rect_filled(
+                Rect::from_min_max(pen.p(-3.5, 0.0), pen.p(11.0, 15.5)),
+                pen.w(5.5),
+                pen.color,
+            );
+        }
+        Icon::Eyedropper | Icon::EyedropperPlus | Icon::EyedropperMinus => {
+            // A hollow tube from the lower left, a collar across it and
+            // the bulb at the upper right
+            let tube = [(-9.5, 9.5), (3.0, -3.0)];
+            pen.round_line(tube[0], tube[1], 5.0);
+            {
+                let inner = Pen {
+                    color: background,
+                    ..pen
+                };
+                inner.round_line((-9.5, 9.5), (2.5, -2.5), 2.4);
+            }
+            pen.round_line((0.5, -8.0), (7.5, -1.0), 4.0);
+            pen.round_line((4.0, -4.5), (10.5, -11.0), 5.5);
+            pen.dot(12.5, -13.0, 3.5);
+            match icon {
+                Icon::EyedropperPlus => {
+                    pen.rect(4.4, 5.9, 14.4, 7.9);
+                    pen.rect(8.4, 1.9, 10.4, 11.9);
+                }
+                Icon::EyedropperMinus => pen.rect(4.4, 5.5, 14.4, 7.5),
+                _ => {}
+            }
+        }
+        Icon::PresetMenu => {
+            for y in [-8.0, -0.25, 7.75] {
+                pen.rect(-12.0, y - 1.25, 10.0, y + 1.25);
+            }
+            pen.poly(&[(19.5, 8.5), (19.5, 15.5), (12.0, 15.5)]);
         }
         Icon::Swap => {
             pen.rect(-7.5, -7.0, 4.0, -5.0);

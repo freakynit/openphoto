@@ -1099,6 +1099,8 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                         let mut dialog = AdjustDialog::new(kind, histogram, before);
                         // Gradient Map runs from the foreground to the background color
                         dialog.colors = colors;
+                        // Colorize starts from the foreground color's hue
+                        dialog.set_colorize_hue(adjust::hue_of(colors.0).round() as i32);
                         app.adjust_dialog = Some(dialog);
                     }
                     Err(e) => app.alert = Some(e.message(name)),

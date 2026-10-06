@@ -2,11 +2,14 @@
 
 mod adjust;
 pub mod alert;
+mod brightness_contrast;
 mod canvas_size;
+mod color_balance;
 mod color_picker;
 mod common;
 mod duplicate_layer;
 mod fill;
+mod hue_saturation;
 mod image_size;
 mod lock_layers;
 mod modify_selection;
@@ -16,6 +19,7 @@ mod new_layer;
 mod rotate_canvas;
 pub mod save_changes;
 mod trim;
+mod uxp;
 
 pub use adjust::{AdjustDialog, Effect, Kind as AdjustKind, Outcome as AdjustOutcome};
 pub use canvas_size::{CanvasSizeDialog, Outcome};

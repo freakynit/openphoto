@@ -10,10 +10,10 @@
 //! Preview on, the document shows the result while the dialog is open.
 
 use egui::{Align2, Color32, FontId, Key, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, vec2};
-use op_core::adjust::Adjustment;
+use op_core::adjust::{Adjustment, Levels};
 use op_core::filter::{Filter, OffsetFill};
 
-use super::common;
+use super::{brightness_contrast, color_balance, common, hue_saturation, uxp};
 use crate::theme::{self, color, pt};
 
 const FONT: f32 = pt(12.5);
@@ -117,25 +117,10 @@ const LEVELS: &[Param] = &[
     param("", 0.0, 255.0, 0.0, 0),
     param("", 0.0, 255.0, 255.0, 0),
 ];
-const HUE_SATURATION: &[Param] = &[
-    param("Hue:", -180.0, 180.0, 0.0, 0),
-    param("Saturation:", -100.0, 100.0, 0.0, 0),
-    param("Lightness:", -100.0, 100.0, 0.0, 0),
-];
 const EXPOSURE: &[Param] = &[
     param("Exposure:", -20.0, 20.0, 0.0, 2),
     param("Offset:", -0.5, 0.5, 0.0, 4),
     param("Gamma Correction:", 0.01, 9.99, 1.0, 2),
-];
-const BRIGHTNESS_CONTRAST: &[Param] = &[
-    param("Brightness:", -150.0, 150.0, 0.0, 0),
-    param("Contrast:", -50.0, 100.0, 0.0, 0),
-];
-const COLOR_BALANCE: &[Param] = &[
-    param("Cyan — Red:", -100.0, 100.0, 0.0, 0),
-    param("Magenta — Green:", -100.0, 100.0, 0.0, 0),
-    param("Yellow — Blue:", -100.0, 100.0, 0.0, 0),
-    check("Preserve Luminosity", true),
 ];
 /// Photoshop's Black & White default preset.
 const BLACK_WHITE: &[Param] = &[
@@ -272,11 +257,11 @@ impl Kind {
             Self::Threshold => THRESHOLD,
             Self::Posterize => POSTERIZE,
             Self::Levels => LEVELS,
-            Self::Curves => &[],
-            Self::HueSaturation => HUE_SATURATION,
+            // Their own dialogs keep their settings
+            Self::Curves | Self::HueSaturation | Self::BrightnessContrast | Self::ColorBalance => {
+                &[]
+            }
             Self::Exposure => EXPOSURE,
-            Self::BrightnessContrast => BRIGHTNESS_CONTRAST,
-            Self::ColorBalance => COLOR_BALANCE,
             Self::BlackWhite => BLACK_WHITE,
             Self::Vibrance => VIBRANCE,
             Self::PhotoFilter => PHOTO_FILTER,
@@ -341,6 +326,16 @@ pub struct AdjustDialog {
     curve: Vec<(f32, f32)>,
     curve_selected: Option<usize>,
     curve_drag: Option<usize>,
+    /// The dialogs rebuilt after Photoshop 2026, which keep their own
+    /// settings.
+    custom: Option<Custom>,
+}
+
+/// A dialog with its own layout and settings.
+enum Custom {
+    BrightnessContrast(brightness_contrast::Dialog),
+    ColorBalance(color_balance::Dialog),
+    HueSaturation(Box<hue_saturation::Dialog>),
 }
 
 fn format(v: f32, decimals: usize) -> String {
@@ -365,6 +360,21 @@ impl AdjustDialog {
             curve: vec![(0.0, 0.0), (255.0, 255.0)],
             curve_selected: None,
             curve_drag: None,
+            custom: match kind {
+                Kind::BrightnessContrast => Some(Custom::BrightnessContrast(Default::default())),
+                Kind::ColorBalance => Some(Custom::ColorBalance(Default::default())),
+                Kind::HueSaturation => Some(Custom::HueSaturation(Box::new(
+                    hue_saturation::Dialog::new(0),
+                ))),
+                _ => None,
+            },
+        }
+    }
+
+    /// Hue/Saturation's Colorize starts from this hue.
+    pub fn set_colorize_hue(&mut self, hue: i32) {
+        if let Some(Custom::HueSaturation(d)) = &mut self.custom {
+            d.colorize_values[0] = hue.to_string();
         }
     }
 
@@ -381,6 +391,12 @@ impl AdjustDialog {
 
     /// The effect as currently set, if every value is valid.
     pub fn effect(&self) -> Option<Effect> {
+        match &self.custom {
+            Some(Custom::BrightnessContrast(d)) => return d.adjustment().map(Effect::Adjustment),
+            Some(Custom::ColorBalance(d)) => return d.adjustment().map(Effect::Adjustment),
+            Some(Custom::HueSaturation(d)) => return d.adjustment().map(Effect::Adjustment),
+            None => {}
+        }
         let v: Vec<f32> = (0..self.values.len())
             .map(|i| self.value(i))
             .collect::<Option<_>>()?;
@@ -433,31 +449,21 @@ impl AdjustDialog {
                 if v[0] + 2.0 > v[2] {
                     return None;
                 }
-                Adjustment::Levels {
-                    input_black: v[0] as u8,
-                    gamma: v[1],
-                    input_white: v[2] as u8,
-                    output_black: v[3] as u8,
-                    output_white: v[4] as u8,
-                }
+                Adjustment::Levels(
+                    Levels {
+                        input_black: v[0] as u8,
+                        gamma: v[1],
+                        input_white: v[2] as u8,
+                        output_black: v[3] as u8,
+                        output_white: v[4] as u8,
+                    }
+                    .composite(),
+                )
             }
-            Kind::HueSaturation => Adjustment::HueSaturation {
-                hue: v[0] as i32,
-                saturation: v[1] as i32,
-                lightness: v[2] as i32,
-            },
             Kind::Exposure => Adjustment::Exposure {
                 exposure: v[0],
                 offset: v[1],
                 gamma: v[2],
-            },
-            Kind::BrightnessContrast => Adjustment::BrightnessContrast {
-                brightness: v[0] as i32,
-                contrast: v[1] as i32,
-            },
-            Kind::ColorBalance => Adjustment::ColorBalance {
-                midtones: [v[0] as i32, v[1] as i32, v[2] as i32],
-                preserve_luminosity: v[3] == 1.0,
             },
             Kind::BlackWhite => Adjustment::BlackWhite {
                 weights: [0, 1, 2, 3, 4, 5].map(|i| v[i] as i32),
@@ -494,14 +500,47 @@ impl AdjustDialog {
             .frame(egui::Frame::NONE)
             .backdrop_color(Color32::TRANSPARENT)
             .show(ctx, |ui| {
-                let (rect, _) = ui.allocate_exact_size(self.kind.size(), Sense::hover());
-                outcome = self.ui(ui, rect);
+                let size = match self.custom {
+                    Some(Custom::BrightnessContrast(_)) => brightness_contrast::SIZE,
+                    Some(Custom::ColorBalance(_)) => color_balance::SIZE,
+                    Some(Custom::HueSaturation(_)) => hue_saturation::SIZE,
+                    None => self.kind.size(),
+                };
+                let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+                outcome = if self.custom.is_some() {
+                    self.custom_ui(ui, rect)
+                } else {
+                    self.ui(ui, rect)
+                };
             });
         self.first_frame = false;
         if ctx.input(|i| i.key_pressed(Key::Escape)) {
             outcome = Outcome::Cancel;
         }
         outcome
+    }
+
+    /// The dialogs rebuilt after Photoshop 2026: their own layout, with the
+    /// AppKit title bar.
+    fn custom_ui(&mut self, ui: &mut Ui, frame: Rect) -> Outcome {
+        common::frame(ui, frame, self.kind.title(), theme::dialog_bold(pt(13.0)));
+        let button = match self.custom.as_mut() {
+            Some(Custom::BrightnessContrast(d)) => {
+                let pressed = d.ui(ui, frame, self.first_frame, &mut self.preview);
+                if pressed == Some(uxp::Button::Third) {
+                    d.auto(auto_brightness_contrast(&self.histogram));
+                }
+                pressed
+            }
+            Some(Custom::ColorBalance(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
+            Some(Custom::HueSaturation(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
+            None => None,
+        };
+        match button {
+            Some(uxp::Button::Ok) => self.effect().map_or(Outcome::Open, Outcome::Apply),
+            Some(uxp::Button::Cancel) => Outcome::Cancel,
+            _ => Outcome::Open,
+        }
     }
 
     fn ui(&mut self, ui: &mut Ui, frame: Rect) -> Outcome {
@@ -950,9 +989,59 @@ impl AdjustDialog {
     }
 }
 
+/// Brightness/Contrast's Auto: the brightness and contrast whose curve
+/// comes closest (over the image's histogram) to Auto Contrast's stretch,
+/// the 0.1% darkest and lightest values clipped. Photoshop's own choice
+/// is not reproduced exactly.
+fn auto_brightness_contrast(histogram: &[u64; 256]) -> (i32, i32) {
+    let total: u64 = histogram.iter().sum();
+    if total == 0 {
+        return (0, 0);
+    }
+    let clip = total / 1000;
+    let mut acc = 0;
+    let lo = (0..256).find(|&i| {
+        acc += histogram[i];
+        acc > clip
+    });
+    acc = 0;
+    let hi = (0..256).rev().find(|&i| {
+        acc += histogram[i];
+        acc > clip
+    });
+    let (lo, hi) = (lo.unwrap_or(0) as f32, hi.unwrap_or(255) as f32);
+    if hi <= lo {
+        return (0, 0);
+    }
+    let target = |v: usize| ((v as f32 - lo) / (hi - lo) * 255.0).clamp(0.0, 255.0);
+    let mut best = (f64::MAX, (0, 0));
+    for b in (-150..=150).step_by(2) {
+        for c in (-50..=100).step_by(2) {
+            let adj = Adjustment::BrightnessContrast {
+                brightness: b,
+                contrast: c,
+                legacy: false,
+            };
+            let table = adj.tables().expect("a tone curve")[0];
+            let err: f64 = (0..256)
+                .filter(|&v| histogram[v] > 0)
+                .map(|v| {
+                    let d = table[v] as f32 - target(v);
+                    histogram[v] as f64 * (d * d) as f64
+                })
+                .sum();
+            if err < best.0 {
+                best = (err, (b, c));
+            }
+        }
+    }
+    best.1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use op_core::adjust::HueSaturation;
 
     fn dialog(kind: Kind) -> AdjustDialog {
         let doc = op_core::Document::new_with_background("t", 1, 1, op_core::Color::WHITE);
@@ -963,22 +1052,16 @@ mod tests {
     fn defaults_match_photoshop() {
         assert_eq!(
             dialog(Kind::Levels).effect(),
-            Some(Effect::Adjustment(Adjustment::Levels {
-                input_black: 0,
-                input_white: 255,
-                gamma: 1.0,
-                output_black: 0,
-                output_white: 255,
-            }))
+            Some(Effect::Adjustment(Adjustment::Levels(
+                Levels::IDENTITY.composite()
+            )))
         );
         assert_eq!(dialog(Kind::Exposure).values, ["0.00", "0.0000", "1.00"]);
         assert_eq!(
             dialog(Kind::HueSaturation).effect(),
-            Some(Effect::Adjustment(Adjustment::HueSaturation {
-                hue: 0,
-                saturation: 0,
-                lightness: 0
-            }))
+            Some(Effect::Adjustment(Adjustment::HueSaturation(
+                HueSaturation::master(0, 0, 0)
+            )))
         );
     }
 
@@ -1012,9 +1095,6 @@ mod tests {
         let mut d = dialog(Kind::Levels);
         d.values[0] = "250".into();
         d.values[2] = "251".into();
-        assert_eq!(d.effect(), None);
-        let mut d = dialog(Kind::HueSaturation);
-        d.values[0] = "181".into();
         assert_eq!(d.effect(), None);
     }
 }

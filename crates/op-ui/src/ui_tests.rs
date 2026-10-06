@@ -814,6 +814,9 @@ fn screenshot_adjustment_dialogs() {
         (Command::Levels, "levels_dialog"),
         (Command::HueSaturation, "hue_saturation_dialog"),
         (Command::Exposure, "exposure_dialog"),
+        (Command::BrightnessContrast, "brightness_contrast_dialog"),
+        (Command::ColorBalance, "color_balance_dialog"),
+        (Command::Curves, "curves_dialog"),
     ] {
         let mut h = harness(Vec::new());
         reference_document(&mut h);
@@ -2940,4 +2943,144 @@ fn merge_group_and_reverse() {
     assert_eq!(layer_names(&h), ["Background", "Group 1"]);
     assert!(!active(&h).doc.layers[1].is_group());
     assert_eq!(last_history(&h), "Merge Group");
+}
+
+/// A point in Photoshop points from the top-left corner of a centered
+/// dialog `w` × `h` points large.
+fn in_dialog(h: &Harness<'_, OpenPhotoApp>, (w, hgt): (f32, f32), x: f32, y: f32) -> Pos2 {
+    let screen = h.ctx.content_rect();
+    screen.center() - egui::vec2(pt(w), pt(hgt)) / 2.0 + egui::vec2(pt(x), pt(y))
+}
+
+fn click_dialog(h: &mut Harness<'_, OpenPhotoApp>, size: (f32, f32), x: f32, y: f32) {
+    let p = in_dialog(h, size, x, y);
+    click(h, p);
+}
+
+/// A one-color document for the adjustment dialogs.
+fn color_document(h: &mut Harness<'_, OpenPhotoApp>, rgb: [u8; 3]) {
+    let app = &mut h.state_mut().state;
+    crate::actions::close_all(app);
+    let [r, g, b] = rgb;
+    let doc =
+        op_core::Document::new_with_background("t", 40, 40, Color::from_rgba8([r, g, b, 255]));
+    app.add_document(doc, "Open");
+    h.run_steps(4);
+}
+
+#[test]
+fn brightness_contrast_dialog_types_and_applies() {
+    use op_core::adjust::Adjustment;
+    let mut h = harness(Vec::new());
+    color_document(&mut h, [100, 100, 100]);
+    run_command(&mut h, crate::commands::Command::BrightnessContrast);
+    // Brightness has the focus with its text selected
+    h.event(egui::Event::Text("50".into()));
+    h.run_steps(3);
+    // Use Legacy
+    click_dialog(&mut h, (401.0, 212.0), 26.0, 170.0);
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(h.state().state.adjust_dialog.is_none());
+    assert_eq!(last_history(&h), "Brightness/Contrast");
+    // Legacy brightness shifts every level by 50
+    assert_eq!(composite_pixel(&mut h, 5, 5), [150, 150, 150, 255]);
+
+    run_command(&mut h, crate::commands::Command::BrightnessContrast);
+    h.event(egui::Event::Text("50".into()));
+    h.run_steps(3);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    let t = Adjustment::BrightnessContrast {
+        brightness: 50,
+        contrast: 0,
+        legacy: false,
+    }
+    .tables()
+    .unwrap()[0];
+    let v = t[150];
+    assert_eq!(composite_pixel(&mut h, 5, 5), [v, v, v, 255]);
+}
+
+#[test]
+fn color_balance_tones_keep_their_values() {
+    use op_core::adjust::Adjustment;
+    let mut h = harness(Vec::new());
+    color_document(&mut h, [100, 100, 100]);
+    run_command(&mut h, crate::commands::Command::ColorBalance);
+    // Midtones' Cyan to Red has the focus
+    h.event(egui::Event::Text("40".into()));
+    h.run_steps(3);
+    // Shadows: its own values, its first box focused
+    click_dialog(&mut h, (447.0, 295.0), 68.0, 60.0);
+    h.run_steps(3);
+    h.event(egui::Event::Text("-30".into()));
+    h.run_steps(3);
+    // Preserve Luminosity off
+    click_dialog(&mut h, (447.0, 295.0), 26.0, 263.0);
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(last_history(&h), "Color Balance");
+    let t = Adjustment::ColorBalance {
+        shadows: [-30, 0, 0],
+        midtones: [40, 0, 0],
+        highlights: [0; 3],
+        preserve_luminosity: false,
+    }
+    .tables()
+    .unwrap();
+    let px = composite_pixel(&mut h, 5, 5);
+    assert_eq!(px, [t[0][100], t[1][100], t[2][100], 255]);
+    assert_ne!(px[0], 100);
+}
+
+#[test]
+fn hue_saturation_ranges_and_colorize() {
+    use op_core::adjust::{Adjustment, HueSaturation};
+    const SIZE: (f32, f32) = (437.0, 413.0);
+    let mut h = harness(Vec::new());
+    color_document(&mut h, [230, 40, 40]);
+    run_command(&mut h, crate::commands::Command::HueSaturation);
+    // Reds, then 60 in its Hue box
+    click_dialog(&mut h, SIZE, 104.0, 96.0);
+    h.run_steps(2);
+    click_dialog(&mut h, SIZE, 280.0, 132.0);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    h.event(egui::Event::Text("60".into()));
+    h.run_steps(3);
+    shot(&mut h, "hue_saturation_reds");
+    // Back to Master: its box still says 0
+    click_dialog(&mut h, SIZE, 68.0, 96.0);
+    h.run_steps(2);
+    // Click away from the boxes so Enter goes to OK
+    click_dialog(&mut h, SIZE, 150.0, 331.0);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(last_history(&h), "Hue/Saturation");
+    let mut reds = HueSaturation::master(0, 0, 0);
+    reds.ranges[0].hue = 60;
+    let want = Adjustment::HueSaturation(reds);
+    let Adjustment::HueSaturation(hs) = want else {
+        unreachable!()
+    };
+    assert_eq!(composite_pixel(&mut h, 5, 5), hs.apply([230, 40, 40, 255]));
+
+    // Colorize starts at saturation 25 with the foreground color's hue
+    let [r, g, b, _] = h.state().state.foreground.to_rgba8();
+    let hue = op_core::adjust::hue_of([r, g, b]).round() as i32;
+    run_command(&mut h, crate::commands::Command::HueSaturation);
+    click_dialog(&mut h, SIZE, 26.0, 298.0);
+    h.run_steps(3);
+    shot(&mut h, "hue_saturation_colorize");
+    click_dialog(&mut h, SIZE, 150.0, 331.0);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    let colorize = HueSaturation {
+        colorize: true,
+        ..HueSaturation::master(hue, 25, 0)
+    };
+    let before = hs.apply([230, 40, 40, 255]);
+    assert_eq!(composite_pixel(&mut h, 5, 5), colorize.apply(before));
 }
