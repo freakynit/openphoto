@@ -1,0 +1,712 @@
+//! Photoshop documents (.psd): 8-bit RGB with pixel layers.
+//!
+//! Written per Adobe's "Photoshop File Formats Specification". Layers keep
+//! their name, visibility, opacity, fill opacity and blend mode; channel
+//! data is PackBits (RLE) compressed, and the merged image is stored too so
+//! other applications can show the file.
+
+use std::io::{Cursor, Read};
+
+use op_core::{BlendMode, Color, Document, Layer, LayerKind, TiledImage};
+
+use crate::IoError;
+
+fn invalid(what: &str) -> IoError {
+    IoError::Psd(what.to_string())
+}
+
+const BLEND_KEYS: &[(BlendMode, &[u8; 4])] = &[
+    (BlendMode::Normal, b"norm"),
+    (BlendMode::Dissolve, b"diss"),
+    (BlendMode::Darken, b"dark"),
+    (BlendMode::Multiply, b"mul "),
+    (BlendMode::ColorBurn, b"idiv"),
+    (BlendMode::LinearBurn, b"lbrn"),
+    (BlendMode::DarkerColor, b"dkCl"),
+    (BlendMode::Lighten, b"lite"),
+    (BlendMode::Screen, b"scrn"),
+    (BlendMode::ColorDodge, b"div "),
+    (BlendMode::LinearDodge, b"lddg"),
+    (BlendMode::LighterColor, b"lgCl"),
+    (BlendMode::Overlay, b"over"),
+    (BlendMode::SoftLight, b"sLit"),
+    (BlendMode::HardLight, b"hLit"),
+    (BlendMode::VividLight, b"vLit"),
+    (BlendMode::LinearLight, b"lLit"),
+    (BlendMode::PinLight, b"pLit"),
+    (BlendMode::HardMix, b"hMix"),
+    (BlendMode::Difference, b"diff"),
+    (BlendMode::Exclusion, b"smud"),
+    (BlendMode::Subtract, b"fsub"),
+    (BlendMode::Divide, b"fdiv"),
+    (BlendMode::Hue, b"hue "),
+    (BlendMode::Saturation, b"sat "),
+    (BlendMode::Color, b"colr"),
+    (BlendMode::Luminosity, b"lum "),
+];
+
+// ---- PackBits ----
+
+fn packbits(row: &[u8], out: &mut Vec<u8>) {
+    let mut i = 0;
+    while i < row.len() {
+        // A run of at least 3 equal bytes is worth encoding as a repeat
+        let mut run = 1;
+        while i + run < row.len() && run < 128 && row[i + run] == row[i] {
+            run += 1;
+        }
+        if run >= 3 {
+            out.push((257 - run) as u8);
+            out.push(row[i]);
+            i += run;
+            continue;
+        }
+        let start = i;
+        while i < row.len() && i - start < 128 {
+            if i + 2 < row.len() && row[i] == row[i + 1] && row[i] == row[i + 2] {
+                break;
+            }
+            i += 1;
+        }
+        out.push((i - start - 1) as u8);
+        out.extend_from_slice(&row[start..i]);
+    }
+}
+
+fn unpackbits(data: &[u8], len: usize) -> Result<Vec<u8>, IoError> {
+    let mut out = Vec::with_capacity(len);
+    let mut i = 0;
+    while out.len() < len {
+        let n = *data.get(i).ok_or_else(|| invalid("truncated RLE data"))? as i8;
+        i += 1;
+        if n >= 0 {
+            let count = n as usize + 1;
+            let bytes = data
+                .get(i..i + count)
+                .ok_or_else(|| invalid("truncated RLE data"))?;
+            out.extend_from_slice(bytes);
+            i += count;
+        } else if n != -128 {
+            let count = 1 - n as isize;
+            let byte = *data.get(i).ok_or_else(|| invalid("truncated RLE data"))?;
+            out.extend(std::iter::repeat_n(byte, count as usize));
+            i += 1;
+        }
+    }
+    out.truncate(len);
+    Ok(out)
+}
+
+/// One channel (`rows` × `cols` bytes) RLE-compressed: the per-row byte
+/// counts, then the rows.
+fn rle_channel(plane: &[u8], rows: usize, cols: usize) -> (Vec<u16>, Vec<u8>) {
+    let mut counts = Vec::with_capacity(rows);
+    let mut data = Vec::new();
+    for r in 0..rows {
+        let before = data.len();
+        packbits(&plane[r * cols..(r + 1) * cols], &mut data);
+        counts.push((data.len() - before) as u16);
+    }
+    (counts, data)
+}
+
+// ---- Writing ----
+
+struct Writer(Vec<u8>);
+
+impl Writer {
+    fn u8(&mut self, v: u8) {
+        self.0.push(v);
+    }
+    fn u16(&mut self, v: u16) {
+        self.0.extend_from_slice(&v.to_be_bytes());
+    }
+    fn i16(&mut self, v: i16) {
+        self.0.extend_from_slice(&v.to_be_bytes());
+    }
+    fn u32(&mut self, v: u32) {
+        self.0.extend_from_slice(&v.to_be_bytes());
+    }
+    fn i32(&mut self, v: i32) {
+        self.0.extend_from_slice(&v.to_be_bytes());
+    }
+    fn bytes(&mut self, b: &[u8]) {
+        self.0.extend_from_slice(b);
+    }
+    /// Writes a placeholder length and returns where to patch it.
+    fn length_slot(&mut self) -> usize {
+        self.u32(0);
+        self.0.len()
+    }
+    /// Pads to a multiple of `align` from `start`, then patches the length.
+    fn close(&mut self, start: usize, align: usize) {
+        while !(self.0.len() - start).is_multiple_of(align) {
+            self.0.push(0);
+        }
+        let len = (self.0.len() - start) as u32;
+        self.0[start - 4..start].copy_from_slice(&len.to_be_bytes());
+    }
+}
+
+/// The non-transparent bounds of a layer (x0, y0, x1, y1), or `None` if
+/// the layer is empty.
+fn content_bounds(image: &TiledImage, w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
+    let mut b: Option<(u32, u32, u32, u32)> = None;
+    for y in 0..h {
+        for x in 0..w {
+            if image.pixel(x, y)[3] > 0 {
+                b = Some(match b {
+                    None => (x, y, x + 1, y + 1),
+                    Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1)),
+                });
+            }
+        }
+    }
+    b
+}
+
+/// The four planes (alpha, red, green, blue) of a region of a layer.
+fn planes(image: &TiledImage, (x0, y0, x1, y1): (u32, u32, u32, u32)) -> [Vec<u8>; 4] {
+    let n = ((x1 - x0) * (y1 - y0)) as usize;
+    let mut p: [Vec<u8>; 4] = std::array::from_fn(|_| Vec::with_capacity(n));
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let [r, g, b, a] = image.pixel(x, y);
+            p[0].push(a);
+            p[1].push(r);
+            p[2].push(g);
+            p[3].push(b);
+        }
+    }
+    p
+}
+
+pub fn write(doc: &Document) -> Vec<u8> {
+    let (w, h) = (doc.width, doc.height);
+    let mut out = Writer(Vec::new());
+    // Only a background: Photoshop stores no layers, just the merged image
+    let only_background = doc.layers.len() == 1 && doc.layers[0].is_background;
+    let merged = doc.composite_rgba8();
+    let opaque = merged.as_chunks::<4>().0.iter().all(|p| p[3] == 255);
+    let merged_channels: u16 = if opaque { 3 } else { 4 };
+
+    // Header
+    out.bytes(b"8BPS");
+    out.u16(1);
+    out.bytes(&[0; 6]);
+    out.u16(merged_channels);
+    out.u32(h);
+    out.u32(w);
+    out.u16(8);
+    out.u16(3); // RGB
+
+    // Color mode data
+    out.u32(0);
+
+    // Image resources: resolution (ResolutionInfo, 1005)
+    let resources = out.length_slot();
+    out.bytes(b"8BIM");
+    out.u16(1005);
+    out.bytes(&[0, 0]); // empty name, padded to even
+    out.u32(16);
+    let fixed = (doc.resolution * 65536.0).round() as u32;
+    for _ in 0..2 {
+        out.u32(fixed);
+        out.u16(1); // pixels per inch
+        out.u16(1); // display unit: inches
+    }
+    out.close(resources, 2);
+
+    // Layer and mask information
+    let layer_and_mask = out.length_slot();
+    if !only_background {
+        let layer_info = out.length_slot();
+        // Negative: the merged image's alpha holds the merged transparency
+        let count = doc.layers.len() as i16;
+        out.i16(if opaque { count } else { -count });
+        let mut channel_data: Vec<Vec<(u16, Vec<u8>)>> = Vec::new();
+        for layer in &doc.layers {
+            let LayerKind::Raster(image) = &layer.kind;
+            let bounds = content_bounds(image, w, h);
+            let (x0, y0, x1, y1) = bounds.unwrap_or((0, 0, 0, 0));
+            out.i32(y0 as i32);
+            out.i32(x0 as i32);
+            out.i32(y1 as i32);
+            out.i32(x1 as i32);
+            out.u16(4);
+            let (rows, cols) = ((y1 - y0) as usize, (x1 - x0) as usize);
+            let mut channels = Vec::new();
+            let plane_data = bounds.map(|b| planes(image, b));
+            for (k, id) in [-1i16, 0, 1, 2].into_iter().enumerate() {
+                let mut data = Writer(Vec::new());
+                data.u16(1); // RLE
+                if let Some(p) = &plane_data {
+                    let (counts, bytes) = rle_channel(&p[k], rows, cols);
+                    counts.iter().for_each(|&c| data.u16(c));
+                    data.bytes(&bytes);
+                }
+                out.i16(id);
+                out.u32(data.0.len() as u32);
+                channels.push((id as u16, data.0));
+            }
+            channel_data.push(channels);
+
+            out.bytes(b"8BIM");
+            let key = BLEND_KEYS
+                .iter()
+                .find(|(m, _)| *m == layer.blend_mode)
+                .map_or(b"norm", |(_, k)| *k);
+            out.bytes(key);
+            out.u8((layer.opacity * 255.0).round() as u8);
+            out.u8(0); // clipping: base
+            let mut flags = 0u8;
+            if layer.is_background || layer.lock_transparency {
+                flags |= 1; // transparency protected
+            }
+            if !layer.visible {
+                flags |= 2;
+            }
+            out.u8(flags);
+            out.u8(0);
+            let extra = out.length_slot();
+            out.u32(0); // no layer mask
+            out.u32(0); // no blending ranges
+            // Pascal name (MacRoman; non-ASCII becomes '?'), padded to 4
+            let ascii: Vec<u8> = layer
+                .name
+                .chars()
+                .take(255)
+                .map(|c| if c.is_ascii() { c as u8 } else { b'?' })
+                .collect();
+            let name_start = out.0.len();
+            out.u8(ascii.len() as u8);
+            out.bytes(&ascii);
+            while !(out.0.len() - name_start).is_multiple_of(4) {
+                out.u8(0);
+            }
+            // Unicode name
+            out.bytes(b"8BIMluni");
+            let luni = out.length_slot();
+            let utf16: Vec<u16> = layer.name.encode_utf16().collect();
+            out.u32(utf16.len() as u32);
+            utf16.iter().for_each(|&c| out.u16(c));
+            out.close(luni, 4);
+            // Fill opacity
+            out.bytes(b"8BIMiOpa");
+            out.u32(4);
+            out.u8((layer.fill * 255.0).round() as u8);
+            out.bytes(&[0; 3]);
+            out.close(extra, 2);
+        }
+        for channels in channel_data {
+            for (_, data) in channels {
+                out.bytes(&data);
+            }
+        }
+        out.close(layer_info, 2);
+        out.u32(0); // global layer mask info
+    }
+    out.close(layer_and_mask, 2);
+
+    // Merged image: RLE, planes in order R, G, B (, A)
+    out.u16(1);
+    let (rows, cols) = (h as usize, w as usize);
+    let mut all_counts = Vec::new();
+    let mut all_data = Vec::new();
+    for c in [0usize, 1, 2, 3].into_iter().take(merged_channels as usize) {
+        let plane: Vec<u8> = merged.chunks(4).map(|p| p[c]).collect();
+        let (counts, data) = rle_channel(&plane, rows, cols);
+        all_counts.extend(counts);
+        all_data.extend(data);
+    }
+    all_counts.iter().for_each(|&c| out.u16(c));
+    out.bytes(&all_data);
+    out.0
+}
+
+// ---- Reading ----
+
+struct Reader<'a>(Cursor<&'a [u8]>);
+
+impl Reader<'_> {
+    fn take<const N: usize>(&mut self) -> Result<[u8; N], IoError> {
+        let mut b = [0; N];
+        self.0
+            .read_exact(&mut b)
+            .map_err(|_| invalid("unexpected end of file"))?;
+        Ok(b)
+    }
+    fn u8(&mut self) -> Result<u8, IoError> {
+        Ok(self.take::<1>()?[0])
+    }
+    fn u16(&mut self) -> Result<u16, IoError> {
+        Ok(u16::from_be_bytes(self.take()?))
+    }
+    fn i16(&mut self) -> Result<i16, IoError> {
+        Ok(i16::from_be_bytes(self.take()?))
+    }
+    fn u32(&mut self) -> Result<u32, IoError> {
+        Ok(u32::from_be_bytes(self.take()?))
+    }
+    fn i32(&mut self) -> Result<i32, IoError> {
+        Ok(i32::from_be_bytes(self.take()?))
+    }
+    fn pos(&self) -> u64 {
+        self.0.position()
+    }
+    fn seek(&mut self, pos: u64) {
+        self.0.set_position(pos);
+    }
+    fn bytes(&mut self, n: usize) -> Result<&[u8], IoError> {
+        let start = self.pos() as usize;
+        let data = self.0.get_ref();
+        let slice = data
+            .get(start..start + n)
+            .ok_or_else(|| invalid("unexpected end of file"))?;
+        self.seek((start + n) as u64);
+        Ok(slice)
+    }
+}
+
+/// Decodes one channel stored with its own compression field.
+fn read_channel(r: &mut Reader, len: usize, rows: usize, cols: usize) -> Result<Vec<u8>, IoError> {
+    let end = r.pos() + len as u64;
+    let compression = if len >= 2 { r.u16()? } else { 0 };
+    let plane = match compression {
+        0 => r.bytes(rows * cols)?.to_vec(),
+        1 => {
+            let mut counts = Vec::with_capacity(rows);
+            for _ in 0..rows {
+                counts.push(r.u16()? as usize);
+            }
+            let mut plane = Vec::with_capacity(rows * cols);
+            for count in counts {
+                let data = r.bytes(count)?;
+                plane.extend(unpackbits(data, cols)?);
+            }
+            plane
+        }
+        _ => return Err(invalid("ZIP-compressed layers are not supported")),
+    };
+    r.seek(end);
+    Ok(plane)
+}
+
+struct LayerRecord {
+    rect: (i32, i32, i32, i32),
+    channels: Vec<(i16, usize)>,
+    blend: [u8; 4],
+    opacity: u8,
+    flags: u8,
+    name: String,
+    fill: u8,
+    /// A group's start or end marker ('lsct'), not a pixel layer.
+    divider: bool,
+}
+
+pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
+    let mut r = Reader(Cursor::new(data));
+    if &r.take::<4>()? != b"8BPS" {
+        return Err(invalid("not a Photoshop file"));
+    }
+    if r.u16()? != 1 {
+        return Err(invalid("large documents (PSB) are not supported"));
+    }
+    r.take::<6>()?;
+    let merged_channels = r.u16()? as usize;
+    let h = r.u32()?;
+    let w = r.u32()?;
+    let depth = r.u16()?;
+    let mode = r.u16()?;
+    if depth != 8 || mode != 3 {
+        return Err(invalid("only 8-bit RGB documents are supported"));
+    }
+    let skip = r.u32()? as u64;
+    r.seek(r.pos() + skip);
+
+    // Image resources: pick up the resolution
+    let resources_len = r.u32()? as u64;
+    let resources_end = r.pos() + resources_len;
+    let mut resolution = 72.0;
+    while r.pos() + 12 <= resources_end {
+        if &r.take::<4>()? != b"8BIM" {
+            break;
+        }
+        let id = r.u16()?;
+        let name_len = r.u8()? as u64;
+        let padded = (name_len + 1).next_multiple_of(2) - 1;
+        r.seek(r.pos() + padded);
+        let size = r.u32()? as u64;
+        let start = r.pos();
+        if id == 1005 && size >= 4 {
+            resolution = r.u32()? as f32 / 65536.0;
+        }
+        r.seek(start + size.next_multiple_of(2));
+    }
+    r.seek(resources_end);
+
+    // Layers
+    let lm_len = r.u32()? as u64;
+    let lm_end = r.pos() + lm_len;
+    let mut layers: Vec<Layer> = Vec::new();
+    // Its placeholder layer is replaced below
+    let mut doc = Document::new_with_background(title, w, h, Color::from_rgba8([0; 4]));
+    doc.resolution = resolution;
+    if lm_len > 0 {
+        let info_len = r.u32()? as u64;
+        if info_len > 0 {
+            let count = r.i16()?.unsigned_abs() as usize;
+            let mut records = Vec::with_capacity(count);
+            for _ in 0..count {
+                let (top, left, bottom, right) = (r.i32()?, r.i32()?, r.i32()?, r.i32()?);
+                let n = r.u16()? as usize;
+                let mut channels = Vec::with_capacity(n);
+                for _ in 0..n {
+                    channels.push((r.i16()?, r.u32()? as usize));
+                }
+                if &r.take::<4>()? != b"8BIM" {
+                    return Err(invalid("bad layer record"));
+                }
+                let blend = r.take::<4>()?;
+                let opacity = r.u8()?;
+                r.u8()?; // clipping
+                let flags = r.u8()?;
+                r.u8()?;
+                let extra_len = r.u32()? as u64;
+                let extra_end = r.pos() + extra_len;
+                let mask_len = r.u32()? as u64;
+                r.seek(r.pos() + mask_len);
+                let ranges_len = r.u32()? as u64;
+                r.seek(r.pos() + ranges_len);
+                let name_start = r.pos();
+                let name_len = r.u8()? as usize;
+                let mut name = String::from_utf8_lossy(r.bytes(name_len)?).into_owned();
+                r.seek(name_start + ((name_len as u64 + 1).next_multiple_of(4)));
+                let mut fill = 255;
+                let mut divider = false;
+                while r.pos() + 12 <= extra_end {
+                    let sig = r.take::<4>()?;
+                    if &sig != b"8BIM" && &sig != b"8B64" {
+                        break;
+                    }
+                    let key = r.take::<4>()?;
+                    let len = r.u32()? as u64;
+                    let start = r.pos();
+                    match &key {
+                        b"luni" => {
+                            let chars = r.u32()? as usize;
+                            let mut units = Vec::with_capacity(chars);
+                            for _ in 0..chars {
+                                units.push(r.u16()?);
+                            }
+                            name = String::from_utf16_lossy(&units);
+                        }
+                        b"iOpa" => fill = r.u8()?,
+                        b"lsct" | b"lsdk" => divider = true,
+                        _ => {}
+                    }
+                    r.seek(start + len);
+                }
+                r.seek(extra_end);
+                records.push(LayerRecord {
+                    rect: (top, left, bottom, right),
+                    channels,
+                    blend,
+                    opacity,
+                    flags,
+                    name,
+                    fill,
+                    divider,
+                });
+            }
+            for (i, rec) in records.iter().enumerate() {
+                let (top, left, bottom, right) = rec.rect;
+                let rows = (bottom - top).max(0) as usize;
+                let cols = (right - left).max(0) as usize;
+                let mut planes: [Option<Vec<u8>>; 4] = Default::default();
+                for &(id, len) in &rec.channels {
+                    let slot = match id {
+                        -1 => 0,
+                        0..=2 => id as usize + 1,
+                        // Layer masks (-2, -3): skipped
+                        _ => {
+                            r.seek(r.pos() + len as u64);
+                            continue;
+                        }
+                    };
+                    planes[slot] = Some(read_channel(&mut r, len, rows, cols)?);
+                }
+                if rec.divider {
+                    continue;
+                }
+                let mut image = TiledImage::new(w, h);
+                for y in 0..rows {
+                    let dy = top as i64 + y as i64;
+                    if dy < 0 || dy >= h as i64 {
+                        continue;
+                    }
+                    for x in 0..cols {
+                        let dx = left as i64 + x as i64;
+                        if dx < 0 || dx >= w as i64 {
+                            continue;
+                        }
+                        let k = y * cols + x;
+                        let get = |s: usize, d: u8| planes[s].as_ref().map_or(d, |p| p[k]);
+                        let px = [get(1, 0), get(2, 0), get(3, 0), get(0, 255)];
+                        if px[3] > 0 {
+                            image.set_pixel(dx as u32, dy as u32, px);
+                        }
+                    }
+                }
+                let mut layer = Layer::raster(doc.new_layer_id(), rec.name.clone(), image);
+                layer.visible = rec.flags & 2 == 0;
+                layer.opacity = rec.opacity as f32 / 255.0;
+                layer.fill = rec.fill as f32 / 255.0;
+                layer.blend_mode = BLEND_KEYS
+                    .iter()
+                    .find(|(_, k)| **k == rec.blend)
+                    .map_or(BlendMode::Normal, |(m, _)| *m);
+                // Photoshop's background: the bottom layer, transparency
+                // protected and named "Background"
+                if i == 0 && rec.flags & 1 != 0 && rec.name == "Background" {
+                    layer.is_background = true;
+                } else {
+                    layer.lock_transparency = rec.flags & 1 != 0;
+                }
+                layers.push(layer);
+            }
+        }
+    }
+    r.seek(lm_end);
+
+    if layers.is_empty() {
+        // No layers: the merged image is the document
+        let compression = r.u16()?;
+        let (rows, cols) = (h as usize, w as usize);
+        let channels = merged_channels.min(4);
+        let mut planes = Vec::with_capacity(channels);
+        match compression {
+            0 => {
+                for _ in 0..channels {
+                    planes.push(r.bytes(rows * cols)?.to_vec());
+                }
+            }
+            1 => {
+                let mut counts = Vec::with_capacity(rows * merged_channels);
+                for _ in 0..rows * merged_channels {
+                    counts.push(r.u16()? as usize);
+                }
+                for c in 0..channels {
+                    let mut plane = Vec::with_capacity(rows * cols);
+                    for &count in &counts[c * rows..(c + 1) * rows] {
+                        plane.extend(unpackbits(r.bytes(count)?, cols)?);
+                    }
+                    planes.push(plane);
+                }
+            }
+            _ => return Err(invalid("ZIP-compressed image data is not supported")),
+        }
+        let mut rgba = Vec::with_capacity(rows * cols * 4);
+        for k in 0..rows * cols {
+            for plane in &planes[..3] {
+                rgba.push(plane[k]);
+            }
+            rgba.push(planes.get(3).map_or(255, |a| a[k]));
+        }
+        let mut doc = Document::from_rgba8(doc.title.clone(), w, h, &rgba);
+        doc.resolution = resolution;
+        return Ok(doc);
+    }
+
+    doc.active_layer = layers.last().map(|l| l.id);
+    doc.layers = layers;
+    doc.mark_dirty();
+    Ok(doc)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn packbits_round_trip() {
+        let row: Vec<u8> = [vec![7; 200], (0..=255).collect(), vec![1, 1, 2, 2, 2, 2]].concat();
+        let mut packed = Vec::new();
+        packbits(&row, &mut packed);
+        assert!(packed.len() < row.len());
+        assert_eq!(unpackbits(&packed, row.len()).unwrap(), row);
+    }
+
+    #[test]
+    fn layers_round_trip() {
+        let mut doc = Document::new_with_background("t.psd", 6, 4, Color::WHITE);
+        let mut image = TiledImage::new(6, 4);
+        image.set_pixel(2, 1, [255, 0, 0, 128]);
+        image.set_pixel(4, 3, [0, 0, 255, 255]);
+        let mut layer = Layer::raster(doc.new_layer_id(), "Ünïcode layer", image);
+        layer.opacity = 0.5;
+        layer.fill = 0.25;
+        layer.blend_mode = BlendMode::Multiply;
+        layer.visible = false;
+        doc.insert_above_active(layer);
+        doc.resolution = 300.0;
+
+        let back = read(&write(&doc), "t.psd".into()).unwrap();
+        assert_eq!((back.width, back.height, back.resolution), (6, 4, 300.0));
+        assert_eq!(back.layers.len(), 2);
+        assert!(back.layers[0].is_background);
+        let l = &back.layers[1];
+        assert_eq!(l.name, "Ünïcode layer");
+        assert_eq!((l.opacity * 255.0).round(), 128.0);
+        assert_eq!((l.fill * 255.0).round(), 64.0);
+        assert_eq!(l.blend_mode, BlendMode::Multiply);
+        assert!(!l.visible);
+        let LayerKind::Raster(image) = &l.kind;
+        assert_eq!(image.pixel(2, 1), [255, 0, 0, 128]);
+        assert_eq!(image.pixel(4, 3), [0, 0, 255, 255]);
+        assert_eq!(image.pixel(0, 0), [0, 0, 0, 0]);
+        assert_eq!(back.active_layer, Some(l.id));
+    }
+
+    #[test]
+    fn a_lone_background_is_stored_as_the_merged_image() {
+        let mut doc = Document::new_with_background("t.psd", 3, 2, Color::WHITE);
+        let id = doc.active_layer.unwrap();
+        let LayerKind::Raster(image) = &mut doc.layer_mut(id).unwrap().kind;
+        image.set_pixel(1, 1, [10, 20, 30, 255]);
+        let back = read(&write(&doc), "t.psd".into()).unwrap();
+        assert_eq!(back.layers.len(), 1);
+        assert!(back.layers[0].is_background);
+        assert_eq!(&back.composite_rgba8()[16..20], [10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn rejects_other_files() {
+        assert!(read(b"GIF89a....", "x".into()).is_err());
+    }
+}
+
+#[cfg(test)]
+mod photoshop_check {
+    use super::*;
+
+    /// Writes `target/psd-check/ours.psd` for opening in Photoshop.
+    #[test]
+    #[ignore]
+    fn write_sample() {
+        let mut doc = Document::new_with_background("ours.psd", 64, 48, Color::WHITE);
+        let mut image = TiledImage::new(64, 48);
+        for y in 10..30 {
+            for x in 20..50 {
+                image.set_pixel(x, y, [220, 30, 30, 255]);
+            }
+        }
+        let mut layer = Layer::raster(doc.new_layer_id(), "Red Box", image);
+        layer.opacity = 0.6;
+        layer.blend_mode = BlendMode::Multiply;
+        doc.insert_above_active(layer);
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/psd-check");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ours.psd"), write(&doc)).unwrap();
+    }
+}

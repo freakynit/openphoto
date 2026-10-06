@@ -2,13 +2,23 @@
 //! states, any of which can be jumped to. Each state holds a full document
 //! snapshot; tiles are shared between snapshots, so only edited tiles cost memory.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use crate::document::{Document, Snapshot};
+
+fn next_state_id() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
 
 /// Photoshop's default "History States" preference.
 pub const DEFAULT_LIMIT: usize = 50;
 
 pub struct HistoryState {
     pub name: String,
+    /// Unique for the life of the process; tells states apart even after
+    /// older ones are dropped.
+    pub id: u64,
     snapshot: Snapshot,
 }
 
@@ -27,6 +37,7 @@ impl History {
         Self {
             states: vec![HistoryState {
                 name: name.into(),
+                id: next_state_id(),
                 snapshot: doc.snapshot(),
             }],
             current: 0,
@@ -42,6 +53,7 @@ impl History {
         self.states.truncate(self.current + 1);
         self.states.push(HistoryState {
             name: name.into(),
+            id: next_state_id(),
             snapshot: doc.snapshot(),
         });
         // The first state is kept so the document can always be reverted;
@@ -54,6 +66,12 @@ impl History {
 
     pub fn states(&self) -> &[HistoryState] {
         &self.states
+    }
+
+    /// Id of the current state; compared with the id saved to tell whether
+    /// the document has unsaved changes.
+    pub fn current_id(&self) -> u64 {
+        self.states[self.current].id
     }
 
     pub fn current(&self) -> usize {

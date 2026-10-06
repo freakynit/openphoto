@@ -17,16 +17,18 @@ const TAB_EDGE: Color32 = Color32::from_gray(0x40);
 const CLOSE: Color32 = Color32::from_gray(0x8c);
 
 /// Photoshop's tab title: `name @ zoom (mode/bits)`. A `#` after the bit
-/// depth marks a document without an embedded color profile.
+/// depth marks a document without an embedded color profile, and a
+/// trailing ` *` unsaved changes.
 pub fn title(state: &DocState) -> String {
     let d = &state.doc;
     format!(
-        "{} @ {} ({}/{}{})",
+        "{} @ {} ({}/{}{}){}",
         d.title,
         document_view::zoom_label(state.view.zoom),
         d.color_mode.short(),
         d.bit_depth.bits(),
         if state.untagged { "#" } else { "" },
+        if state.is_dirty() { " *" } else { "" },
     )
 }
 
@@ -106,7 +108,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState, rect: Rect) {
         Stroke::new(1.0, BOTTOM_LINE),
     );
     if let Some(id) = close {
-        app.close_document(id);
+        crate::actions::request_close(app, vec![id]);
     }
 }
 

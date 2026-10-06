@@ -93,10 +93,10 @@ impl OpenPhotoApp {
                 c.extend(commands::from_shortcuts_beside_menu(ctx));
                 c
             }
-            None => commands::from_shortcuts(ctx),
+            None => commands::from_shortcuts(ctx, &self.state),
         };
         #[cfg(not(target_os = "macos"))]
-        let commands = commands::from_shortcuts(ctx);
+        let commands = commands::from_shortcuts(ctx, &self.state);
         for command in commands {
             commands::run(command, ctx, &mut self.state);
         }
@@ -214,6 +214,28 @@ impl OpenPhotoApp {
         }
     }
 
+    /// "Save changes?" for the document being closed, and closing the
+    /// window once quitting is approved.
+    fn save_prompt(&mut self, ctx: &egui::Context) {
+        if let Some(id) = self.state.save_prompt {
+            let title = self.state.docs.get(&id).map(|d| d.doc.title.clone());
+            match title {
+                Some(title) => {
+                    if let Some(choice) = dialogs::save_changes::show(ctx, &title) {
+                        actions::answer_save_prompt(&mut self.state, choice);
+                    }
+                }
+                None => {
+                    self.state.save_prompt = None;
+                    actions::continue_closing(&mut self.state);
+                }
+            }
+        }
+        if self.state.quit_approved {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+    }
+
     fn trim_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.state.trim_dialog.take() else {
             return;
@@ -303,6 +325,19 @@ impl eframe::App for OpenPhotoApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
+        // Closing the window with unsaved changes asks about each document
+        // first, like quitting
+        let close_requested = ctx.input(|i| i.viewport().close_requested());
+        if close_requested
+            && !self.state.quit_approved
+            && self.state.docs.values().any(|d| d.is_dirty())
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            if self.state.save_prompt.is_none() {
+                actions::quit(&mut self.state);
+            }
+        }
+
         let dropped: Vec<PathBuf> = ctx.input(|i| {
             i.raw
                 .dropped_files
@@ -383,6 +418,7 @@ impl eframe::App for OpenPhotoApp {
         self.fill_dialog(&ctx);
         self.trim_dialog(&ctx);
         self.adjust_dialog(&ctx);
+        self.save_prompt(&ctx);
         self.color_picker(&ctx);
 
         #[cfg(target_os = "macos")]

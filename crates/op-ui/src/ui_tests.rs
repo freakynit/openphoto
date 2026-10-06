@@ -795,3 +795,73 @@ fn screenshot_filter_dialogs() {
         shot(&mut h, name);
     }
 }
+
+#[test]
+fn saving_reverting_and_closing_with_unsaved_changes() {
+    let mut h = harness(Vec::new());
+    let id = h.state().state.active_doc.unwrap();
+    let title = |h: &Harness<'_, OpenPhotoApp>| crate::doc_tabs::title(active(h));
+    assert!(!title(&h).ends_with('*'));
+
+    // An edit marks the document as changed
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.run_steps(2);
+    assert!(title(&h).ends_with(" *"), "{}", title(&h));
+
+    // Saving as a Photoshop document takes its name and clears the mark
+    let dir = std::env::temp_dir().join(format!("openphoto-ui-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("Saved.psd");
+    assert!(crate::actions::save_to(
+        &mut h.state_mut().state,
+        id,
+        path.clone(),
+        false
+    ));
+    assert!(title(&h).starts_with("Saved.psd @"), "{}", title(&h));
+    assert!(!title(&h).ends_with('*'));
+    // Undoing past the save is a change; redoing back to it is not
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Z);
+    h.run_steps(2);
+    assert!(active(&h).is_dirty());
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::Z);
+    h.run_steps(2);
+    assert!(!active(&h).is_dirty());
+
+    // Revert (F12) goes back to the file
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Backspace);
+    h.run_steps(2);
+    let filled = composite_pixel(&mut h, 5, 5);
+    h.key_press(egui::Key::F12);
+    h.run_steps(2);
+    assert_ne!(composite_pixel(&mut h, 5, 5), filled);
+    assert_eq!(last_history(&h), "Revert");
+    assert!(!active(&h).is_dirty());
+
+    // Closing a changed document asks first: Escape keeps it open...
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Backspace);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::W);
+    h.run_steps(2);
+    assert_eq!(h.state().state.save_prompt, Some(id));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert_eq!(h.state().state.save_prompt, None);
+    assert!(h.state().state.docs.contains_key(&id));
+    // ...and Don't Save (Cmd+D) closes it
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::W);
+    h.run_steps(2);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::D);
+    h.run_steps(2);
+    assert!(!h.state().state.docs.contains_key(&id));
+    std::fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+#[ignore]
+fn screenshot_save_prompt() {
+    let mut h = harness(Vec::new());
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::W);
+    h.run_steps(3);
+    shot(&mut h, "save_prompt");
+}

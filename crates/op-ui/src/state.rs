@@ -33,6 +33,11 @@ impl Default for View {
 
 pub struct DocState {
     pub doc: Document,
+    /// The file the document was opened from or last saved to.
+    pub path: Option<std::path::PathBuf>,
+    /// History state that matches the file on disk (or the new document);
+    /// any other current state means there are unsaved changes.
+    saved_state: u64,
     /// The document has no embedded color profile (shown as "#" in its tab).
     /// Opened files are untagged because profiles aren't read; new documents
     /// are sRGB.
@@ -66,9 +71,12 @@ impl DocState {
     /// `initial` names the first history state, e.g. "Open" or "New".
     pub fn new(doc: Document, initial: &str) -> Self {
         let snapshot_thumb = Some(composite_thumbnail(&doc, SNAPSHOT_THUMB_PX));
+        let history = History::new(&doc, initial);
         Self {
             untagged: initial == "Open",
-            history: History::new(&doc, initial),
+            path: None,
+            saved_state: history.current_id(),
+            history,
             snapshot_thumb,
             snapshot_texture: None,
             doc,
@@ -83,6 +91,18 @@ impl DocState {
             canvas: None,
             thumbs: HashMap::new(),
         }
+    }
+
+    /// Whether the document differs from its file (or, for a new document,
+    /// from how it was created). Undoing back to the saved state counts as
+    /// unchanged, as in Photoshop.
+    pub fn is_dirty(&self) -> bool {
+        self.history.current_id() != self.saved_state
+    }
+
+    /// The document now matches its file.
+    pub fn mark_saved(&mut self) {
+        self.saved_state = self.history.current_id();
     }
 
     /// Records the current document as a new history state.
@@ -420,6 +440,15 @@ pub struct AppState {
     pub color_picker: Option<PickerSession>,
     /// Swatches panel contents; "Add to Swatches" appends here.
     pub swatches: Vec<Color>,
+    /// Documents waiting to be closed (Close All, quitting); each one with
+    /// unsaved changes asks first.
+    pub close_queue: Vec<DocId>,
+    /// The document whose "Save changes?" prompt is showing.
+    pub save_prompt: Option<DocId>,
+    /// Quit once the close queue is done (it was started by quitting).
+    pub quit_after_close: bool,
+    /// Every document was dealt with; the window may close now.
+    pub quit_approved: bool,
     pub clipboard: crate::clipboard::Clipboard,
     /// A text field has keyboard focus (as of the last frame).
     pub typing: bool,
@@ -462,6 +491,10 @@ impl Default for AppState {
                     Color::from_rgba8([(hex >> 16) as u8, (hex >> 8) as u8, hex as u8, 255])
                 })
                 .collect(),
+            close_queue: Vec::new(),
+            save_prompt: None,
+            quit_after_close: false,
+            quit_approved: false,
             clipboard: crate::clipboard::Clipboard::new(false),
             typing: false,
             forward_events: Vec::new(),
@@ -516,6 +549,7 @@ impl AppState {
             || self.trim_dialog.is_some()
             || self.adjust_dialog.is_some()
             || self.color_picker.is_some()
+            || self.save_prompt.is_some()
             || self.alert.is_some()
     }
 

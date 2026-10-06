@@ -20,6 +20,13 @@ pub enum Command {
     Close,
     CloseAll,
     CloseOthers,
+    Save,
+    SaveAs,
+    SaveACopy,
+    /// File > Revert (F12).
+    Revert,
+    /// Quit OpenPhoto (asks about unsaved changes first).
+    Quit,
     ExportAs,
     Undo,
     Redo,
@@ -178,6 +185,17 @@ impl Command {
             Self::Close => cmd(Key::W),
             Self::CloseAll => alt_cmd(Key::W),
             Self::CloseOthers => alt_cmd(Key::P),
+            Self::Save => cmd(Key::S),
+            Self::SaveAs => shift_cmd(Key::S),
+            Self::SaveACopy => alt_cmd(Key::S),
+            Self::Revert => Shortcut {
+                cmd: false,
+                shift: false,
+                alt: false,
+                ctrl: false,
+                key: Key::F12,
+            },
+            Self::Quit => cmd(Key::Q),
             Self::ExportAs => Shortcut {
                 shift: true,
                 ..alt_cmd(Key::W)
@@ -317,7 +335,8 @@ impl Command {
         }
         let doc = app.active_doc.and_then(|id| app.docs.get(&id));
         match self {
-            Self::New | Self::Open | Self::ToggleHistory => true,
+            Self::New | Self::Open | Self::ToggleHistory | Self::Quit => true,
+            Self::Revert => doc.is_some_and(|d| d.path.is_some() && d.is_dirty()),
             Self::Undo | Self::ToggleLastState => doc.is_some_and(|d| d.history.can_undo()),
             Self::Redo => doc.is_some_and(|d| d.history.can_redo()),
             Self::DeleteLayer => doc.is_some_and(|d| d.doc.layers.len() > 1),
@@ -351,6 +370,9 @@ impl Command {
                 !(layers.len() == 1 && layers[0].is_background)
             }),
             Self::Close
+            | Self::Save
+            | Self::SaveAs
+            | Self::SaveACopy
             | Self::Fill
             | Self::FillForeground
             | Self::FillBackground
@@ -403,6 +425,9 @@ impl Command {
 /// extra Shift/Alt when matching, so Shift+Cmd+Z must be checked before Cmd+Z.
 const SHORTCUT_ORDER: &[Command] = &[
     Command::ExportAs,
+    Command::SaveAs,
+    Command::SaveACopy,
+    Command::Revert,
     Command::LastFilter,
     Command::CopyMerged,
     Command::PasteInPlace,
@@ -423,6 +448,8 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::CloseAll,
     Command::CloseOthers,
     Command::Undo,
+    Command::Save,
+    Command::Quit,
     Command::Invert,
     Command::Levels,
     Command::HueSaturation,
@@ -461,8 +488,13 @@ pub fn from_shortcuts_beside_menu(ctx: &egui::Context) -> Vec<Command> {
 /// Command shortcuts typed into egui, used where there is no native menu bar
 /// (other platforms, and headless tests on macOS). On macOS the native menu bar handles
 /// these instead, so this is only used on other platforms.
-pub fn from_shortcuts(ctx: &egui::Context) -> Vec<Command> {
+pub fn from_shortcuts(ctx: &egui::Context, app: &AppState) -> Vec<Command> {
     let mut out = Vec::new();
+    // Every command is disabled under a modal dialog; leave its keys (such
+    // as Cmd+D for "Don't Save") to the dialog
+    if app.modal_open() {
+        return out;
+    }
     let typing = ctx.egui_wants_keyboard_input();
     ctx.input_mut(|i| {
         for &command in SHORTCUT_ORDER {
@@ -517,6 +549,17 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
         Command::New => actions::new_document(app),
         Command::Open => actions::open_dialog(app),
         Command::Close => actions::close_active(app),
+        Command::Save | Command::SaveAs | Command::SaveACopy => {
+            if let Some(id) = app.active_doc {
+                match command {
+                    Command::Save => actions::save(app, id),
+                    Command::SaveAs => actions::save_as(app, id, false),
+                    _ => actions::save_as(app, id, true),
+                };
+            }
+        }
+        Command::Revert => actions::revert(app),
+        Command::Quit => actions::quit(app),
         Command::CloseAll => actions::close_all(app),
         Command::CloseOthers => actions::close_others(app),
         Command::ExportAs => actions::export_dialog(app),

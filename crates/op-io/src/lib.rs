@@ -1,4 +1,7 @@
-//! File I/O. Bitmap formats go through the `image` crate.
+//! File I/O. Photoshop documents are read and written by [`psd`]; bitmap
+//! formats go through the `image` crate.
+
+pub mod psd;
 
 use std::io::Cursor;
 use std::path::Path;
@@ -16,10 +19,22 @@ pub enum IoError {
     File(#[from] std::io::Error),
     #[error("unsupported file format: {0}")]
     Unsupported(String),
+    #[error("could not read Photoshop document: {0}")]
+    Psd(String),
 }
 
 /// Extensions offered in the Open dialog.
-pub const OPEN_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "webp", "tif", "tiff", "bmp", "gif"];
+pub const OPEN_EXTENSIONS: &[&str] = &[
+    "psd", "png", "jpg", "jpeg", "webp", "tif", "tiff", "bmp", "gif",
+];
+
+/// Formats File > Save As writes, as (name, extensions); the first is the
+/// default, as in Photoshop.
+pub const SAVE_FORMATS: &[(&str, &[&str])] = &[
+    ("Photoshop", &["psd"]),
+    ("PNG", &["png"]),
+    ("JPEG", &["jpg", "jpeg"]),
+];
 
 /// Background that transparent pixels are flattened onto for formats without
 /// alpha. White, like the default matte of Photoshop's Export As.
@@ -38,13 +53,28 @@ pub fn open(path: &Path) -> Result<Document, IoError> {
         return Err(IoError::Unsupported(ext));
     }
 
-    let img = image::open(path).map_err(IoError::Read)?.into_rgba8();
     let title = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "Untitled".into());
+    if ext == "psd" {
+        return psd::read(&std::fs::read(path)?, title);
+    }
+    let img = image::open(path).map_err(IoError::Read)?.into_rgba8();
     let (w, h) = img.dimensions();
     Ok(Document::from_rgba8(title, w, h, img.as_raw()))
+}
+
+/// File > Save / Save As: a Photoshop document with its layers for .psd,
+/// otherwise the composite (see [`export_composite`]). Written in one go
+/// after encoding, like the export.
+pub fn save(doc: &Document, path: &Path) -> Result<(), IoError> {
+    if extension(path) == "psd" {
+        std::fs::write(path, psd::write(doc))?;
+        Ok(())
+    } else {
+        export_composite(doc, path)
+    }
 }
 
 /// Exports the composite as PNG/JPEG/etc., chosen by file extension.

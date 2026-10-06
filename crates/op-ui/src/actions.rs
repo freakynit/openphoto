@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 
 use egui::Key;
-use op_core::{Color, Document};
+use op_core::{Color, DocId, Document};
 
 use crate::commands::Command;
 use crate::state::AppState;
@@ -11,7 +11,13 @@ use crate::state::AppState;
 pub fn open_paths(app: &mut AppState, paths: Vec<PathBuf>) {
     for path in paths {
         match op_io::open(&path) {
-            Ok(doc) => app.add_document(doc, "Open"),
+            Ok(doc) => {
+                let id = doc.id;
+                app.add_document(doc, "Open");
+                if let Some(state) = app.docs.get_mut(&id) {
+                    state.path = Some(path);
+                }
+            }
             Err(e) => {
                 log::error!("{}: {e}", path.display());
                 app.alert = Some(format!("Could not open “{}”: {e}", path.display()));
@@ -106,27 +112,183 @@ pub fn export_dialog(app: &mut AppState) {
     }
 }
 
+/// Whether File > Save can write the document back to its own file: a
+/// Photoshop document always can; a flat format only holds one layer.
+fn saves_in_place(state: &crate::state::DocState) -> bool {
+    let Some(path) = &state.path else {
+        return false;
+    };
+    let psd = path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("psd"));
+    psd || state.doc.layers.len() == 1
+}
+
+fn file_stem(title: &str) -> &str {
+    title.rsplit_once('.').map_or(title, |(s, _)| s)
+}
+
+/// File > Save. Documents without a file, or whose layers their file can't
+/// hold, go through Save As. Returns whether the document was saved.
+pub fn save(app: &mut AppState, id: DocId) -> bool {
+    let Some(state) = app.docs.get_mut(&id) else {
+        return false;
+    };
+    if !saves_in_place(state) {
+        return save_as(app, id, false);
+    }
+    let path = state.path.clone().expect("checked");
+    match op_io::save(&state.doc, &path) {
+        Ok(()) => {
+            state.mark_saved();
+            true
+        }
+        Err(e) => {
+            app.alert = Some(format!("Could not save “{}”: {e}", path.display()));
+            false
+        }
+    }
+}
+
+/// File > Save As... and Save a Copy.... The document takes the new file
+/// as its own unless `copy`, or unless the chosen format can't hold its
+/// layers (then the file is a flattened copy, as Photoshop's "As a Copy").
+pub fn save_as(app: &mut AppState, id: DocId, copy: bool) -> bool {
+    let Some(state) = app.docs.get_mut(&id) else {
+        return false;
+    };
+    let mut dialog =
+        rfd::FileDialog::new().set_file_name(format!("{}.psd", file_stem(&state.doc.title)));
+    if let Some(dir) = state.path.as_ref().and_then(|p| p.parent()) {
+        dialog = dialog.set_directory(dir);
+    }
+    for (name, extensions) in op_io::SAVE_FORMATS {
+        dialog = dialog.add_filter(*name, extensions);
+    }
+    let Some(path) = dialog.save_file() else {
+        return false;
+    };
+    save_to(app, id, path, copy)
+}
+
+/// Writes the document to `path` and updates its file and saved state as
+/// [`save_as`] describes.
+pub fn save_to(app: &mut AppState, id: DocId, path: PathBuf, copy: bool) -> bool {
+    let Some(state) = app.docs.get_mut(&id) else {
+        return false;
+    };
+    if let Err(e) = op_io::save(&state.doc, &path) {
+        app.alert = Some(format!("Could not save “{}”: {e}", path.display()));
+        return false;
+    }
+    let previous = state.path.replace(path.clone());
+    if copy || !saves_in_place(state) {
+        state.path = previous;
+        return true;
+    }
+    if let Some(name) = path.file_name() {
+        state.doc.title = name.to_string_lossy().into_owned();
+    }
+    state.mark_saved();
+    true
+}
+
+/// File > Revert: reloads the file, recorded as a "Revert" history state.
+pub fn revert(app: &mut AppState) {
+    let Some(state) = app.active() else {
+        return;
+    };
+    let Some(path) = state.path.clone() else {
+        return;
+    };
+    match op_io::open(&path) {
+        Ok(disk) => {
+            state.doc.restore(&disk.snapshot());
+            state.record("Revert");
+            state.mark_saved();
+        }
+        Err(e) => app.alert = Some(format!("Could not open “{}”: {e}", path.display())),
+    }
+}
+
+/// Closes `ids` in order; a document with unsaved changes first asks
+/// whether to save it (see [`continue_closing`]).
+pub fn request_close(app: &mut AppState, ids: Vec<DocId>) {
+    app.close_queue = ids;
+    continue_closing(app);
+}
+
+/// Works through the close queue until a document needs to ask about its
+/// unsaved changes, or the queue is empty (then quits, if quitting).
+pub fn continue_closing(app: &mut AppState) {
+    while let Some(&id) = app.close_queue.first() {
+        match app.docs.get(&id) {
+            Some(state) if state.is_dirty() => {
+                app.active_doc = Some(id);
+                app.save_prompt = Some(id);
+                return;
+            }
+            Some(_) => app.close_document(id),
+            None => {}
+        }
+        app.close_queue.remove(0);
+    }
+    if app.quit_after_close {
+        app.quit_after_close = false;
+        app.quit_approved = true;
+    }
+}
+
+/// The answer to "Save changes?" for the document at the front of the queue.
+pub fn answer_save_prompt(app: &mut AppState, answer: crate::dialogs::SaveChoice) {
+    use crate::dialogs::SaveChoice;
+    let Some(id) = app.save_prompt.take() else {
+        return;
+    };
+    let close = match answer {
+        SaveChoice::Save => save(app, id),
+        SaveChoice::DontSave => true,
+        SaveChoice::Cancel => false,
+    };
+    if close {
+        app.close_document(id);
+        app.close_queue.retain(|d| *d != id);
+        continue_closing(app);
+    } else {
+        // Cancel (or a cancelled Save As) stops closing and quitting
+        app.close_queue.clear();
+        app.quit_after_close = false;
+    }
+}
+
 pub fn close_active(app: &mut AppState) {
     if let Some(id) = app.active_doc {
-        app.close_document(id);
+        request_close(app, vec![id]);
     }
 }
 
 /// File > Close All.
 pub fn close_all(app: &mut AppState) {
-    for id in app.doc_order.clone() {
-        app.close_document(id);
-    }
+    request_close(app, app.doc_order.clone());
 }
 
 /// File > Close Others: closes every document except the active one.
 pub fn close_others(app: &mut AppState) {
     let active = app.active_doc;
-    for id in app.doc_order.clone() {
-        if Some(id) != active {
-            app.close_document(id);
-        }
-    }
+    let others = app
+        .doc_order
+        .iter()
+        .copied()
+        .filter(|id| Some(*id) != active)
+        .collect();
+    request_close(app, others);
+}
+
+/// Quitting: closes every document (asking about unsaved changes); the app
+/// quits once all are closed.
+pub fn quit(app: &mut AppState) {
+    app.quit_after_close = true;
+    request_close(app, app.doc_order.clone());
 }
 
 /// Single-key tool and color shortcuts. Modifier shortcuts are commands; see
