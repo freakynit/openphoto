@@ -56,6 +56,16 @@ impl Affine {
         }
     }
 
+    /// Skew by `h` radians horizontally and `v` vertically (Free
+    /// Transform's H and V).
+    pub fn skew(h: f32, v: f32) -> Self {
+        Self {
+            b: h.tan(),
+            d: v.tan(),
+            ..Self::IDENTITY
+        }
+    }
+
     /// `self` applied after `first`.
     pub fn after(self, first: Self) -> Self {
         Self {
@@ -363,32 +373,129 @@ pub fn bounds(doc: &Document) -> Result<(f32, f32, f32, f32), TransformError> {
     Ok((x0 as f32, y0 as f32, x1 as f32, y1 as f32))
 }
 
-/// Bilinear sample of premultiplied RGBA at (x, y) in pixel-center
-/// coordinates; transparent outside the image.
-fn sample(px: &[[f32; 4]], w: usize, h: usize, x: f32, y: f32) -> [f32; 4] {
-    let (fx, fy) = (x - 0.5, y - 0.5);
-    let (x0, y0) = (fx.floor(), fy.floor());
-    let (tx, ty) = (fx - x0, fy - y0);
-    let at = |ix: f32, iy: f32| -> [f32; 4] {
-        if ix < 0.0 || iy < 0.0 || ix >= w as f32 || iy >= h as f32 {
+/// Free Transform's Interpolation, in Photoshop 2026's menu order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
+pub enum Interpolation {
+    NearestNeighbor,
+    Bilinear,
+    /// Photoshop's default.
+    #[default]
+    Bicubic,
+    BicubicSmoother,
+    BicubicSharper,
+    BicubicAutomatic,
+}
+
+impl Interpolation {
+    pub const ALL: [Self; 6] = [
+        Self::NearestNeighbor,
+        Self::Bilinear,
+        Self::Bicubic,
+        Self::BicubicSmoother,
+        Self::BicubicSharper,
+        Self::BicubicAutomatic,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::NearestNeighbor => "Nearest Neighbor",
+            Self::Bilinear => "Bilinear",
+            Self::Bicubic => "Bicubic",
+            Self::BicubicSmoother => "Bicubic Smoother",
+            Self::BicubicSharper => "Bicubic Sharper",
+            Self::BicubicAutomatic => "Bicubic Automatic",
+        }
+    }
+
+    /// The cubic kernel's weight at distance `x`, for the bicubic kinds.
+    fn cubic(self, x: f32) -> f32 {
+        let x = x.abs();
+        let keys = |a: f32| {
+            if x < 1.0 {
+                (a + 2.0) * x * x * x - (a + 3.0) * x * x + 1.0
+            } else if x < 2.0 {
+                a * x * x * x - 5.0 * a * x * x + 8.0 * a * x - 4.0 * a
+            } else {
+                0.0
+            }
+        };
+        match self {
+            Self::BicubicSharper => keys(-0.75),
+            Self::BicubicSmoother => {
+                // Mitchell–Netravali, B = C = 1/3
+                let (b, c) = (1.0 / 3.0, 1.0 / 3.0);
+                let v = if x < 1.0 {
+                    (12.0 - 9.0 * b - 6.0 * c) * x * x * x
+                        + (-18.0 + 12.0 * b + 6.0 * c) * x * x
+                        + (6.0 - 2.0 * b)
+                } else if x < 2.0 {
+                    (-b - 6.0 * c) * x * x * x
+                        + (6.0 * b + 30.0 * c) * x * x
+                        + (-12.0 * b - 48.0 * c) * x
+                        + (8.0 * b + 24.0 * c)
+                } else {
+                    0.0
+                };
+                v / 6.0
+            }
+            _ => keys(-0.5),
+        }
+    }
+}
+
+/// A sample of premultiplied RGBA at (x, y) in pixel-center coordinates;
+/// transparent outside the image.
+fn sample(px: &[[f32; 4]], w: usize, h: usize, x: f32, y: f32, how: Interpolation) -> [f32; 4] {
+    let at = |ix: i64, iy: i64| -> [f32; 4] {
+        if ix < 0 || iy < 0 || ix >= w as i64 || iy >= h as i64 {
             [0.0; 4]
         } else {
             px[iy as usize * w + ix as usize]
         }
     };
-    let (p00, p10, p01, p11) = (
-        at(x0, y0),
-        at(x0 + 1.0, y0),
-        at(x0, y0 + 1.0),
-        at(x0 + 1.0, y0 + 1.0),
-    );
-    let mut out = [0.0; 4];
-    for c in 0..4 {
-        let top = p00[c] + (p10[c] - p00[c]) * tx;
-        let bottom = p01[c] + (p11[c] - p01[c]) * tx;
-        out[c] = top + (bottom - top) * ty;
+    let (fx, fy) = (x - 0.5, y - 0.5);
+    match how {
+        Interpolation::NearestNeighbor => at(fx.round() as i64, fy.round() as i64),
+        Interpolation::Bilinear => {
+            let (x0, y0) = (fx.floor(), fy.floor());
+            let (tx, ty) = (fx - x0, fy - y0);
+            let (x0, y0) = (x0 as i64, y0 as i64);
+            let (p00, p10, p01, p11) = (
+                at(x0, y0),
+                at(x0 + 1, y0),
+                at(x0, y0 + 1),
+                at(x0 + 1, y0 + 1),
+            );
+            let mut out = [0.0; 4];
+            for c in 0..4 {
+                let top = p00[c] + (p10[c] - p00[c]) * tx;
+                let bottom = p01[c] + (p11[c] - p01[c]) * tx;
+                out[c] = top + (bottom - top) * ty;
+            }
+            out
+        }
+        _ => {
+            let (x0, y0) = (fx.floor() as i64, fy.floor() as i64);
+            let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
+            let wx: [f32; 4] = std::array::from_fn(|k| how.cubic(tx - (k as f32 - 1.0)));
+            let wy: [f32; 4] = std::array::from_fn(|k| how.cubic(ty - (k as f32 - 1.0)));
+            let mut out = [0.0f32; 4];
+            for (j, wyj) in wy.iter().enumerate() {
+                for (i, wxi) in wx.iter().enumerate() {
+                    let p = at(x0 + i as i64 - 1, y0 + j as i64 - 1);
+                    for c in 0..4 {
+                        out[c] += p[c] * wxi * wyj;
+                    }
+                }
+            }
+            // Cubics overshoot: keep a valid premultiplied color
+            out[3] = out[3].clamp(0.0, 255.0);
+            for c in 0..3 {
+                out[c] = out[c].clamp(0.0, out[3]);
+            }
+            out
+        }
     }
-    out
 }
 
 /// Applies `m` (source → destination, in document pixels) to the active
@@ -401,6 +508,16 @@ pub fn transform<M: Mapping>(
     doc: &mut Document,
     m: M,
     background: [u8; 3],
+) -> Result<(), TransformError> {
+    transform_with(doc, m, background, Interpolation::Bicubic)
+}
+
+/// [`transform`] with Free Transform's interpolation.
+pub fn transform_with<M: Mapping>(
+    doc: &mut Document,
+    m: M,
+    background: [u8; 3],
+    how: Interpolation,
 ) -> Result<(), TransformError> {
     let src_box = bounds(doc)?;
     let inverse = m.inverted().ok_or(TransformError::Empty)?;
@@ -462,7 +579,7 @@ pub fn transform<M: Mapping>(
             for x in 0..w {
                 let (dx, dy) = ((ux0 + x as i64) as f32 + 0.5, (uy0 + y as i64) as f32 + 0.5);
                 let (sx, sy) = inverse.map((dx, dy));
-                let s = sample(&moving, w, h, sx - ux0 as f32, sy - uy0 as f32);
+                let s = sample(&moving, w, h, sx - ux0 as f32, sy - uy0 as f32, how);
                 let sa = s[3] / 255.0;
                 if sa <= 0.0 {
                     continue;
@@ -496,7 +613,9 @@ pub fn transform<M: Mapping>(
         for y in 0..h {
             for x in 0..w {
                 let (sx, sy) = inverse.map((x as f32 + 0.5, y as f32 + 0.5));
-                mask[y * w + x] = sample(&src, w, h, sx, sy)[0].round().clamp(0.0, 255.0) as u8;
+                mask[y * w + x] = sample(&src, w, h, sx, sy, Interpolation::Bilinear)[0]
+                    .round()
+                    .clamp(0.0, 255.0) as u8;
             }
         }
         doc.set_selection(Some(Selection::from_mask(w as u32, h as u32, mask, false)));
@@ -601,10 +720,43 @@ mod tests {
         let mut d = doc();
         let b = bounds(&d).unwrap();
         let quad = [(1.5, 1.0), (2.5, 1.0), (3.0, 3.0), (1.0, 3.0)];
-        transform(&mut d, Projective::rect_to_quad(b, quad), [255; 3]).unwrap();
+        transform_with(
+            &mut d,
+            Projective::rect_to_quad(b, quad),
+            [255; 3],
+            Interpolation::Bilinear,
+        )
+        .unwrap();
         let row = |y| (0..6).map(|x| layer_px(&d, x, y)[3] as u32).sum::<u32>();
         assert!(row(1) < row(2), "{} {}", row(1), row(2));
         assert!(row(2) > 255);
+    }
+
+    #[test]
+    fn interpolation_methods() {
+        // The 2×2 red square doubled about its corner: Nearest Neighbor
+        // keeps hard edges, the others blend them
+        let doubled = |how| {
+            let mut d = doc();
+            let m = Affine::translate(1.0, 1.0)
+                .after(Affine::scale(2.0, 2.0))
+                .after(Affine::translate(-1.0, -1.0));
+            transform_with(&mut d, m, [255; 3], how).unwrap();
+            (0..6).map(|x| layer_px(&d, x, 2)[3]).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            doubled(Interpolation::NearestNeighbor),
+            [0, 255, 255, 255, 255, 0]
+        );
+        let soft = doubled(Interpolation::Bilinear);
+        assert!(soft[4] > 0 && soft[4] < 255);
+        for how in Interpolation::ALL {
+            let row = doubled(how);
+            // The middle stays solid
+            assert_eq!(row[3], 255, "{how:?}");
+        }
+        assert_eq!(Interpolation::default(), Interpolation::Bicubic);
+        assert_eq!(Interpolation::ALL[5].label(), "Bicubic Automatic");
     }
 
     #[test]

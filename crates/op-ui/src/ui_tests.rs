@@ -1064,6 +1064,45 @@ fn gradient_tool_paints_foreground_to_background() {
 }
 
 #[test]
+fn transform_bar_takes_typed_numbers() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    h.state_mut().state.foreground = Color::from_rgba8([255, 0, 0, 255]);
+    select_rect(&mut h, 100.0, 100.0, 140.0, 140.0);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::D);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::T);
+    h.run_steps(2);
+    // W: 50 (the bar's center is 45 pt down), Enter: W and H halve, linked
+    click(&mut h, at_pt(390.0, 45.0));
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    h.event(egui::Event::Text("50".into()));
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    let t = active(&h)
+        .free_transform
+        .as_ref()
+        .expect("still transforming");
+    assert!(
+        (t.scale.0 - 0.5).abs() < 1e-4 && (t.scale.1 - 0.5).abs() < 1e-4,
+        "{:?}",
+        t.scale
+    );
+    // The angle: 90
+    click(&mut h, at_pt(570.0, 45.0));
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    h.event(egui::Event::Text("90".into()));
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    let t = active(&h).free_transform.as_ref().unwrap();
+    assert!((t.angle.to_degrees() - 90.0).abs() < 1e-3);
+    // The center hasn't moved
+    let (cx, cy) = t.reference_now();
+    assert!((cx - 120.0).abs() < 0.01 && (cy - 120.0).abs() < 0.01);
+}
+
+#[test]
 fn transform_distort_from_the_menu() {
     use crate::commands::Command;
     let mut h = harness(Vec::new());
@@ -2068,6 +2107,30 @@ fn screenshot_rotate_canvas_dialog() {
     run_command(&mut h, crate::commands::Command::RotateArbitrary);
     h.run_steps(3);
     shot(&mut h, "rotate_canvas");
+}
+
+#[test]
+#[ignore]
+fn screenshot_transform_bar() {
+    let mut h = harness(Vec::new());
+    let app = &mut h.state_mut().state;
+    crate::actions::close_all(app);
+    let mut doc = op_core::Document::new_with_background("tf", 200, 200, Color::WHITE);
+    let mut image = op_core::TiledImage::new(200, 200);
+    for y in 20..100 {
+        for x in 20..100 {
+            image.set_pixel(x, y, [255, 0, 0, 255]);
+        }
+    }
+    let id = doc.new_layer_id();
+    doc.layers
+        .push(op_core::Layer::raster(id, "Layer 1", image));
+    doc.select_layer(id);
+    app.add_document(doc, "New");
+    h.run_steps(6);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::T);
+    h.run_steps(3);
+    shot(&mut h, "transform_bar");
 }
 
 #[test]

@@ -686,9 +686,22 @@ pub struct FreeTransform {
     /// perspective; then they describe the box instead of the above.
     pub quad: Option<[egui::Pos2; 4]>,
     pub mode: TransformMode,
+    /// Horizontal and vertical skew, radians.
+    pub skew: (f32, f32),
+    /// The reference point: −1, 0 or 1 along each axis of the box.
+    pub reference: (i8, i8),
+    /// The options bar's reference point checkbox (Photoshop 2026: off).
+    pub show_reference: bool,
+    /// X and Y relative to where the reference point started.
+    pub relative: bool,
+    /// W and H change together.
+    pub linked: bool,
+    pub interpolation: op_core::transform::Interpolation,
     pub drag: Option<TransformDrag>,
-    /// The transform the document currently shows.
+    /// The transform the document currently shows, and how it was
+    /// resampled.
     pub applied: op_core::transform::Projective,
+    pub applied_interpolation: op_core::transform::Interpolation,
 }
 
 impl FreeTransform {
@@ -701,8 +714,15 @@ impl FreeTransform {
             angle: 0.0,
             quad: None,
             mode: TransformMode::Free,
+            skew: (0.0, 0.0),
+            reference: (0, 0),
+            show_reference: false,
+            relative: false,
+            linked: true,
+            interpolation: op_core::transform::Interpolation::Bicubic,
             drag: None,
             applied: op_core::transform::Projective::IDENTITY,
+            applied_interpolation: op_core::transform::Interpolation::Bicubic,
         }
     }
 
@@ -722,13 +742,42 @@ impl FreeTransform {
     }
 
     pub fn affine(&self) -> op_core::transform::Affine {
-        op_core::transform::Affine::around(
-            self.center(),
-            self.scale.0,
-            self.scale.1,
-            self.angle,
-            self.offset,
+        use op_core::transform::Affine;
+        let (cx, cy) = self.center();
+        Affine::translate(cx + self.offset.0, cy + self.offset.1)
+            .after(Affine::rotate(self.angle))
+            .after(Affine::skew(self.skew.0, self.skew.1))
+            .after(Affine::scale(self.scale.0, self.scale.1))
+            .after(Affine::translate(-cx, -cy))
+    }
+
+    /// The reference point on the original box.
+    pub fn reference_point(&self) -> (f32, f32) {
+        let (x0, y0, x1, y1) = self.bounds;
+        let pick = |k: i8, a: f32, b: f32| match k {
+            -1 => a,
+            0 => (a + b) / 2.0,
+            _ => b,
+        };
+        (
+            pick(self.reference.0, x0, x1),
+            pick(self.reference.1, y0, y1),
         )
+    }
+
+    /// Where the reference point is now.
+    pub fn reference_now(&self) -> (f32, f32) {
+        self.mapping().apply(self.reference_point())
+    }
+
+    /// Changes the box's numbers with `change`, keeping the reference
+    /// point where it is (the options bar's edits pivot on it).
+    pub fn pivoting(&mut self, change: impl FnOnce(&mut Self)) {
+        let before = self.reference_now();
+        change(self);
+        let after = self.reference_now();
+        self.offset.0 += before.0 - after.0;
+        self.offset.1 += before.1 - after.1;
     }
 }
 

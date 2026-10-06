@@ -36,6 +36,11 @@ pub enum Icon {
     CropCommit,
     /// Swap width and height: two solid arrows.
     Swap,
+    /// Free Transform's switch to Warp: a globe over a bent bar.
+    WarpToggle,
+    /// The Tool Presets icon while transforming: a box with handles and
+    /// an arrow.
+    TransformPreset,
     /// The toolbar's collapse "»": pixel-aligned and bold.
     CollapseToolbar,
     /// The panel column's thin collapse "»".
@@ -682,6 +687,46 @@ pub fn paint_scaled(
             pen.poly(&[(3.5, -12.5), (14.5, -6.0), (3.5, 0.5)]);
             pen.rect(-3.0, 5.0, 7.5, 7.0);
             pen.poly(&[(-2.5, -0.5), (-2.5, 12.5), (-13.5, 6.0)]);
+        }
+        Icon::TransformPreset => {
+            for (x, y) in [
+                (-6.5, -10.0),
+                (3.5, -10.0),
+                (13.5, -10.0),
+                (13.5, 0.0),
+                (-6.5, 10.0),
+                (3.5, 10.0),
+                (13.5, 10.0),
+            ] {
+                pen.rect(x - 2.0, y - 2.0, x + 2.0, y + 2.0);
+            }
+            pen.rect(-4.5, -10.5, 11.5, -9.5);
+            pen.rect(-4.5, 9.5, 11.5, 10.5);
+            pen.rect(13.0, -8.0, 14.0, 8.0);
+            pen.rect(-7.0, -8.0, -6.0, -6.0);
+            pen.rect(-7.0, 6.0, -6.0, 8.0);
+            pen.poly(&[(-16.0, -10.0), (-3.5, 1.5), (-11.0, 2.0)]);
+            pen.poly(&[(-16.0, -10.0), (-11.0, 2.0), (-16.0, 6.5)]);
+        }
+        Icon::WarpToggle => {
+            pen.ring(0.0, -6.0, 11.5, 2.5);
+            pen.rect(-1.0, -17.0, 1.0, 3.0);
+            let inner: Vec<(f32, f32)> = (0..=12)
+                .map(|k| {
+                    let a = (20.0 + 140.0 * k as f32 / 12.0f32).to_radians();
+                    (8.5 * a.cos(), -7.0 + 8.0 * a.sin())
+                })
+                .collect();
+            pen.line(&inner, 2.5);
+            let bottom: Vec<(f32, f32)> = (0..=16)
+                .map(|k| {
+                    let a = (200.0 + 140.0 * k as f32 / 16.0f32).to_radians();
+                    (16.0 * a.cos(), 22.0 + 15.0 * a.sin())
+                })
+                .collect();
+            pen.line(&bottom, 2.5);
+            pen.rect(-18.0, 12.0, -14.0, 16.0);
+            pen.rect(14.0, 12.0, 18.0, 16.0);
         }
         Icon::CropCommit => {
             pen.line(&[(-14.0, -0.5), (-5.5, 9.0), (13.0, -12.5)], 4.5);

@@ -36,17 +36,34 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
             Color32::from_gray(0x45),
         );
     }
-    ps_button(
-        ui,
-        Rect::from_center_size(at(28.0, 0.0), button),
-        Icon::Home,
-    )
-    .on_hover_text("Home");
+    // While transforming, Photoshop dims what can't be used
+    let busy = app.transforming();
+    let home = Rect::from_center_size(at(28.0, 0.0), button);
+    if busy {
+        crate::ps_icons::paint(
+            &painter,
+            home.center(),
+            Icon::Home,
+            color::OPTIONS_ICON_DISABLED,
+            color::OPTIONS_BAR,
+        );
+    } else {
+        ps_button(ui, home, Icon::Home).on_hover_text("Home");
+    }
     separator(&painter, bar, 53.0);
 
     // Tool Presets: the current tool's icon and a chevron
     let preset = Rect::from_center_size(at(68.5, 0.5), button);
-    let response = if app.tool == Tool::Move {
+    let response = if busy {
+        crate::ps_icons::paint(
+            &painter,
+            Pos2::new(at(68.0, 0.0).x, cy + pt(0.25)),
+            Icon::TransformPreset,
+            color::OPTIONS_ICON_DISABLED,
+            color::OPTIONS_BAR,
+        );
+        ui.interact(preset, ui.id().with("tool-presets"), Sense::hover())
+    } else if app.tool == Tool::Move {
         ps_button(ui, preset, Icon::Move)
     } else {
         let r = ui.interact(preset, ui.id().with("tool-presets"), Sense::click());
@@ -63,11 +80,16 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
         r
     };
     response.on_hover_text("Tool Presets");
+    let tint = if busy {
+        color::OPTIONS_ICON_DISABLED
+    } else {
+        color::OPTIONS_ICON
+    };
     crate::ps_icons::paint(
         &painter,
         at(90.25, 1.25),
         Icon::Caret,
-        color::OPTIONS_ICON,
+        tint,
         color::OPTIONS_BAR,
     );
     separator(&painter, bar, 102.0);
@@ -75,7 +97,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
     // The right end: the special buttons of a tool in progress, or the
     // app-wide buttons
     let right = Rect::from_min_max(Pos2::new(bar.right() - pt(230.0), bar.top()), bar.max);
-    let special = app.transforming() || app.typing_text();
+    let special = app.typing_text();
     let cropping = app.tool == Tool::Crop && !app.transforming();
     if special {
         ui.scope_builder(
@@ -84,11 +106,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
                 .layout(Layout::right_to_left(Align::Center)),
             |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
-                if app.transforming() {
-                    transform_buttons(ui, app);
-                } else {
-                    type_buttons(ui, app);
-                }
+                type_buttons(ui, app);
             },
         );
     } else {
@@ -113,13 +131,27 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
                 color::OPTIONS_ICON
             };
             let rect = Rect::from_center_size(from_right(x, dy), button);
-            ps_button_tinted(ui, rect, icon, tint).on_hover_text(tip);
+            if busy && matches!(icon, Icon::Share | Icon::Workspace) {
+                crate::ps_icons::paint(
+                    &painter,
+                    rect.center(),
+                    icon,
+                    color::OPTIONS_ICON_DISABLED,
+                    color::OPTIONS_BAR,
+                );
+            } else {
+                ps_button_tinted(ui, rect, icon, tint).on_hover_text(tip);
+            }
         }
         crate::ps_icons::paint(
             &painter,
             from_right(48.0, 1.25),
             Icon::Caret,
-            color::OPTIONS_ICON,
+            if busy {
+                color::OPTIONS_ICON_DISABLED
+            } else {
+                color::OPTIONS_ICON
+            },
             color::OPTIONS_BAR,
         );
         // The account avatar (a placeholder)
@@ -135,6 +167,11 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
         ui.allocate_rect(bar, Sense::hover());
         return;
     }
+    if app.transforming() {
+        transform_bar(ui, app, bar);
+        ui.allocate_rect(bar, Sense::hover());
+        return;
+    }
     let content = Rect::from_min_max(
         Pos2::new(bar.left() + CONTENT_LEFT, bar.top()),
         Pos2::new(right.left(), bar.bottom()),
@@ -145,11 +182,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
             .layout(Layout::left_to_right(Align::Center)),
         |ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            if app.transforming() {
-                transform_options(ui, app);
-            } else {
-                tool_options(ui, app);
-            }
+            tool_options(ui, app);
         },
     );
     ui.allocate_rect(bar, Sense::hover());
@@ -716,43 +749,337 @@ fn crop_bar(ui: &mut Ui, app: &mut AppState, bar: Rect) {
     app.crop_options = options;
 }
 
-/// Free Transform: the box's size (W, H in percent) and angle.
-fn transform_options(ui: &mut Ui, app: &mut AppState) {
-    let Some(t) = app.active().and_then(|s| s.free_transform.as_ref()) else {
-        return;
-    };
-    let (sx, sy, angle) = (t.scale.0, t.scale.1, t.angle);
-    let readout = |ui: &mut Ui, label: &str, value: String| {
-        ui.label(label);
-        widgets::field(ui, &value, 76.0, true);
-        ui.add_space(6.0);
-    };
-    readout(ui, "W:", format!("{:.2}%", sx * 100.0));
-    readout(ui, "H:", format!("{:.2}%", sy * 100.0));
-    widgets::vseparator(ui, 34.0);
-    widgets::icon(ui, icons::ANGLE, 16.0, color::ICON);
-    readout(ui, "", format!("{:.2}°", angle.to_degrees()));
+/// An options-bar number box that keeps what's typed while it has the
+/// focus and hands it over when Enter is pressed or the focus leaves.
+fn value_box(ui: &mut Ui, rect: Rect, id: &str, shown: String, enabled: bool) -> Option<String> {
+    let key = ui.id().with(("value-box", id));
+    let mut text = ui
+        .data(|d| d.get_temp::<String>(key))
+        .unwrap_or_else(|| shown.clone());
+    let response = widgets::text_box(ui, rect, &mut text, key, enabled);
+    if response.has_focus() {
+        ui.data_mut(|d| d.insert_temp(key, text.clone()));
+        None
+    } else {
+        ui.data_mut(|d| d.remove::<String>(key));
+        if response.lost_focus() {
+            // The Enter that ends the typing isn't the canvas's (it would
+            // commit the transform)
+            ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Enter));
+        }
+        response.lost_focus().then_some(text)
+    }
 }
 
-/// Free Transform's Cancel and Commit buttons (right-aligned).
-fn transform_buttons(ui: &mut Ui, app: &mut AppState) {
+/// A number typed with or without its unit ("60 px", "50%", "15°").
+fn typed_number(text: &str) -> Option<f32> {
+    let t = text
+        .trim()
+        .trim_end_matches("px")
+        .trim_end_matches('%')
+        .trim_end_matches('°')
+        .trim();
+    t.parse().ok()
+}
+
+/// Free Transform's options, at Photoshop 2026's positions (points from
+/// the bar's left): the reference point switch and grid, X and Y with
+/// the relative switch, W and H with the link, the angle, the H and V
+/// skew, Interpolation, the Warp switch, Cancel and Commit.
+fn transform_bar(ui: &mut Ui, app: &mut AppState, bar: Rect) {
+    let cy = bar.top() + CENTER_Y;
+    let at = |x: f32| bar.left() + pt(x);
+    let span = |x0: f32, x1: f32| {
+        Rect::from_min_max(
+            Pos2::new(at(x0), cy - pt(8.5)),
+            Pos2::new(at(x1), cy + pt(8.5)),
+        )
+    };
+    let painter = ui.painter().clone();
+    let label = |x: f32, text: &str| {
+        painter.text(
+            Pos2::new(at(x), cy),
+            egui::Align2::LEFT_CENTER,
+            text,
+            theme::body(),
+            color::TEXT,
+        );
+    };
     let Some(state) = app.active() else {
         return;
     };
-    if widgets::icon_button(ui, icons::CHECK, 34.0, false)
+    let Some(t) = state.free_transform.as_mut() else {
+        return;
+    };
+    let editable = t.quad.is_none();
+
+    // The reference point: a checkbox, then a 3 × 3 grid (dim when off)
+    let check = Rect::from_center_size(Pos2::new(at(120.25), cy + pt(0.25)), Vec2::splat(pt(13.5)));
+    if ui
+        .interact(check, ui.id().with("ref-check"), Sense::click())
+        .on_hover_text("Toggle reference point")
+        .clicked()
+    {
+        t.show_reference = !t.show_reference;
+    }
+    painter.rect_stroke(
+        check,
+        egui::CornerRadius::same(pt(3.0) as u8),
+        egui::Stroke::new(pt(1.0), color::OPTIONS_ICON),
+        egui::StrokeKind::Inside,
+    );
+    if t.show_reference {
+        crate::ps_icons::paint(
+            &painter,
+            check.center(),
+            Icon::CropCommit,
+            color::OPTIONS_ICON,
+            color::OPTIONS_BAR,
+        );
+    }
+    let grid_tint = if t.show_reference {
+        Color32::from_gray(0xb0)
+    } else {
+        Color32::from_gray(0x60)
+    };
+    for gy in -1i8..=1 {
+        for gx in -1i8..=1 {
+            let c = Pos2::new(at(146.0 + 7.0 * gx as f32), cy + pt(0.75 + 7.0 * gy as f32));
+            let cell = Rect::from_center_size(c, Vec2::splat(pt(5.5)));
+            let chosen = t.reference == (gx, gy);
+            if chosen {
+                painter.rect_filled(cell, 0, grid_tint);
+            } else {
+                painter.rect_stroke(
+                    cell,
+                    0,
+                    egui::Stroke::new(pt(1.5), grid_tint),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            if t.show_reference
+                && ui
+                    .interact(
+                        cell.expand(pt(1.0)),
+                        ui.id().with(("ref", gx, gy)),
+                        Sense::click(),
+                    )
+                    .clicked()
+            {
+                t.reference = (gx, gy);
+            }
+        }
+    }
+
+    // X, Y
+    let now = t.reference_now();
+    let start = t.reference_point();
+    let (xv, yv) = if t.relative {
+        (now.0 - start.0, now.1 - start.1)
+    } else {
+        now
+    };
+    label(163.0, "X:");
+    if let Some(v) = value_box(
+        ui,
+        span(174.5, 235.5),
+        "tx",
+        format!("{xv:.2} px"),
+        editable,
+    )
+    .and_then(|s| typed_number(&s))
+    {
+        t.offset.0 += v - xv;
+    }
+    let triangle =
+        Rect::from_center_size(Pos2::new(at(250.75), cy + pt(0.25)), Vec2::splat(pt(20.0)));
+    if ui
+        .interact(triangle, ui.id().with("relative"), Sense::click())
+        .on_hover_text("Use relative positioning for reference point")
+        .clicked()
+    {
+        t.relative = !t.relative;
+    }
+    if t.relative {
+        painter.rect_filled(triangle, pt(3.0), color::TOOL_ACTIVE);
+    }
+    painter.add(egui::Shape::closed_line(
+        vec![
+            triangle.center() + Vec2::new(0.0, pt(-5.0)),
+            triangle.center() + Vec2::new(pt(5.25), pt(4.5)),
+            triangle.center() + Vec2::new(pt(-5.25), pt(4.5)),
+        ],
+        egui::Stroke::new(pt(1.0), color::OPTIONS_ICON),
+    ));
+    label(268.5, "Y:");
+    if let Some(v) = value_box(
+        ui,
+        span(279.5, 340.0),
+        "ty",
+        format!("{yv:.2} px"),
+        editable,
+    )
+    .and_then(|s| typed_number(&s))
+    {
+        t.offset.1 += v - yv;
+    }
+    separator(&painter, bar, 343.5);
+
+    // W, link, H
+    label(349.0, "W:");
+    let (w, h) = (t.scale.0 * 100.0, t.scale.1 * 100.0);
+    if let Some(v) = value_box(ui, span(362.5, 417.0), "tw", format!("{w:.2}%"), editable)
+        .and_then(|s| typed_number(&s))
+        .filter(|v| *v != 0.0)
+    {
+        let linked = t.linked;
+        t.pivoting(|t| {
+            let k = v / 100.0 / t.scale.0;
+            t.scale.0 = v / 100.0;
+            if linked {
+                t.scale.1 *= k;
+            }
+        });
+    }
+    let link = Rect::from_min_max(
+        Pos2::new(at(420.0), bar.top() + pt(4.0)),
+        Pos2::new(at(446.0), bar.top() + pt(31.0)),
+    );
+    if ui
+        .interact(link, ui.id().with("link-wh"), Sense::click())
+        .on_hover_text("Maintain aspect ratio")
+        .clicked()
+    {
+        t.linked = !t.linked;
+    }
+    if t.linked {
+        painter.rect(
+            link,
+            egui::CornerRadius::same(pt(3.0) as u8),
+            Color32::from_gray(0x38),
+            egui::Stroke::new(pt(1.0), Color32::from_gray(0x63)),
+            egui::StrokeKind::Inside,
+        );
+    }
+    crate::ps_icons::paint(
+        &painter,
+        Pos2::new(at(433.0), cy + pt(0.25)),
+        Icon::LinkLayers,
+        color::OPTIONS_ICON,
+        color::OPTIONS_BAR,
+    );
+    label(450.5, "H:");
+    if let Some(v) = value_box(ui, span(463.0, 517.0), "th", format!("{h:.2}%"), editable)
+        .and_then(|s| typed_number(&s))
+        .filter(|v| *v != 0.0)
+    {
+        let linked = t.linked;
+        t.pivoting(|t| {
+            let k = v / 100.0 / t.scale.1;
+            t.scale.1 = v / 100.0;
+            if linked {
+                t.scale.0 *= k;
+            }
+        });
+    }
+    separator(&painter, bar, 520.5);
+
+    // The angle
+    let a = Pos2::new(at(532.25), cy + pt(0.75));
+    let stroke = egui::Stroke::new(pt(1.0), color::OPTIONS_ICON);
+    painter.line_segment(
+        [
+            a + Vec2::new(pt(-6.0), pt(5.5)),
+            a + Vec2::new(pt(6.0), pt(5.5)),
+        ],
+        stroke,
+    );
+    painter.line_segment(
+        [
+            a + Vec2::new(pt(-6.0), pt(5.5)),
+            a + Vec2::new(pt(5.0), pt(-5.5)),
+        ],
+        stroke,
+    );
+    let degrees = t.angle.to_degrees();
+    if let Some(v) = value_box(
+        ui,
+        span(542.5, 597.0),
+        "ta",
+        format!("{degrees:.2}"),
+        editable,
+    )
+    .and_then(|s| typed_number(&s))
+    {
+        t.pivoting(|t| t.angle = v.to_radians());
+    }
+    label(599.5, "°");
+    separator(&painter, bar, 609.5);
+
+    // Skew
+    label(617.0, "H:");
+    let (hs, vs) = (t.skew.0.to_degrees(), t.skew.1.to_degrees());
+    if let Some(v) = value_box(ui, span(629.5, 677.5), "tsh", format!("{hs:.2}"), editable)
+        .and_then(|s| typed_number(&s))
+        .filter(|v| v.abs() < 90.0)
+    {
+        t.pivoting(|t| t.skew.0 = v.to_radians());
+    }
+    label(680.0, "°");
+    label(691.5, "V:");
+    if let Some(v) = value_box(ui, span(702.5, 750.5), "tsv", format!("{vs:.2}"), editable)
+        .and_then(|s| typed_number(&s))
+        .filter(|v| v.abs() < 90.0)
+    {
+        t.pivoting(|t| t.skew.1 = v.to_radians());
+    }
+    label(753.0, "°");
+    separator(&painter, bar, 763.5);
+
+    // Interpolation
+    label(770.0, "Interpolation:");
+    let mut how = t.interpolation;
+    ui.scope_builder(egui::UiBuilder::new().max_rect(span(839.5, 901.5)), |ui| {
+        widgets::dropdown_with(
+            ui,
+            "transform-interpolation",
+            pt(62.0),
+            how.label(),
+            true,
+            |ui| {
+                for m in op_core::transform::Interpolation::ALL {
+                    ui.selectable_value(&mut how, m, m.label());
+                }
+            },
+        );
+    });
+    t.interpolation = how;
+    // Warp isn't here yet
+    crate::ps_icons::paint(
+        &painter,
+        Pos2::new(at(919.0), cy),
+        Icon::WarpToggle,
+        color::OPTIONS_ICON_DISABLED,
+        color::OPTIONS_BAR,
+    );
+    separator(&painter, bar, 935.0);
+
+    let cancel = Rect::from_center_size(Pos2::new(at(983.0), cy), Vec2::splat(pt(24.0)));
+    if ps_button(ui, cancel, Icon::CropCancel)
+        .on_hover_text("Cancel transform (Esc)")
+        .clicked()
+    {
+        crate::free_transform::cancel(state);
+        return;
+    }
+    let commit = Rect::from_center_size(Pos2::new(at(1011.5), cy), Vec2::splat(pt(24.0)));
+    if ps_button(ui, commit, Icon::CropCommit)
         .on_hover_text("Commit transform (Return)")
         .clicked()
         && let Some(crate::free_transform::Outcome::Committed(m)) =
             crate::free_transform::commit(state)
     {
         app.last_transform = Some(m);
-        return;
-    }
-    if widgets::icon_button(ui, icons::PROHIBIT, 34.0, false)
-        .on_hover_text("Cancel transform (Esc)")
-        .clicked()
-    {
-        crate::free_transform::cancel(state);
     }
 }
 
@@ -1250,5 +1577,19 @@ fn view_options(ui: &mut Ui, app: &mut AppState) {
         if ui.add(b).clicked() {
             f(doc, ppp);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn numbers_are_typed_with_or_without_units() {
+        assert_eq!(typed_number("60.00 px"), Some(60.0));
+        assert_eq!(typed_number("50%"), Some(50.0));
+        assert_eq!(typed_number(" 15° "), Some(15.0));
+        assert_eq!(typed_number("-2.5"), Some(-2.5));
+        assert_eq!(typed_number("abc"), None);
     }
 }

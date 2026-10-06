@@ -366,14 +366,16 @@ pub fn preview(state: &mut DocState, background: [u8; 3]) {
         return;
     };
     let m = t.mapping();
-    if m == t.applied {
+    let how = t.interpolation;
+    if m == t.applied && how == t.applied_interpolation {
         return;
     }
     state.doc.restore(&t.before);
-    if transform::transform(&mut state.doc, m, background).is_ok()
+    if transform::transform_with(&mut state.doc, m, background, how).is_ok()
         && let Some(t) = &mut state.free_transform
     {
         t.applied = m;
+        t.applied_interpolation = how;
     }
 }
 
@@ -572,7 +574,12 @@ pub fn draw(ui: &Ui, state: &DocState, canvas: Rect, ppp: f32) {
         quad,
         handles(t).map(|(h, _, _)| to_screen(state, h, ppp)),
     );
-    let (cx, cy) = t.mapping().apply(t.center());
+    // The reference point shows when its switch is on (off by default,
+    // as in Photoshop 2026)
+    if !t.show_reference {
+        return;
+    }
+    let (cx, cy) = t.reference_now();
     let c = to_screen(state, Pos2::new(cx, cy), ppp);
     painter.circle_stroke(c, pt(4.0), Stroke::new(1.0, Color32::from_gray(0x40)));
     painter.line_segment(
@@ -710,6 +717,32 @@ mod tests {
         ]);
         turn_box(&mut t, F::Rotate180);
         assert_eq!(t.quad.unwrap()[0], Pos2::new(4.0, 2.0));
+    }
+
+    #[test]
+    fn options_bar_numbers_pivot_on_the_reference_point() {
+        // W 50% with the top-left reference point: that corner stays
+        let mut t = session();
+        t.reference = (-1, -1);
+        t.pivoting(|t| t.scale = (0.5, 0.5));
+        let tl = t.mapping().apply((0.0, 0.0));
+        assert!(tl.0.abs() < 1e-4 && tl.1.abs() < 1e-4, "{tl:?}");
+        let br = t.mapping().apply((4.0, 2.0));
+        assert!(
+            (br.0 - 2.0).abs() < 1e-4 && (br.1 - 1.0).abs() < 1e-4,
+            "{br:?}"
+        );
+        assert_eq!(t.reference_now(), (0.0, 0.0));
+        // 90° about the center keeps the center
+        let mut t = session();
+        t.pivoting(|t| t.angle = std::f32::consts::FRAC_PI_2);
+        let c = t.reference_now();
+        assert!((c.0 - 2.0).abs() < 1e-4 && (c.1 - 1.0).abs() < 1e-4);
+        // A 45° horizontal skew about the center slides the top left
+        let mut t = session();
+        t.pivoting(|t| t.skew.0 = std::f32::consts::FRAC_PI_4);
+        let (x, y) = t.mapping().apply((0.0, 0.0));
+        assert!((x + 1.0).abs() < 1e-4 && y.abs() < 1e-4, "{x} {y}");
     }
 
     #[test]
