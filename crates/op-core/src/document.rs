@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::blend;
 use crate::color::Color;
 use crate::layer::{Layer, LayerId, LayerKind};
 use crate::pixel::{BitDepth, ColorMode};
@@ -181,9 +182,8 @@ impl Document {
 
     /// Composites all visible layers on the CPU into tightly packed straight RGBA8.
     ///
-    /// Blending happens in gamma-encoded space, which is Photoshop's default.
-    /// Only Normal is implemented; other modes fall back to Normal for now.
-    /// This will move to GPU compositing.
+    /// Blending happens in gamma-encoded space, which is Photoshop's default,
+    /// with each layer's blend mode (see [`crate::blend`]).
     pub fn composite_rgba8(&self) -> Vec<u8> {
         let (w, h) = (self.width as usize, self.height as usize);
         let mut out = vec![0f32; w * h * 4];
@@ -213,14 +213,17 @@ impl Document {
                                 continue;
                             }
                             let d = &mut dst_row[col * 4..col * 4 + 4];
-                            // source-over, straight alpha
-                            let da = d[3];
-                            let oa = sa + da * (1.0 - sa);
-                            for c in 0..3 {
-                                let sc = s[c] as f32 / 255.0;
-                                d[c] = (sc * sa + d[c] * da * (1.0 - sa)) / oa;
-                            }
-                            d[3] = oa;
+                            let src = [s[0], s[1], s[2]].map(|v| v as f32 / 255.0);
+                            let (x, y) = ((x0 + col) as u32, (y0 + row) as u32);
+                            let out = blend::composite(
+                                layer.blend_mode,
+                                [d[0], d[1], d[2], d[3]],
+                                src,
+                                sa,
+                                x,
+                                y,
+                            );
+                            d.copy_from_slice(&out);
                         }
                     }
                 }
@@ -281,6 +284,21 @@ mod tests {
         let LayerKind::Raster(img) = &doc.layer(id).unwrap().kind;
         assert_eq!(img.pixel(2, 2), [0; 4]);
         assert_eq!(img.pixel(1, 1), [255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn composite_uses_blend_mode() {
+        let mut doc =
+            Document::new_with_background("t", 1, 1, Color::from_rgba8([128, 128, 128, 255]));
+        let id = doc.new_layer_id();
+        let mut layer = Layer::raster(
+            id,
+            "Layer 1",
+            TiledImage::filled(1, 1, [128, 128, 128, 255]),
+        );
+        layer.blend_mode = crate::BlendMode::Multiply;
+        doc.layers.push(layer);
+        assert_eq!(&doc.composite_rgba8()[..4], &[64, 64, 64, 255]);
     }
 
     #[test]

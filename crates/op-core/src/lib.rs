@@ -3,6 +3,7 @@
 //! This crate has no GPU or UI dependencies; every edit ends up as a change to
 //! the data structures defined here.
 
+pub mod blend;
 pub mod color;
 pub mod document;
 pub mod history;
