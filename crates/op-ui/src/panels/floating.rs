@@ -1,0 +1,154 @@
+//! Panels opened from the Window menu that aren't docked: Info, Navigator
+//! and Histogram. Each floats in its own frame with a tab header (the
+//! panel's name and a close button) and can be dragged by the header.
+
+use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+
+use crate::icons;
+use crate::state::AppState;
+use crate::theme::{self, color, pt};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Floating {
+    Info,
+    Navigator,
+    Histogram,
+}
+
+impl Floating {
+    pub const ALL: [Self; 3] = [Self::Navigator, Self::Histogram, Self::Info];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Info => "Info",
+            Self::Navigator => "Navigator",
+            Self::Histogram => "Histogram",
+        }
+    }
+
+    fn size(self) -> Vec2 {
+        match self {
+            Self::Info => Vec2::new(pt(250.0), pt(200.0)),
+            Self::Navigator => Vec2::new(pt(250.0), pt(230.0)),
+            Self::Histogram => Vec2::new(pt(250.0), pt(150.0)),
+        }
+    }
+}
+
+/// Which floating panels are open.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FloatingPanels {
+    pub info: bool,
+    pub navigator: bool,
+    pub histogram: bool,
+}
+
+impl FloatingPanels {
+    pub fn is_open(&self, panel: Floating) -> bool {
+        match panel {
+            Floating::Info => self.info,
+            Floating::Navigator => self.navigator,
+            Floating::Histogram => self.histogram,
+        }
+    }
+
+    pub fn toggle(&mut self, panel: Floating) {
+        let open = match panel {
+            Floating::Info => &mut self.info,
+            Floating::Navigator => &mut self.navigator,
+            Floating::Histogram => &mut self.histogram,
+        };
+        *open = !*open;
+    }
+}
+
+const HEADER: f32 = pt(26.0);
+
+/// Shows the open floating panels, to the left of the panel column at
+/// first and then wherever they are dragged.
+pub fn show(ctx: &egui::Context, app: &mut AppState, panel_column_left: f32, top: f32) {
+    // Each panel has its own spot in a column, open or not, so panels
+    // opened later never land on top of one another
+    let mut y = top + pt(8.0);
+    for panel in Floating::ALL {
+        let size = panel.size() + Vec2::new(0.0, HEADER);
+        let default = Pos2::new(panel_column_left - size.x - pt(12.0), y);
+        y += size.y + pt(8.0);
+        if !app.floating.is_open(panel) {
+            continue;
+        }
+        let mut close = false;
+        egui::Area::new(egui::Id::new(("floating-panel", panel.title())))
+            .default_pos(default)
+            .movable(true)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+                let painter = ui.painter();
+                painter.add(
+                    egui::Shadow {
+                        offset: [0, 4],
+                        blur: 16,
+                        spread: 0,
+                        color: Color32::from_black_alpha(90),
+                    }
+                    .as_shape(rect, 0),
+                );
+                painter.rect(
+                    rect,
+                    0,
+                    color::PANEL,
+                    Stroke::new(1.0, color::SEPARATOR),
+                    StrokeKind::Outside,
+                );
+                // Header: a tab with the panel's name, and a close button
+                let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), HEADER));
+                painter.rect_filled(header, 0, color::TAB_BAR);
+                let tab = Rect::from_min_size(header.min, Vec2::new(pt(90.0), HEADER));
+                painter.rect_filled(tab, 0, color::PANEL);
+                painter.text(
+                    tab.center(),
+                    Align2::CENTER_CENTER,
+                    panel.title(),
+                    theme::semibold(theme::font::BODY),
+                    color::TEXT,
+                );
+                let x = Rect::from_center_size(
+                    header.right_center() - Vec2::new(pt(14.0), 0.0),
+                    Vec2::splat(pt(18.0)),
+                );
+                let close_response =
+                    ui.interact(x, ui.id().with(("close", panel.title())), Sense::click());
+                painter.text(
+                    x.center(),
+                    Align2::CENTER_CENTER,
+                    icons::X,
+                    theme::icon(pt(12.0)),
+                    if close_response.hovered() {
+                        color::TEXT
+                    } else {
+                        color::TEXT_DIM
+                    },
+                );
+                if close_response.clicked() {
+                    close = true;
+                }
+                let body = Rect::from_min_max(Pos2::new(rect.left(), header.bottom()), rect.max)
+                    .shrink(pt(10.0));
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(body));
+                match panel {
+                    Floating::Info => super::info::show(&mut child, app),
+                    Floating::Navigator => super::navigator::show(&mut child, app),
+                    Floating::Histogram => super::histogram::show(&mut child, app),
+                }
+            });
+        if close {
+            app.floating.toggle(panel);
+        }
+    }
+}
+
+/// Small text in the panels.
+pub fn small() -> FontId {
+    FontId::proportional(theme::font::BODY)
+}

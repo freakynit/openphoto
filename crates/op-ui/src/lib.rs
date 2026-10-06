@@ -512,6 +512,7 @@ impl eframe::App for OpenPhotoApp {
         if self.state.history_open {
             self.history_popout(&ctx, strip_rect, history_button);
         }
+        panels::floating::show(&ctx, &mut self.state, strip_rect.left(), strip_rect.top());
 
         self.canvas_size_dialog(&ctx);
         self.fill_dialog(&ctx);

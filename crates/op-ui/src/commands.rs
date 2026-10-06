@@ -165,6 +165,10 @@ pub enum Command {
     /// Hide OpenPhoto (Ctrl+Cmd+H, as Photoshop: Cmd+H is Extras).
     HideApp,
     ToggleHistory,
+    /// Window > Info (F8).
+    ToggleInfo,
+    ToggleNavigator,
+    ToggleHistogram,
 }
 
 /// A keyboard shortcut. `cmd` is Command on macOS and Ctrl elsewhere.
@@ -340,6 +344,14 @@ impl Command {
             Self::ZoomOut => cmd(Key::Minus),
             Self::FitOnScreen => cmd(Key::Num0),
             Self::ActualPixels => cmd(Key::Num1),
+            Self::ToggleInfo => Shortcut {
+                cmd: false,
+                shift: false,
+                alt: false,
+                ctrl: false,
+                key: Key::F8,
+            },
+            Self::ToggleNavigator | Self::ToggleHistogram => return None,
             Self::ToggleRulers => cmd(Key::R),
             Self::ToggleExtras => cmd(Key::H),
             Self::ToggleGuides => cmd(Key::Semicolon),
@@ -449,6 +461,10 @@ impl Command {
             Self::ToggleGuides => v.guides,
             Self::ToggleGrid => v.grid,
             Self::LockGuides => v.lock_guides,
+            Self::ToggleHistory => app.history_open,
+            Self::ToggleInfo => app.floating.info,
+            Self::ToggleNavigator => app.floating.navigator,
+            Self::ToggleHistogram => app.floating.histogram,
             Self::QuickMask => app
                 .active_doc
                 .and_then(|id| app.docs.get(&id))
@@ -483,6 +499,9 @@ impl Command {
             | Self::ToggleHistory
             | Self::Quit
             | Self::HideApp
+            | Self::ToggleInfo
+            | Self::ToggleNavigator
+            | Self::ToggleHistogram
             | Self::ToggleRulers
             | Self::ToggleExtras
             | Self::ToggleGuides
@@ -684,6 +703,7 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::ToggleExtras,
     Command::ToggleGuides,
     Command::ToggleGrid,
+    Command::ToggleInfo,
 ];
 
 /// Shortcuts the macOS menu bar can't catch. Zoom In's menu item shows Cmd++
@@ -1001,6 +1021,13 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 app.image_size_dialog = Some(dialog);
             }
         }
+        Command::ToggleInfo => app.floating.toggle(crate::panels::floating::Floating::Info),
+        Command::ToggleNavigator => app
+            .floating
+            .toggle(crate::panels::floating::Floating::Navigator),
+        Command::ToggleHistogram => app
+            .floating
+            .toggle(crate::panels::floating::Floating::Histogram),
         Command::ToggleRulers => app.view.rulers = !app.view.rulers,
         Command::ToggleExtras => app.view.extras = !app.view.extras,
         Command::ToggleGuides => app.view.guides = !app.view.guides,

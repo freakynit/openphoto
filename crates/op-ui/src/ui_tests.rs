@@ -1501,3 +1501,42 @@ fn curves_dialog_adds_points() {
     let v = composite_pixel(&mut h, 5, 5)[0];
     assert!((185..=198).contains(&v), "{v}");
 }
+
+#[test]
+fn info_navigator_and_histogram_panels() {
+    use crate::commands::Command;
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.key_press(egui::Key::F8);
+    h.run_steps(2);
+    assert!(h.state().state.floating.info);
+    run_command(&mut h, Command::ToggleNavigator);
+    run_command(&mut h, Command::ToggleHistogram);
+    // Hovering the document tells the Info panel where the pointer is
+    let p = doc_point(&h, 120.0, 80.0);
+    h.hover_at(p);
+    h.run_steps(3);
+    let pointer = active(&h).pointer.unwrap();
+    assert!((pointer.x - 120.0).abs() < 1.0 && (pointer.y - 80.0).abs() < 1.0);
+    // Each panel in its own place
+    let rect = |name: &str| {
+        h.ctx
+            .memory(|m| m.area_rect(egui::Id::new(("floating-panel", name))))
+            .unwrap()
+    };
+    assert!(!rect("Info").intersects(rect("Navigator")));
+    assert!(!rect("Info").intersects(rect("Histogram")));
+    shot(&mut h, "floating_panels");
+    // The Navigator moves the view: clicking its thumbnail's corner
+    let before = active(&h).view.offset;
+    let ppp = 2.0;
+    crate::document_view::center_on(
+        h.state_mut().state.active().unwrap(),
+        egui::pos2(0.0, 0.0),
+        ppp,
+    );
+    assert_ne!(active(&h).view.offset, before);
+    h.key_press(egui::Key::F8);
+    h.run_steps(2);
+    assert!(!h.state().state.floating.info);
+}

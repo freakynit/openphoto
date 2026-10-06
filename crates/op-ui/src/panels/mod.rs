@@ -5,6 +5,10 @@
 //! and collapse-to-icons comes later.
 
 mod color_panel;
+pub mod floating;
+mod histogram;
+mod info;
+mod navigator;
 pub use color_panel::DEFAULT_SWATCHES;
 pub mod history;
 mod layers;

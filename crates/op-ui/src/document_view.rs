@@ -80,6 +80,13 @@ pub fn zoom_to(state: &mut DocState, zoom: f32, ppp: f32) {
     zoom_at(state, zoom, state.view.viewport.center(), ppp);
 }
 
+/// Scrolls so the document point `p` is at the window's center (the
+/// Navigator).
+pub fn center_on(state: &mut DocState, p: Pos2, ppp: f32) {
+    let zoom = state.view.zoom;
+    state.view.offset = doc_size_pt(state, zoom, ppp) / 2.0 - p.to_vec2() * zoom / ppp;
+}
+
 /// View > Print Size: one inch of the document (its resolution in pixels)
 /// as 72 points on screen.
 pub fn print_size(state: &mut DocState, ppp: f32) {
@@ -217,6 +224,8 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
         )
     });
     let hover = response.hover_pos();
+    // For the Info panel
+    state.pointer = hover.map(|p| to_doc(state, p, ppp));
 
     // Pinch / Cmd+scroll zooms; plain scrolling pans
     if let Some(p) = hover {

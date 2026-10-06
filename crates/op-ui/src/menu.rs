@@ -134,6 +134,9 @@ const ALL_COMMANDS: &[Command] = &[
     Command::NewGuide,
     Command::HideApp,
     Command::ToggleHistory,
+    Command::ToggleInfo,
+    Command::ToggleNavigator,
+    Command::ToggleHistogram,
 ];
 
 fn id(command: Command) -> String {
@@ -834,8 +837,54 @@ impl NativeMenu {
             ],
         );
 
-        let window =
-            Submenu::with_items("Window", true, &[&item("History", Command::ToggleHistory)]);
+        let window = Submenu::with_items(
+            "Window",
+            true,
+            &[
+                &todo_sub("Arrange") as &dyn IsMenuItem,
+                &todo_sub("Workspace"),
+                &sep(),
+                &todo("Actions", Some("Alt+F9")),
+                &todo("Adjustments", None),
+                &todo("Brush Settings", Some("F5")),
+                &todo("Brushes", None),
+                &todo("Channels", None),
+                &todo("Character", None),
+                &todo("Character Styles", None),
+                &todo("Clone Source", None),
+                &todo("Color", Some("F6")),
+                &todo("Comments", None),
+                &todo("Content Credentials (Beta)", None),
+                &todo("Glyphs", None),
+                &todo("Gradients", None),
+                &check_item("Histogram", Command::ToggleHistogram),
+                &check_item("History", Command::ToggleHistory),
+                &check_item("Info", Command::ToggleInfo),
+                &todo("Layer Comps", None),
+                &todo("Layers", Some("F7")),
+                &todo("Libraries", None),
+                &todo("Materials", None),
+                &todo("Measurement Log", None),
+                &check_item("Navigator", Command::ToggleNavigator),
+                &todo("Notes", None),
+                &todo("Paragraph", None),
+                &todo("Paragraph Styles", None),
+                &todo("Paths", None),
+                &todo("Patterns", None),
+                &todo("Properties", None),
+                &todo("Shapes", None),
+                &todo("Styles", None),
+                &todo("Swatches", None),
+                &todo("Timeline", None),
+                &todo("Tool Presets", None),
+                &todo("Version History", None),
+                &sep(),
+                &todo("Application Frame", None),
+                &todo("Options", None),
+                &todo("Tools", None),
+                &todo("Contextual Task Bar", None),
+            ],
+        );
         let help = Submenu::with_items("Help", true, &[&todo("OpenPhoto Help", None)]);
 
         let menu = Menu::new();

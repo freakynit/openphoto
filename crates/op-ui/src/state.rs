@@ -59,6 +59,13 @@ pub struct DocState {
     pub lasso: Option<LassoPath>,
     /// A guide being dragged.
     pub guide_drag: Option<GuideDrag>,
+    /// Where the pointer is over the document (document pixels), for the
+    /// Info panel.
+    pub pointer: Option<egui::Pos2>,
+    /// The merged image's luminosity histogram and thumbnail texture, per
+    /// revision (Histogram and Navigator panels).
+    histogram: Option<(u64, [u64; 256])>,
+    composite_tex: Option<(u64, egui::TextureHandle)>,
     /// The Clone Stamp's source point (set with Alt-click), and the offset
     /// from it to the strokes once painting has started (Aligned).
     pub clone_source: Option<egui::Pos2>,
@@ -112,6 +119,9 @@ impl DocState {
             free_transform: None,
             crop: None,
             guide_drag: None,
+            pointer: None,
+            histogram: None,
+            composite_tex: None,
             clone_source: None,
             clone_offset: None,
             picking_clone_source: false,
@@ -288,6 +298,49 @@ impl DocState {
         let img = self.canvas_image();
         let i = ((y * img.width + x) * 4) as usize;
         Some(Color::from_rgba8(img.pixels[i..i + 4].try_into().ok()?))
+    }
+
+    /// Luminosity histogram of the merged image, cached per revision.
+    pub fn composite_histogram(&mut self) -> [u64; 256] {
+        let rev = self.doc.revision();
+        if let Some((r, h)) = &self.histogram
+            && *r == rev
+        {
+            return *h;
+        }
+        let img = self.canvas_image();
+        let mut hist = [0u64; 256];
+        for px in img.pixels.chunks(4) {
+            if px[3] > 0 {
+                let l = op_core::adjust::luminosity([px[0], px[1], px[2], 255]);
+                hist[l as usize] += 1;
+            }
+        }
+        self.histogram = Some((rev, hist));
+        hist
+    }
+
+    /// The merged image as a texture at most `max_px` on a side, cached
+    /// per revision (the Navigator's thumbnail).
+    pub fn composite_texture(
+        &mut self,
+        ctx: &egui::Context,
+        max_px: u32,
+    ) -> Option<egui::TextureHandle> {
+        let rev = self.doc.revision();
+        if let Some((r, tex)) = &self.composite_tex
+            && *r == rev
+        {
+            return Some(tex.clone());
+        }
+        let image = composite_thumbnail(&self.doc, max_px);
+        let tex = ctx.load_texture(
+            format!("navigator-{}", self.doc.id.0),
+            image,
+            egui::TextureOptions::LINEAR,
+        );
+        self.composite_tex = Some((rev, tex.clone()));
+        Some(tex)
     }
 
     /// Thumbnail of the document as it was opened (History panel snapshot).
@@ -809,6 +862,8 @@ pub struct AppState {
     pub untitled_counter: u32,
     /// Error message to show to the user.
     pub alert: Option<String>,
+    /// Window menu panels that float (Info, Navigator, Histogram).
+    pub floating: crate::panels::floating::FloatingPanels,
     /// Whether the History panel is popped out from the icon strip.
     pub history_open: bool,
     pub history_panel: crate::panels::history::PanelState,
@@ -889,6 +944,7 @@ impl Default for AppState {
             untitled_counter: 0,
             alert: None,
             history_open: false,
+            floating: Default::default(),
             history_panel: Default::default(),
             canvas_size_dialog: None,
             fill_dialog: None,
