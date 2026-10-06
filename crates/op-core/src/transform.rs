@@ -521,6 +521,21 @@ pub fn transform_with<M: Mapping>(
 ) -> Result<(), TransformError> {
     let src_box = bounds(doc)?;
     let inverse = m.inverted().ok_or(TransformError::Empty)?;
+    let (bx0, by0, bx1, by1) = src_box;
+    let landing = [(bx0, by0), (bx1, by0), (bx1, by1), (bx0, by1)].map(|p| m.map(p));
+    resample_targets(doc, &landing, &|p| Some(inverse.map(p)), background, how)
+}
+
+/// Moves the target layers' pixels (or the selected ones): every pixel in
+/// the area worked on takes the sample at `back(pixel)` (none: nothing
+/// lands there). `landing` are points spanning where the pixels go.
+fn resample_targets(
+    doc: &mut Document,
+    landing: &[(f32, f32)],
+    back: &dyn Fn((f32, f32)) -> Option<(f32, f32)>,
+    background: [u8; 3],
+    how: Interpolation,
+) -> Result<(), TransformError> {
     let selection = doc.selection().cloned();
     let (cw, ch) = (doc.width as i64, doc.height as i64);
     // Every target layer, with the same map
@@ -533,8 +548,7 @@ pub fn transform_with<M: Mapping>(
 
         // The region worked on: the canvas, the layer's pixels and where the
         // box lands
-        let (bx0, by0, bx1, by1) = src_box;
-        let corners = [(bx0, by0), (bx1, by0), (bx1, by1), (bx0, by1)].map(|p| m.map(p));
+        let corners = landing;
         let fx0 = corners.iter().map(|c| c.0).fold(f32::MAX, f32::min).floor() as i64;
         let fy0 = corners.iter().map(|c| c.1).fold(f32::MAX, f32::min).floor() as i64;
         let fx1 = corners.iter().map(|c| c.0).fold(f32::MIN, f32::max).ceil() as i64;
@@ -578,7 +592,9 @@ pub fn transform_with<M: Mapping>(
         for y in 0..h {
             for x in 0..w {
                 let (dx, dy) = ((ux0 + x as i64) as f32 + 0.5, (uy0 + y as i64) as f32 + 0.5);
-                let (sx, sy) = inverse.map((dx, dy));
+                let Some((sx, sy)) = back((dx, dy)) else {
+                    continue;
+                };
                 let s = sample(&moving, w, h, sx - ux0 as f32, sy - uy0 as f32, how);
                 let sa = s[3] / 255.0;
                 if sa <= 0.0 {
@@ -602,14 +618,14 @@ pub fn transform_with<M: Mapping>(
     }
 
     if let Some(s) = selection {
-        doc.set_selection(Some(turned_selection(&s, inverse)));
+        doc.set_selection(Some(turned_selection(&s, back)));
     }
     doc.mark_dirty();
     Ok(())
 }
 
-/// `s` moved by the map whose inverse is `inverse`.
-fn turned_selection<M: Mapping>(s: &Selection, inverse: M) -> Selection {
+/// `s` moved by the map whose inverse is `back`.
+fn turned_selection(s: &Selection, back: &dyn Fn((f32, f32)) -> Option<(f32, f32)>) -> Selection {
     let (w, h) = (s.width() as usize, s.height() as usize);
     let src: Vec<[f32; 4]> = (0..w * h)
         .map(|i| {
@@ -620,7 +636,9 @@ fn turned_selection<M: Mapping>(s: &Selection, inverse: M) -> Selection {
     let mut mask = vec![0u8; w * h];
     for y in 0..h {
         for x in 0..w {
-            let (sx, sy) = inverse.map((x as f32 + 0.5, y as f32 + 0.5));
+            let Some((sx, sy)) = back((x as f32 + 0.5, y as f32 + 0.5)) else {
+                continue;
+            };
             mask[y * w + x] = sample(&src, w, h, sx, sy, Interpolation::Bilinear)[0]
                 .round()
                 .clamp(0.0, 255.0) as u8;
@@ -644,8 +662,192 @@ pub fn transform_selection<M: Mapping>(doc: &mut Document, m: M) -> bool {
     let Some(s) = doc.selection().cloned() else {
         return false;
     };
-    doc.set_selection(Some(turned_selection(&s, inverse)));
+    doc.set_selection(Some(turned_selection(&s, &|p| Some(inverse.map(p)))));
     true
+}
+
+/// Edit > Transform > Warp's surface: a bicubic Bézier patch over the
+/// box, 4 × 4 control points row by row from the top left (in document
+/// pixels). Undistorted, they sit at thirds of the box.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WarpMesh {
+    pub points: [(f32, f32); 16],
+}
+
+fn bernstein(t: f32) -> [f32; 4] {
+    let s = 1.0 - t;
+    [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t]
+}
+
+impl WarpMesh {
+    /// The flat mesh over (x0, y0, x1, y1).
+    pub fn flat((x0, y0, x1, y1): (f32, f32, f32, f32)) -> Self {
+        let points = std::array::from_fn(|k| {
+            let (i, j) = ((k % 4) as f32, (k / 4) as f32);
+            (x0 + (x1 - x0) * i / 3.0, y0 + (y1 - y0) * j / 3.0)
+        });
+        Self { points }
+    }
+
+    /// The surface point at (u, v) in 0..1.
+    pub fn at(&self, u: f32, v: f32) -> (f32, f32) {
+        let (bu, bv) = (bernstein(u), bernstein(v));
+        let mut p = (0.0, 0.0);
+        for (k, c) in self.points.iter().enumerate() {
+            let w = bu[k % 4] * bv[k / 4];
+            p.0 += c.0 * w;
+            p.1 += c.1 * w;
+        }
+        p
+    }
+
+    /// Drags the surface point at (u, v) by `d`: the control points move
+    /// by their share of it, so that point follows exactly (Photoshop's
+    /// way of warping by dragging inside the mesh).
+    pub fn pull(&mut self, (u, v): (f32, f32), d: (f32, f32)) {
+        let (bu, bv) = (bernstein(u), bernstein(v));
+        let weights: [f32; 16] = std::array::from_fn(|k| bu[k % 4] * bv[k / 4]);
+        let norm: f32 = weights.iter().map(|w| w * w).sum();
+        if norm <= 0.0 {
+            return;
+        }
+        for (p, w) in self.points.iter_mut().zip(weights) {
+            p.0 += d.0 * w / norm;
+            p.1 += d.1 * w / norm;
+        }
+    }
+}
+
+/// Edit > Transform > Warp: the box (x0, y0, x1, y1) of the target
+/// layers (or the selected pixels) bent onto `mesh`. The surface is cut
+/// into small cells drawn as triangle pairs, each sampled back from the
+/// box with `how`.
+pub fn warp(
+    doc: &mut Document,
+    rect: (f32, f32, f32, f32),
+    mesh: &WarpMesh,
+    background: [u8; 3],
+    how: Interpolation,
+) -> Result<(), TransformError> {
+    bounds(doc)?;
+    const CELLS: usize = 24;
+    let (x0, y0, x1, y1) = rect;
+    // Every cell's source and destination corners
+    let grid: Vec<Vec<Corner>> = (0..=CELLS)
+        .map(|j| {
+            (0..=CELLS)
+                .map(|i| {
+                    let (u, v) = (i as f32 / CELLS as f32, j as f32 / CELLS as f32);
+                    ((x0 + (x1 - x0) * u, y0 + (y1 - y0) * v), mesh.at(u, v))
+                })
+                .collect()
+        })
+        .collect();
+    let mut triangles: Vec<Triangle> = Vec::new();
+    for j in 0..CELLS {
+        for i in 0..CELLS {
+            let (a, b, c, d) = (
+                grid[j][i],
+                grid[j][i + 1],
+                grid[j + 1][i + 1],
+                grid[j + 1][i],
+            );
+            triangles.push([a, b, c]);
+            triangles.push([a, c, d]);
+        }
+    }
+    // Each target pixel takes its color from the triangle it falls in
+    let map = WarpMap::new(triangles);
+    let landing: Vec<(f32, f32)> = mesh.points.to_vec();
+    resample_targets(doc, &landing, &|p| map.back(p), background, how)
+}
+
+/// A point's place on the box and on the surface.
+type Corner = ((f32, f32), (f32, f32));
+type Triangle = [Corner; 3];
+
+/// A warp's triangles (source and destination corners each), bucketed on
+/// a grid over where they land so a pixel only tries its cell's.
+struct WarpMap {
+    triangles: Vec<Triangle>,
+    origin: (f32, f32),
+    cell: f32,
+    cols: usize,
+    rows: usize,
+    buckets: Vec<Vec<u32>>,
+}
+
+impl WarpMap {
+    fn new(triangles: Vec<Triangle>) -> Self {
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for t in &triangles {
+            for (_, d) in t {
+                x0 = x0.min(d.0);
+                y0 = y0.min(d.1);
+                x1 = x1.max(d.0);
+                y1 = y1.max(d.1);
+            }
+        }
+        let cell = ((x1 - x0).max(y1 - y0) / 64.0).max(1.0);
+        let cols = ((x1 - x0) / cell).ceil() as usize + 1;
+        let rows = ((y1 - y0) / cell).ceil() as usize + 1;
+        let mut buckets = vec![Vec::new(); cols * rows];
+        for (k, t) in triangles.iter().enumerate() {
+            let tx0 = t.iter().map(|(_, d)| d.0).fold(f32::MAX, f32::min);
+            let tx1 = t.iter().map(|(_, d)| d.0).fold(f32::MIN, f32::max);
+            let ty0 = t.iter().map(|(_, d)| d.1).fold(f32::MAX, f32::min);
+            let ty1 = t.iter().map(|(_, d)| d.1).fold(f32::MIN, f32::max);
+            let (c0, c1) = (((tx0 - x0) / cell) as usize, ((tx1 - x0) / cell) as usize);
+            let (r0, r1) = (((ty0 - y0) / cell) as usize, ((ty1 - y0) / cell) as usize);
+            for r in r0..=r1.min(rows - 1) {
+                for c in c0..=c1.min(cols - 1) {
+                    buckets[r * cols + c].push(k as u32);
+                }
+            }
+        }
+        Self {
+            triangles,
+            origin: (x0, y0),
+            cell,
+            cols,
+            rows,
+            buckets,
+        }
+    }
+
+    /// The source point for destination `p`, if a triangle covers it.
+    fn back(&self, p: (f32, f32)) -> Option<(f32, f32)> {
+        let (fx, fy) = (
+            (p.0 - self.origin.0) / self.cell,
+            (p.1 - self.origin.1) / self.cell,
+        );
+        if fx < 0.0 || fy < 0.0 {
+            return None;
+        }
+        let (c, r) = (fx as usize, fy as usize);
+        if c >= self.cols || r >= self.rows {
+            return None;
+        }
+        for &k in &self.buckets[r * self.cols + c] {
+            let t = &self.triangles[k as usize];
+            let [(s0, d0), (s1, d1), (s2, d2)] = *t;
+            let det = (d1.1 - d2.1) * (d0.0 - d2.0) + (d2.0 - d1.0) * (d0.1 - d2.1);
+            if det.abs() < 1e-9 {
+                continue;
+            }
+            let l0 = ((d1.1 - d2.1) * (p.0 - d2.0) + (d2.0 - d1.0) * (p.1 - d2.1)) / det;
+            let l1 = ((d2.1 - d0.1) * (p.0 - d2.0) + (d0.0 - d2.0) * (p.1 - d2.1)) / det;
+            let l2 = 1.0 - l0 - l1;
+            let eps = -1e-4;
+            if l0 >= eps && l1 >= eps && l2 >= eps {
+                return Some((
+                    s0.0 * l0 + s1.0 * l1 + s2.0 * l2,
+                    s0.1 * l0 + s1.1 * l1 + s2.1 * l2,
+                ));
+            }
+        }
+        None
+    }
 }
 
 /// The fixed transforms of Edit > Transform.
@@ -794,6 +996,39 @@ mod tests {
         assert_eq!(layer_px(&d, 1, 1), [255, 0, 0, 255]);
         d.set_selection(None);
         assert!(!transform_selection(&mut d, Affine::IDENTITY));
+    }
+
+    #[test]
+    fn warp_mesh_and_pull() {
+        let mut m = WarpMesh::flat((0.0, 0.0, 30.0, 60.0));
+        assert_eq!(m.points[5], (10.0, 20.0));
+        // Flat: the surface is the box
+        let (x, y) = m.at(0.5, 0.25);
+        assert!((x - 15.0).abs() < 1e-4 && (y - 15.0).abs() < 1e-4);
+        // Pulling a point drags it exactly where it's pulled
+        m.pull((0.5, 0.5), (4.0, -2.0));
+        let (x, y) = m.at(0.5, 0.5);
+        assert!(
+            (x - 19.0).abs() < 1e-3 && (y - 28.0).abs() < 1e-3,
+            "{x} {y}"
+        );
+        // The corners move much less
+        assert!((m.at(0.0, 0.0).0).abs() < 1.0);
+    }
+
+    #[test]
+    fn warping_the_layer() {
+        // A flat mesh changes nothing; a pulled one moves the middle
+        let mut d = doc();
+        let b = bounds(&d).unwrap();
+        let mut mesh = WarpMesh::flat(b);
+        warp(&mut d, b, &mesh, [255; 3], Interpolation::Bilinear).unwrap();
+        assert_eq!(layer_px(&d, 1, 1), [255, 0, 0, 255]);
+        assert_eq!(layer_px(&d, 3, 3)[3], 0);
+        let mut d = doc();
+        mesh.pull((0.5, 0.5), (2.0, 2.0));
+        warp(&mut d, b, &mesh, [255; 3], Interpolation::Bilinear).unwrap();
+        assert!(layer_px(&d, 3, 3)[3] > 0, "the middle went down-right");
     }
 
     #[test]

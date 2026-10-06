@@ -15,8 +15,11 @@ use egui::{Color32, CursorIcon, Key, Modifiers, Pos2, Rect, Stroke, StrokeKind, 
 use op_core::transform::{self, Projective, TransformError};
 
 use crate::document_view::{to_doc, to_screen};
-use crate::state::{DocState, FreeTransform, TransformDrag, TransformHandle, TransformMode};
+use crate::state::{
+    DocState, FreeTransform, TransformDrag, TransformHandle, TransformMode, WarpGrab,
+};
 use crate::theme::pt;
+use op_core::transform::WarpMesh;
 
 /// Handles closer than this to the pointer (in points) are grabbed.
 const GRAB: f32 = pt(8.0);
@@ -49,14 +52,57 @@ pub fn start_selection(state: &mut DocState) -> bool {
 /// running one to it, keeping the box).
 pub fn start_in(state: &mut DocState, mode: TransformMode) -> Result<(), TransformError> {
     if let Some(t) = &mut state.free_transform {
-        t.mode = mode;
+        set_mode(t, mode);
         return Ok(());
     }
     let bounds = transform::bounds(&state.doc)?;
     let mut t = FreeTransform::new(state.doc.snapshot(), bounds);
-    t.mode = mode;
+    set_mode(&mut t, mode);
     state.free_transform = Some(t);
     Ok(())
+}
+
+/// Switches the box to `mode`. Warp starts from a flat mesh carried by
+/// the box's current map, so what was done so far stays.
+pub fn set_mode(t: &mut FreeTransform, mode: TransformMode) {
+    t.mode = mode;
+    if mode == TransformMode::Warp && t.warp.is_none() {
+        let m = t.mapping();
+        let mut mesh = WarpMesh::flat(t.bounds);
+        for p in &mut mesh.points {
+            *p = m.apply(*p);
+        }
+        t.warp = Some(mesh);
+    }
+}
+
+/// Where a press at document point `p` grabs the warp mesh: a boundary
+/// control point within reach, else the nearest surface point if the
+/// press is on the surface.
+fn warp_grab(state: &DocState, mesh: &WarpMesh, p: Pos2, ppp: f32) -> Option<WarpGrab> {
+    let screen = to_screen(state, p, ppp);
+    for (k, c) in mesh.points.iter().enumerate() {
+        if to_screen(state, Pos2::new(c.0, c.1), ppp).distance(screen) <= GRAB {
+            return Some(WarpGrab::Point(k));
+        }
+    }
+    // The nearest of a fine grid of surface points, if close enough
+    let mut best = (f32::MAX, 0.0, 0.0);
+    for j in 0..=32 {
+        for i in 0..=32 {
+            let (u, v) = (i as f32 / 32.0, j as f32 / 32.0);
+            let (x, y) = mesh.at(u, v);
+            let d = (Pos2::new(x, y) - p).length_sq();
+            if d < best.0 {
+                best = (d, u, v);
+            }
+        }
+    }
+    let spacing = {
+        let (a, b) = (mesh.at(0.0, 0.0), mesh.at(1.0, 1.0));
+        ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt() / 32.0
+    };
+    (best.0.sqrt() <= spacing.max(1.0) * 1.5).then_some(WarpGrab::Surface(best.1, best.2))
 }
 
 /// The box's corners in document pixels, clockwise from the top left.
@@ -346,6 +392,11 @@ pub fn input(
         let handle = hit(state, t, p, ppp);
         let start = to_doc(state, p, ppp);
         let quad = t.quad;
+        let mesh = t.warp;
+        let warp_grab = match (&t.warp, t.mode) {
+            (Some(m), TransformMode::Warp) => warp_grab(state, m, start, ppp),
+            _ => None,
+        };
         let t = state.free_transform.as_mut()?;
         t.drag = Some(TransformDrag {
             handle,
@@ -354,6 +405,8 @@ pub fn input(
             scale: t.scale,
             angle: t.angle,
             quad,
+            mesh,
+            warp_grab,
         });
     }
     let pointer = ui
@@ -362,7 +415,22 @@ pub fn input(
     let t = state.free_transform.as_mut()?;
     if let Some(drag) = t.drag {
         if let Some(p) = pointer {
-            drag_to(t, drag, p, mods);
+            if t.mode == TransformMode::Warp {
+                // Warp: a control point or the surface follows the pointer
+                if let (Some(mut mesh), Some(grab)) = (drag.mesh, drag.warp_grab) {
+                    let d = (p.x - drag.start.x, p.y - drag.start.y);
+                    match grab {
+                        WarpGrab::Point(k) => {
+                            mesh.points[k].0 += d.0;
+                            mesh.points[k].1 += d.1;
+                        }
+                        WarpGrab::Surface(u, v) => mesh.pull((u, v), d),
+                    }
+                    t.warp = Some(mesh);
+                }
+            } else {
+                drag_to(t, drag, p, mods);
+            }
         }
         if response.drag_stopped() || !ui.input(|i| i.pointer.primary_down()) {
             t.drag = None;
@@ -379,6 +447,20 @@ pub fn preview(state: &mut DocState, background: [u8; 3]) {
     };
     let m = t.mapping();
     let how = t.interpolation;
+    if let Some(mesh) = t.warp {
+        if Some(mesh) == t.applied_warp && how == t.applied_interpolation {
+            return;
+        }
+        let bounds = t.bounds;
+        state.doc.restore(&t.before);
+        if transform::warp(&mut state.doc, bounds, &mesh, background, how).is_ok()
+            && let Some(t) = &mut state.free_transform
+        {
+            t.applied_warp = Some(mesh);
+            t.applied_interpolation = how;
+        }
+        return;
+    }
     if m == t.applied && how == t.applied_interpolation {
         return;
     }
@@ -397,6 +479,16 @@ pub fn preview(state: &mut DocState, background: [u8; 3]) {
 /// Ends the session keeping the result ("Free Transform" in the history).
 pub fn commit(state: &mut DocState) -> Option<Outcome> {
     let t = state.free_transform.take()?;
+    if let Some(mesh) = t.applied_warp {
+        // Photoshop records a warp as "Warp" (it isn't repeated by
+        // Transform Again here); an untouched mesh changes nothing
+        if mesh != WarpMesh::flat(t.bounds) {
+            state.record("Warp");
+        } else {
+            state.doc.restore(&t.before);
+        }
+        return Some(Outcome::Cancelled);
+    }
     if t.applied == Projective::IDENTITY {
         return Some(Outcome::Cancelled);
     }
@@ -411,7 +503,7 @@ pub fn commit(state: &mut DocState) -> Option<Outcome> {
 /// Ends the session putting the document back as it was.
 pub fn cancel(state: &mut DocState) -> Outcome {
     if let Some(t) = state.free_transform.take()
-        && t.applied != Projective::IDENTITY
+        && (t.applied != Projective::IDENTITY || t.applied_warp.is_some())
     {
         state.doc.restore(&t.before);
     }
@@ -460,11 +552,14 @@ pub fn context_menu(ui: &mut Ui, t: &mut FreeTransform) {
     ];
     for (label, mode) in modes {
         if ui.button(label).clicked() {
-            t.mode = mode;
+            set_mode(t, mode);
             ui.close();
         }
     }
-    ui.add_enabled(false, egui::Button::new("Warp"));
+    if ui.button("Warp").clicked() {
+        set_mode(t, TransformMode::Warp);
+        ui.close();
+    }
     ui.separator();
     ui.add_enabled(false, egui::Button::new("Content-Aware Scale"));
     ui.add_enabled(false, egui::Button::new("Puppet Warp"));
@@ -580,6 +675,40 @@ fn draw_box(painter: &egui::Painter, quad: [Pos2; 4], handles: [Pos2; 8]) {
     }
 }
 
+/// Warp's mesh as Photoshop 2026 draws it: blue outline and thirds lines
+/// on the surface, the boundary's control points as blue dots (bigger at
+/// the corners).
+fn draw_warp(painter: &egui::Painter, state: &DocState, mesh: &WarpMesh, ppp: f32) {
+    let blue = Color32::from_rgb(0x5b, 0x8b, 0xe6);
+    let at = |u: f32, v: f32| {
+        let (x, y) = mesh.at(u, v);
+        to_screen(state, Pos2::new(x, y), ppp)
+    };
+    let curve = |f: &dyn Fn(f32) -> Pos2| (0..=24).map(|k| f(k as f32 / 24.0)).collect::<Vec<_>>();
+    for k in 0..=3 {
+        let t = k as f32 / 3.0;
+        let width = if k == 0 || k == 3 { pt(1.5) } else { pt(0.75) };
+        painter.add(egui::Shape::line(
+            curve(&|s| at(t, s)),
+            Stroke::new(width, blue),
+        ));
+        painter.add(egui::Shape::line(
+            curve(&|s| at(s, t)),
+            Stroke::new(width, blue),
+        ));
+    }
+    for (k, p) in mesh.points.iter().enumerate() {
+        let (i, j) = (k % 4, k / 4);
+        let boundary = i == 0 || i == 3 || j == 0 || j == 3;
+        if !boundary {
+            continue;
+        }
+        let corner = (i == 0 || i == 3) && (j == 0 || j == 3);
+        let c = to_screen(state, Pos2::new(p.0, p.1), ppp);
+        painter.circle_filled(c, if corner { pt(5.0) } else { pt(3.5) }, blue);
+    }
+}
+
 /// Draws the transform box: thin outline, square handles and the center
 /// reference point.
 pub fn draw(ui: &Ui, state: &DocState, canvas: Rect, ppp: f32) {
@@ -587,6 +716,10 @@ pub fn draw(ui: &Ui, state: &DocState, canvas: Rect, ppp: f32) {
         return;
     };
     let painter = ui.painter_at(canvas);
+    if let (Some(mesh), TransformMode::Warp) = (&t.warp, t.mode) {
+        draw_warp(&painter, state, mesh, ppp);
+        return;
+    }
     let quad = corners(t).map(|c| to_screen(state, c, ppp));
     draw_box(
         &painter,
@@ -628,6 +761,8 @@ mod tests {
             scale: t.scale,
             angle: t.angle,
             quad: t.quad,
+            mesh: t.warp,
+            warp_grab: None,
         }
     }
 

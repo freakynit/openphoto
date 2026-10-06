@@ -656,6 +656,16 @@ pub struct TransformDrag {
     pub angle: f32,
     /// The box's corners at mouse-down, when it has free corners.
     pub quad: Option<[egui::Pos2; 4]>,
+    /// Warp: the mesh at mouse-down, and the grabbed control point or the
+    /// surface point (u, v) being pulled.
+    pub mesh: Option<op_core::transform::WarpMesh>,
+    pub warp_grab: Option<WarpGrab>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WarpGrab {
+    Point(usize),
+    Surface(f32, f32),
 }
 
 /// Edit > Transform's modes: what dragging a handle does.
@@ -670,6 +680,8 @@ pub enum TransformMode {
     Distort,
     /// A corner and its neighbor move apart or together.
     Perspective,
+    /// A Bézier mesh over the box (Edit > Transform > Warp).
+    Warp,
 }
 
 /// Edit > Free Transform in progress: the box over the original bounds,
@@ -699,11 +711,14 @@ pub struct FreeTransform {
     pub interpolation: op_core::transform::Interpolation,
     /// Select > Transform Selection: only the selection's outline moves.
     pub selection_only: bool,
+    /// Warp's mesh, once warping (document pixels).
+    pub warp: Option<op_core::transform::WarpMesh>,
     pub drag: Option<TransformDrag>,
     /// The transform the document currently shows, and how it was
     /// resampled.
     pub applied: op_core::transform::Projective,
     pub applied_interpolation: op_core::transform::Interpolation,
+    pub applied_warp: Option<op_core::transform::WarpMesh>,
 }
 
 impl FreeTransform {
@@ -723,9 +738,11 @@ impl FreeTransform {
             linked: true,
             interpolation: op_core::transform::Interpolation::Bicubic,
             selection_only: false,
+            warp: None,
             drag: None,
             applied: op_core::transform::Projective::IDENTITY,
             applied_interpolation: op_core::transform::Interpolation::Bicubic,
+            applied_warp: None,
         }
     }
 

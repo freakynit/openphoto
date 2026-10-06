@@ -95,6 +95,7 @@ const ALL_COMMANDS: &[Command] = &[
     TRANSFORM_MODES[2],
     TRANSFORM_MODES[3],
     TRANSFORM_MODES[4],
+    WARP,
     Command::TransformAgain,
     Command::TransformRotate180,
     Command::TransformRotate90Clockwise,
@@ -172,6 +173,9 @@ const ALL_COMMANDS: &[Command] = &[
     Command::NewGroupFromLayers,
     Command::ArrangeReverse,
 ];
+
+/// Edit > Transform > Warp.
+pub const WARP: Command = Command::TransformIn(crate::state::TransformMode::Warp, "Warp");
 
 /// Edit > Transform's modes, as commands.
 pub const TRANSFORM_MODES: [Command; 5] = {
@@ -365,7 +369,7 @@ impl NativeMenu {
                         &item("Distort", TRANSFORM_MODES[3]),
                         &item("Perspective", TRANSFORM_MODES[4]),
                         &sep(),
-                        &todo("Warp", None),
+                        &item("Warp", WARP),
                         &todo("Split Warp Horizontally", None),
                         &todo("Split Warp Vertically", None),
                         &todo("Split Warp Crosswise", None),

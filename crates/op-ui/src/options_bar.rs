@@ -811,6 +811,10 @@ fn transform_bar(ui: &mut Ui, app: &mut AppState, bar: Rect) {
     let Some(t) = state.free_transform.as_mut() else {
         return;
     };
+    if t.mode == crate::state::TransformMode::Warp {
+        warp_bar(ui, app, bar);
+        return;
+    }
     let editable = t.quad.is_none();
 
     // The reference point: a checkbox, then a 3 × 3 grid (dim when off)
@@ -1054,14 +1058,14 @@ fn transform_bar(ui: &mut Ui, app: &mut AppState, bar: Rect) {
         );
     });
     t.interpolation = how;
-    // Warp isn't here yet
-    crate::ps_icons::paint(
-        &painter,
-        Pos2::new(at(919.0), cy),
-        Icon::WarpToggle,
-        color::OPTIONS_ICON_DISABLED,
-        color::OPTIONS_BAR,
-    );
+    // Switch to Warp
+    let toggle = Rect::from_center_size(Pos2::new(at(919.0), cy), Vec2::new(pt(24.0), pt(24.0)));
+    if ps_button(ui, toggle, Icon::WarpToggle)
+        .on_hover_text("Switch between free transform and warp modes")
+        .clicked()
+    {
+        crate::free_transform::set_mode(t, crate::state::TransformMode::Warp);
+    }
     separator(&painter, bar, 935.0);
 
     let cancel = Rect::from_center_size(Pos2::new(at(983.0), cy), Vec2::splat(pt(24.0)));
@@ -1080,6 +1084,177 @@ fn transform_bar(ui: &mut Ui, app: &mut AppState, bar: Rect) {
             crate::free_transform::commit(state)
     {
         app.last_transform = Some(m);
+    }
+}
+
+/// Free Transform's bar while warping (Photoshop 2026's positions): Split
+/// and Grid, the Warp style with its orientation and Bend / H / V, the
+/// Warp switch (on), reset, Cancel and Commit. Only the Custom style is
+/// here: Split, Grid and the styles are drawn dim.
+fn warp_bar(ui: &mut Ui, app: &mut AppState, bar: Rect) {
+    let cy = bar.top() + CENTER_Y;
+    let at = |x: f32| bar.left() + pt(x);
+    let span = |x0: f32, x1: f32| {
+        Rect::from_min_max(
+            Pos2::new(at(x0), cy - pt(8.5)),
+            Pos2::new(at(x1), cy + pt(8.5)),
+        )
+    };
+    let painter = ui.painter().clone();
+    let dim = color::OPTIONS_ICON_DISABLED;
+    let label = |x: f32, text: &str, c: Color32| {
+        painter.text(
+            Pos2::new(at(x), cy),
+            egui::Align2::LEFT_CENTER,
+            text,
+            theme::body(),
+            c,
+        );
+    };
+    // The reference point switch and grid stay, dim
+    let check = Rect::from_center_size(Pos2::new(at(120.25), cy + pt(0.25)), Vec2::splat(pt(13.5)));
+    painter.rect_stroke(
+        check,
+        egui::CornerRadius::same(pt(3.0) as u8),
+        egui::Stroke::new(pt(1.0), Color32::from_gray(0x60)),
+        egui::StrokeKind::Inside,
+    );
+    separator(&painter, bar, 161.5);
+    label(171.5, "Split:", color::TEXT);
+    let stroke = egui::Stroke::new(pt(1.0), dim);
+    for (x, kind) in [(208.5, 0), (234.0, 1), (260.0, 2)] {
+        let r = Rect::from_center_size(Pos2::new(at(x), cy), Vec2::splat(pt(11.0)));
+        painter.rect_stroke(r, 0, stroke, egui::StrokeKind::Inside);
+        let c = r.center();
+        if kind != 2 {
+            painter.line_segment(
+                [Pos2::new(c.x, r.top()), Pos2::new(c.x, r.bottom())],
+                stroke,
+            );
+        }
+        if kind != 1 {
+            painter.line_segment(
+                [Pos2::new(r.left(), c.y), Pos2::new(r.right(), c.y)],
+                stroke,
+            );
+        }
+    }
+    separator(&painter, bar, 282.0);
+    label(290.5, "Grid:", color::TEXT);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(span(319.5, 378.5)), |ui| {
+        widgets::dropdown_with(ui, "warp-grid", pt(59.0), "Default", false, |_| {});
+    });
+    separator(&painter, bar, 386.5);
+    label(395.0, "Warp:", color::TEXT);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(span(428.5, 518.5)), |ui| {
+        widgets::dropdown_with(ui, "warp-style", pt(90.0), "Custom", true, |ui| {
+            let _ = ui.selectable_label(true, "Custom");
+            ui.separator();
+            for style in [
+                "Arc",
+                "Arc Lower",
+                "Arc Upper",
+                "Arch",
+                "Bulge",
+                "Shell Lower",
+                "Shell Upper",
+                "Flag",
+                "Wave",
+                "Fish",
+                "Rise",
+                "Fisheye",
+                "Inflate",
+                "Squeeze",
+                "Twist",
+            ] {
+                ui.add_enabled(false, egui::Button::new(style));
+            }
+        });
+    });
+    crate::ps_icons::paint(
+        &painter,
+        Pos2::new(at(540.0), cy),
+        Icon::Gear,
+        dim,
+        color::OPTIONS_BAR,
+    );
+    crate::ps_icons::paint(
+        &painter,
+        Pos2::new(at(575.0), cy),
+        Icon::WarpToggle,
+        dim,
+        color::OPTIONS_BAR,
+    );
+    let dim_text = Color32::from_gray(0x87);
+    for (lx, text, x0, x1, px) in [
+        (600.5, "Bend:", 631.0, 678.0, 685.0),
+        (700.0, "H:", 713.0, 760.0, 763.0),
+        (779.0, "V:", 793.0, 840.0, 843.0),
+    ] {
+        label(lx, text, dim_text);
+        let mut zero = "0.0".to_string();
+        widgets::text_box(ui, span(x0, x1), &mut zero, ("warp-num", text), false);
+        label(px, "%", dim_text);
+    }
+    let Some(state) = app.active() else {
+        return;
+    };
+    let Some(t) = state.free_transform.as_mut() else {
+        return;
+    };
+    // The Warp switch, on
+    let toggle = Rect::from_min_max(
+        Pos2::new(at(907.0), bar.top() + pt(4.0)),
+        Pos2::new(at(931.0), bar.top() + pt(31.0)),
+    );
+    painter.rect(
+        toggle,
+        egui::CornerRadius::same(pt(3.0) as u8),
+        Color32::from_gray(0x38),
+        egui::Stroke::new(pt(1.0), Color32::from_gray(0x63)),
+        egui::StrokeKind::Inside,
+    );
+    if ui
+        .interact(toggle, ui.id().with("warp-off"), Sense::click())
+        .on_hover_text("Switch between free transform and warp modes")
+        .clicked()
+    {
+        t.mode = crate::state::TransformMode::Free;
+    }
+    crate::ps_icons::paint(
+        &painter,
+        toggle.center(),
+        Icon::WarpToggle,
+        color::OPTIONS_ICON,
+        color::OPTIONS_BAR,
+    );
+    separator(&painter, bar, 935.0);
+    let reset = Rect::from_center_size(Pos2::new(at(951.5), cy - pt(1.5)), Vec2::splat(pt(24.0)));
+    if ps_button(ui, reset, Icon::CropReset)
+        .on_hover_text("Reset warp")
+        .clicked()
+    {
+        let m = t.mapping();
+        let mut mesh = op_core::transform::WarpMesh::flat(t.bounds);
+        for p in &mut mesh.points {
+            *p = m.apply(*p);
+        }
+        t.warp = Some(mesh);
+    }
+    let cancel = Rect::from_center_size(Pos2::new(at(983.0), cy), Vec2::splat(pt(24.0)));
+    if ps_button(ui, cancel, Icon::CropCancel)
+        .on_hover_text("Cancel transform (Esc)")
+        .clicked()
+    {
+        crate::free_transform::cancel(state);
+        return;
+    }
+    let commit = Rect::from_center_size(Pos2::new(at(1013.0), cy), Vec2::splat(pt(24.0)));
+    if ps_button(ui, commit, Icon::CropCommit)
+        .on_hover_text("Commit transform (Return)")
+        .clicked()
+    {
+        crate::free_transform::commit(state);
     }
 }
 

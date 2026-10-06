@@ -1126,6 +1126,42 @@ fn transform_selection_moves_only_the_outline() {
 }
 
 #[test]
+fn warp_pulls_the_surface() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    h.state_mut().state.foreground = Color::from_rgba8([255, 0, 0, 255]);
+    select_rect(&mut h, 100.0, 100.0, 160.0, 160.0);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::D);
+    h.run_steps(2);
+    run_command(&mut h, crate::menu::WARP);
+    let t = active(&h).free_transform.as_ref().unwrap();
+    assert!(t.warp.is_some());
+    // A corner control point dragged out by (30, 30)
+    let (a, b) = (doc_point(&h, 160.0, 160.0), doc_point(&h, 190.0, 190.0));
+    drag(&mut h, a, b, Modifiers::NONE);
+    let mesh = active(&h).free_transform.as_ref().unwrap().warp.unwrap();
+    assert!(
+        (mesh.points[15].0 - 190.0).abs() < 1.0,
+        "{:?}",
+        mesh.points[15]
+    );
+    // Pulling the middle of the surface up
+    let (a, b) = (doc_point(&h, 130.0, 130.0), doc_point(&h, 130.0, 110.0));
+    drag(&mut h, a, b, Modifiers::NONE);
+    let mesh = active(&h).free_transform.as_ref().unwrap().warp.unwrap();
+    let mid = mesh.at(0.5, 0.5);
+    assert!(mid.1 < 135.0, "{mid:?}");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(active(&h).free_transform.is_none());
+    assert_eq!(last_history(&h), "Warp");
+    // The stretched corner is red now
+    assert!(layer_pixel(&h, 1, 180, 180)[3] > 0);
+}
+
+#[test]
 fn transform_distort_from_the_menu() {
     use crate::commands::Command;
     let mut h = harness(Vec::new());
@@ -2154,6 +2190,24 @@ fn screenshot_transform_bar() {
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::T);
     h.run_steps(3);
     shot(&mut h, "transform_bar");
+}
+
+#[test]
+#[ignore]
+fn screenshot_warp() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    h.state_mut().state.foreground = Color::from_rgba8([255, 0, 0, 255]);
+    select_rect(&mut h, 100.0, 100.0, 300.0, 300.0);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::D);
+    h.run_steps(2);
+    run_command(&mut h, crate::menu::WARP);
+    let (a, b) = (doc_point(&h, 200.0, 200.0), doc_point(&h, 240.0, 160.0));
+    drag(&mut h, a, b, Modifiers::NONE);
+    h.run_steps(2);
+    shot(&mut h, "warp");
 }
 
 #[test]
