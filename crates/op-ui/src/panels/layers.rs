@@ -367,7 +367,13 @@ pub fn toggle_active_visibility(state: &mut DocState) {
 
 pub fn new_layer(state: &mut DocState) {
     let doc = &mut state.doc;
-    let n = doc.layers.iter().filter(|l| !l.is_background).count() + 1;
+    // Like Photoshop: one more than the highest existing "Layer N"
+    let n = doc
+        .layers
+        .iter()
+        .filter_map(|l| l.name.strip_prefix("Layer ")?.parse::<u32>().ok())
+        .max()
+        .map_or(1, |max| max + 1);
     let id = doc.new_layer_id();
     let layer = Layer::raster(
         id,

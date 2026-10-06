@@ -98,12 +98,16 @@ impl Document {
         doc
     }
 
-    /// Opens a flat bitmap file as a single "Background" layer, like Photoshop.
+    /// Opens a flat bitmap file as a single layer, like Photoshop: an opaque
+    /// image becomes the locked "Background" layer, while an image with any
+    /// transparency becomes a regular "Layer 0".
     pub fn from_rgba8(title: impl Into<String>, width: u32, height: u32, pixels: &[u8]) -> Self {
         let mut doc = Self::empty(title, width, height);
+        let opaque = pixels.as_chunks::<4>().0.iter().all(|p| p[3] == 255);
         let image = TiledImage::from_rgba8(width, height, pixels);
-        let mut layer = Layer::raster(doc.new_layer_id(), "Background", image);
-        layer.is_background = true;
+        let name = if opaque { "Background" } else { "Layer 0" };
+        let mut layer = Layer::raster(doc.new_layer_id(), name, image);
+        layer.is_background = opaque;
         doc.active_layer = Some(layer.id);
         doc.layers.push(layer);
         doc
@@ -232,6 +236,24 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opaque_bitmap_opens_as_background() {
+        let doc = Document::from_rgba8("t", 2, 1, &[1, 2, 3, 255, 4, 5, 6, 255]);
+        assert_eq!(doc.layers.len(), 1);
+        assert_eq!(doc.layers[0].name, "Background");
+        assert!(doc.layers[0].is_background);
+        assert!(doc.has_background());
+    }
+
+    #[test]
+    fn transparent_bitmap_opens_as_regular_layer() {
+        let doc = Document::from_rgba8("t", 2, 1, &[1, 2, 3, 255, 4, 5, 6, 128]);
+        assert_eq!(doc.layers[0].name, "Layer 0");
+        assert!(!doc.layers[0].is_background);
+        assert!(!doc.has_background());
+        assert_eq!(doc.active_layer, Some(doc.layers[0].id));
+    }
 
     #[test]
     fn resize_canvas_centered() {
