@@ -712,3 +712,37 @@ fn screenshot_threshold_dialog() {
     run_command(&mut h, crate::commands::Command::Threshold);
     shot(&mut h, "threshold_dialog");
 }
+
+#[test]
+fn levels_dialog_sets_the_black_point() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::L);
+    h.run_steps(3);
+    assert!(h.state().state.adjust_dialog.is_some());
+    // The input black field has focus with its text selected
+    h.event(egui::Event::Text("20".into()));
+    h.run_steps(3);
+    assert_eq!(composite_pixel(&mut h, 5, 5), [0, 0, 0, 255]);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(h.state().state.adjust_dialog.is_none());
+    assert_eq!(composite_pixel(&mut h, 5, 5), [0, 0, 0, 255]);
+    assert_eq!(last_history(&h), "Levels");
+}
+
+#[test]
+#[ignore]
+fn screenshot_adjustment_dialogs() {
+    use crate::commands::Command;
+    for (command, name) in [
+        (Command::Levels, "levels_dialog"),
+        (Command::HueSaturation, "hue_saturation_dialog"),
+        (Command::Exposure, "exposure_dialog"),
+    ] {
+        let mut h = harness(Vec::new());
+        reference_document(&mut h);
+        run_command(&mut h, command);
+        shot(&mut h, name);
+    }
+}

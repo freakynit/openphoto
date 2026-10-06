@@ -18,6 +18,29 @@ pub enum Adjustment {
     Posterize(u8),
     /// Spreads the brightness values evenly (histogram equalization).
     Equalize,
+    /// Levels on the composite RGB channel: input black and white points,
+    /// midtone gamma (0.01–9.99), output black and white points.
+    Levels {
+        input_black: u8,
+        input_white: u8,
+        gamma: f32,
+        output_black: u8,
+        output_white: u8,
+    },
+    /// Hue/Saturation on the master range: hue shift −180–180°, saturation
+    /// and lightness −100–100.
+    HueSaturation {
+        hue: i32,
+        saturation: i32,
+        lightness: i32,
+    },
+    /// Exposure in stops (−20–20), offset (−0.5–0.5) and gamma correction
+    /// (0.01–9.99), computed in linear light.
+    Exposure {
+        exposure: f32,
+        offset: f32,
+        gamma: f32,
+    },
 }
 
 impl Adjustment {
@@ -29,8 +52,135 @@ impl Adjustment {
             Self::Threshold(_) => "Threshold",
             Self::Posterize(_) => "Posterize",
             Self::Equalize => "Equalize",
+            Self::Levels { .. } => "Levels",
+            Self::HueSaturation { .. } => "Hue/Saturation",
+            Self::Exposure { .. } => "Exposure",
         }
     }
+
+    /// Per-channel lookup table for adjustments that treat each channel the
+    /// same way on its own.
+    fn table(self) -> Option<[u8; 256]> {
+        let f: Box<dyn Fn(f32) -> f32> = match self {
+            Self::Levels {
+                input_black,
+                input_white,
+                gamma,
+                output_black,
+                output_white,
+            } => {
+                let (ib, iw) = (
+                    input_black as f32,
+                    (input_white.max(input_black + 1)) as f32,
+                );
+                let (ob, ow) = (output_black as f32, output_white as f32);
+                Box::new(move |v| {
+                    let t = ((v - ib) / (iw - ib)).clamp(0.0, 1.0).powf(1.0 / gamma);
+                    ob + t * (ow - ob)
+                })
+            }
+            Self::Exposure {
+                exposure,
+                offset,
+                gamma,
+            } => Box::new(move |v| {
+                let linear = srgb_to_linear(v / 255.0) * 2f32.powf(exposure) + offset;
+                linear_to_srgb(linear.max(0.0).powf(1.0 / gamma)) * 255.0
+            }),
+            _ => return None,
+        };
+        let mut table = [0u8; 256];
+        for (i, t) in table.iter_mut().enumerate() {
+            *t = f(i as f32).round().clamp(0.0, 255.0) as u8;
+        }
+        Some(table)
+    }
+}
+
+fn srgb_to_linear(v: f32) -> f32 {
+    if v <= 0.04045 {
+        v / 12.92
+    } else {
+        ((v + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_srgb(v: f32) -> f32 {
+    if v <= 0.003_130_8 {
+        v * 12.92
+    } else {
+        1.055 * v.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// RGB (0–1) to hue (0–360), saturation and lightness (0–1).
+fn rgb_to_hsl([r, g, b]: [f32; 3]) -> [f32; 3] {
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    let d = max - min;
+    if d == 0.0 {
+        return [0.0, 0.0, l];
+    }
+    let s = if l > 0.5 {
+        d / (2.0 - max - min)
+    } else {
+        d / (max + min)
+    };
+    let h = if max == r {
+        (g - b) / d + if g < b { 6.0 } else { 0.0 }
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+    [h * 60.0, s, l]
+}
+
+fn hsl_to_rgb([h, s, l]: [f32; 3]) -> [f32; 3] {
+    if s == 0.0 {
+        return [l; 3];
+    }
+    let q = if l < 0.5 {
+        l * (1.0 + s)
+    } else {
+        l + s - l * s
+    };
+    let p = 2.0 * l - q;
+    let channel = |t: f32| {
+        let t = t.rem_euclid(1.0);
+        if t < 1.0 / 6.0 {
+            p + (q - p) * 6.0 * t
+        } else if t < 0.5 {
+            q
+        } else if t < 2.0 / 3.0 {
+            p + (q - p) * (2.0 / 3.0 - t) * 6.0
+        } else {
+            p
+        }
+    };
+    let h = h / 360.0;
+    [channel(h + 1.0 / 3.0), channel(h), channel(h - 1.0 / 3.0)]
+}
+
+/// Hue/Saturation on one pixel: hue rotates and saturation scales in HSL;
+/// lightness then mixes toward white (positive) or black (negative), as in
+/// Photoshop.
+fn hue_saturation(px: [u8; 4], hue: i32, saturation: i32, lightness: i32) -> [u8; 4] {
+    let rgb = [px[0], px[1], px[2]].map(|v| v as f32 / 255.0);
+    let [h, s, l] = rgb_to_hsl(rgb);
+    let s = (s * (1.0 + saturation as f32 / 100.0)).clamp(0.0, 1.0);
+    let mut out = hsl_to_rgb([h + hue as f32, s, l]);
+    let k = lightness as f32 / 100.0;
+    for c in &mut out {
+        *c = if k >= 0.0 {
+            *c + (1.0 - *c) * k
+        } else {
+            *c * (1.0 + k)
+        };
+    }
+    let [r, g, b] = out.map(|v| (v * 255.0).round().clamp(0.0, 255.0) as u8);
+    [r, g, b, px[3]]
 }
 
 /// Luminosity on Photoshop's 0–255 scale (Rec. 601 weights).
@@ -46,7 +196,7 @@ fn posterize(v: u8, levels: u8) -> u8 {
 
 /// Histogram of the brightness values (all three channels together) of the
 /// active layer's selected, non-transparent pixels.
-fn channel_histogram(doc: &Document) -> [u64; 256] {
+pub fn channel_histogram(doc: &Document) -> [u64; 256] {
     let mut hist = [0u64; 256];
     let Some(layer) = doc.active_layer.and_then(|id| doc.layer(id)) else {
         return hist;
@@ -135,7 +285,7 @@ pub fn apply(doc: &mut Document, adjustment: Adjustment) -> Result<(), FillError
     check(doc)?;
     let table = match adjustment {
         Adjustment::Equalize => Some(equalize_table(&channel_histogram(doc))),
-        _ => None,
+        other => other.table(),
     };
     let map = |px: [u8; 4]| -> [u8; 4] {
         let [r, g, b, a] = px;
@@ -155,10 +305,15 @@ pub fn apply(doc: &mut Document, adjustment: Adjustment) -> Result<(), FillError
                 posterize(b, levels),
                 a,
             ],
-            Adjustment::Equalize => {
+            Adjustment::Equalize | Adjustment::Levels { .. } | Adjustment::Exposure { .. } => {
                 let t = table.as_ref().expect("computed above");
                 [t[r as usize], t[g as usize], t[b as usize], a]
             }
+            Adjustment::HueSaturation {
+                hue,
+                saturation,
+                lightness,
+            } => hue_saturation(px, hue, saturation, lightness),
         }
     };
     let selection = doc.selection().cloned();
@@ -245,6 +400,59 @@ mod tests {
         apply(&mut d, Adjustment::Equalize).unwrap();
         assert_eq!(first(&d), [128, 128, 128, 255]);
         assert_eq!(&d.composite_rgba8()[4..8], [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn levels_hue_saturation_and_exposure() {
+        let levels = Adjustment::Levels {
+            input_black: 50,
+            input_white: 200,
+            gamma: 1.0,
+            output_black: 0,
+            output_white: 255,
+        };
+        let mut d = doc([125, 50, 220, 255]);
+        apply(&mut d, levels).unwrap();
+        assert_eq!(first(&d), [128, 0, 255, 255]);
+        // Gamma 2 brightens the midtones: (128/255)^(1/2) * 255 = 180.7
+        let mut d = doc([128, 128, 128, 255]);
+        let gamma = Adjustment::Levels {
+            input_black: 0,
+            input_white: 255,
+            gamma: 2.0,
+            output_black: 0,
+            output_white: 255,
+        };
+        apply(&mut d, gamma).unwrap();
+        assert_eq!(first(&d), [181, 181, 181, 255]);
+
+        // Red turned by 120° is green; saturation −100 is gray
+        let mut d = doc([255, 0, 0, 255]);
+        let hue = Adjustment::HueSaturation {
+            hue: 120,
+            saturation: 0,
+            lightness: 0,
+        };
+        apply(&mut d, hue).unwrap();
+        assert_eq!(first(&d), [0, 255, 0, 255]);
+        let mut d = doc([255, 0, 0, 255]);
+        let gray = Adjustment::HueSaturation {
+            hue: 0,
+            saturation: -100,
+            lightness: 50,
+        };
+        apply(&mut d, gray).unwrap();
+        assert_eq!(first(&d), [191, 191, 191, 255]);
+
+        // One stop up doubles linear light: sRGB 128 (0.216) -> 0.432 -> 175.5
+        let mut d = doc([128, 128, 128, 255]);
+        let exposure = Adjustment::Exposure {
+            exposure: 1.0,
+            offset: 0.0,
+            gamma: 1.0,
+        };
+        apply(&mut d, exposure).unwrap();
+        assert_eq!(first(&d), [176, 176, 176, 255]);
     }
 
     #[test]

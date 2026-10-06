@@ -40,6 +40,9 @@ pub enum Command {
     Threshold,
     /// Image > Adjustments > Posterize... (opens the dialog).
     Posterize,
+    Levels,
+    HueSaturation,
+    Exposure,
     NewLayer,
     DeleteLayer,
     /// Layer > Hide Layers / Show Layers for the active layer.
@@ -213,8 +216,11 @@ impl Command {
             | Self::Trim
             | Self::Equalize
             | Self::Threshold
-            | Self::Posterize => return None,
+            | Self::Posterize
+            | Self::Exposure => return None,
             Self::Invert => cmd(Key::I),
+            Self::Levels => cmd(Key::L),
+            Self::HueSaturation => cmd(Key::U),
             Self::Desaturate => shift_cmd(Key::U),
             Self::DeleteLayer
             | Self::ToggleHistory
@@ -324,6 +330,9 @@ impl Command {
             | Self::Equalize
             | Self::Threshold
             | Self::Posterize
+            | Self::Levels
+            | Self::HueSaturation
+            | Self::Exposure
             | Self::NewLayer
             | Self::ZoomIn
             | Self::ZoomOut
@@ -357,6 +366,8 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::CloseOthers,
     Command::Undo,
     Command::Invert,
+    Command::Levels,
+    Command::HueSaturation,
     Command::LayerViaCopy,
     Command::BringForward,
     Command::SendBackward,
@@ -520,16 +531,26 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 }
             }
         }
-        Command::Threshold | Command::Posterize => {
-            let (kind, name) = if command == Command::Threshold {
-                (AdjustKind::Threshold, "Threshold")
-            } else {
-                (AdjustKind::Posterize, "Posterize")
+        Command::Threshold
+        | Command::Posterize
+        | Command::Levels
+        | Command::HueSaturation
+        | Command::Exposure => {
+            let (kind, name) = match command {
+                Command::Threshold => (AdjustKind::Threshold, "Threshold"),
+                Command::Posterize => (AdjustKind::Posterize, "Posterize"),
+                Command::Levels => (AdjustKind::Levels, "Levels"),
+                Command::HueSaturation => (AdjustKind::HueSaturation, "Hue/Saturation"),
+                _ => (AdjustKind::Exposure, "Exposure"),
             };
             if let Some(state) = app.active_doc.and_then(|id| app.docs.get_mut(&id)) {
                 match adjust::check(&state.doc) {
                     Ok(()) => {
-                        let histogram = adjust::luminosity_histogram(&state.doc);
+                        let histogram = if kind == AdjustKind::Levels {
+                            adjust::channel_histogram(&state.doc)
+                        } else {
+                            adjust::luminosity_histogram(&state.doc)
+                        };
                         let before = state.doc.snapshot();
                         app.adjust_dialog = Some(AdjustDialog::new(kind, histogram, before));
                     }
