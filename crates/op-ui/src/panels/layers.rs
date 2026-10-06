@@ -374,7 +374,7 @@ pub fn new_layer(state: &mut DocState) {
     state.record("New Layer");
 }
 
-fn delete_active_layer(state: &mut DocState) {
+pub fn delete_active_layer(state: &mut DocState) {
     let doc = &mut state.doc;
     let Some(active) = doc.active_layer else {
         return;

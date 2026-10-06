@@ -214,6 +214,8 @@ pub struct AppState {
     pub alert: Option<String>,
     /// Whether the History panel is popped out from the icon strip.
     pub history_open: bool,
+    /// Image > Canvas Size, while open.
+    pub canvas_size_dialog: Option<crate::dialogs::CanvasSizeDialog>,
 }
 
 impl Default for AppState {
@@ -231,11 +233,17 @@ impl Default for AppState {
             untitled_counter: 0,
             alert: None,
             history_open: false,
+            canvas_size_dialog: None,
         }
     }
 }
 
 impl AppState {
+    /// Whether a modal dialog is open; menus and shortcuts are disabled meanwhile.
+    pub fn modal_open(&self) -> bool {
+        self.canvas_size_dialog.is_some() || self.alert.is_some()
+    }
+
     pub fn active(&mut self) -> Option<&mut DocState> {
         self.docs.get_mut(&self.active_doc?)
     }

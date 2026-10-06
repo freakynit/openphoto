@@ -4,8 +4,12 @@
 //! the resulting state.
 
 mod actions;
+mod commands;
+mod dialogs;
 mod document_view;
 mod icons;
+#[cfg(target_os = "macos")]
+mod menu;
 mod options_bar;
 mod panels;
 mod state;
@@ -27,6 +31,8 @@ pub struct OpenPhotoApp {
     state: AppState,
     dock: DockState<DocId>,
     panels: panels::Panels,
+    #[cfg(target_os = "macos")]
+    menu: menu::NativeMenu,
 }
 
 impl OpenPhotoApp {
@@ -43,6 +49,8 @@ impl OpenPhotoApp {
             state: AppState::default(),
             dock: DockState::new(Vec::new()),
             panels: panels::Panels::default(),
+            #[cfg(target_os = "macos")]
+            menu: menu::NativeMenu::install(&cc.egui_ctx),
         };
         if files.is_empty() {
             actions::new_document(&mut app.state, &mut app.dock);
@@ -103,6 +111,42 @@ impl OpenPhotoApp {
 }
 
 impl OpenPhotoApp {
+    /// Runs commands from the native menu bar (macOS) or from egui shortcuts
+    /// (other platforms, where there is no native menu).
+    fn run_commands(&mut self, ctx: &egui::Context) {
+        #[cfg(target_os = "macos")]
+        let commands = self.menu.poll();
+        #[cfg(not(target_os = "macos"))]
+        let commands = commands::from_shortcuts(ctx);
+        for command in commands {
+            commands::run(command, ctx, &mut self.state, &mut self.dock);
+        }
+    }
+
+    fn canvas_size_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.state.canvas_size_dialog.take() else {
+            return;
+        };
+        let (fg, bg) = (self.state.foreground, self.state.background);
+        match dialog.show(ctx, fg, bg) {
+            dialogs::Outcome::Open => self.state.canvas_size_dialog = Some(dialog),
+            dialogs::Outcome::Cancel => {}
+            dialogs::Outcome::Apply {
+                width,
+                height,
+                anchor,
+                fill,
+            } => {
+                if let Some(state) = self.state.active()
+                    && (width, height) != (state.doc.width, state.doc.height)
+                {
+                    state.doc.resize_canvas(width, height, anchor, fill);
+                    state.record("Canvas Size");
+                }
+            }
+        }
+    }
+
     /// Shows the History panel to the left of its icon-strip button. Clicking
     /// anywhere else closes it, like Photoshop's collapsed panels.
     fn history_popout(&mut self, ctx: &egui::Context, button: egui::Rect) {
@@ -199,7 +243,8 @@ impl eframe::App for OpenPhotoApp {
         if !dropped.is_empty() {
             actions::open_paths(&mut self.state, &mut self.dock, dropped);
         }
-        actions::handle_shortcuts(&ctx, &mut self.state, &mut self.dock);
+        self.run_commands(&ctx);
+        actions::handle_tool_keys(&ctx, &mut self.state);
 
         let bar_frame = Frame::NONE.fill(color::PANEL);
 
@@ -265,6 +310,11 @@ impl eframe::App for OpenPhotoApp {
         if self.state.history_open {
             self.history_popout(&ctx, history_button);
         }
+
+        self.canvas_size_dialog(&ctx);
+
+        #[cfg(target_os = "macos")]
+        self.menu.update(&self.state);
 
         if let Some(msg) = self.state.alert.clone() {
             egui::Modal::new(egui::Id::new("alert")).show(&ctx, |ui| {

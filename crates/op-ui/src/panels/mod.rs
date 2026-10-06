@@ -7,7 +7,7 @@
 mod color_panel;
 pub mod history;
 mod layers;
-pub use layers::new_layer;
+pub use layers::{delete_active_layer, new_layer};
 mod properties;
 
 use egui::{Align2, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, Ui, UiBuilder, Vec2};

@@ -1,0 +1,216 @@
+//! Application commands. Menu items and keyboard shortcuts both resolve to a
+//! [`Command`], which is executed in one place.
+
+use egui::Key;
+#[cfg(not(target_os = "macos"))]
+use egui::Modifiers;
+use egui_dock::DockState;
+use op_core::DocId;
+
+use crate::actions;
+use crate::document_view;
+use crate::state::AppState;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Command {
+    New,
+    Open,
+    Close,
+    ExportAs,
+    Undo,
+    Redo,
+    CanvasSize,
+    NewLayer,
+    DeleteLayer,
+    ZoomIn,
+    ZoomOut,
+    FitOnScreen,
+    ActualPixels,
+    ToggleHistory,
+}
+
+/// A keyboard shortcut. `cmd` is Command on macOS and Ctrl elsewhere.
+#[derive(Clone, Copy, Debug)]
+pub struct Shortcut {
+    pub cmd: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub key: Key,
+}
+
+const fn cmd(key: Key) -> Shortcut {
+    Shortcut {
+        cmd: true,
+        shift: false,
+        alt: false,
+        key,
+    }
+}
+
+const fn shift_cmd(key: Key) -> Shortcut {
+    Shortcut {
+        shift: true,
+        ..cmd(key)
+    }
+}
+
+const fn alt_cmd(key: Key) -> Shortcut {
+    Shortcut {
+        alt: true,
+        ..cmd(key)
+    }
+}
+
+impl Shortcut {
+    #[cfg(not(target_os = "macos"))]
+    fn modifiers(self) -> Modifiers {
+        let mut m = Modifiers::NONE;
+        m.command = self.cmd;
+        m.shift = self.shift;
+        m.alt = self.alt;
+        m
+    }
+
+    /// Accelerator string for native menus, e.g. `CmdOrCtrl+Alt+C`.
+    pub fn accelerator(self) -> String {
+        let mut s = String::new();
+        if self.cmd {
+            s.push_str("CmdOrCtrl+");
+        }
+        if self.shift {
+            s.push_str("Shift+");
+        }
+        if self.alt {
+            s.push_str("Alt+");
+        }
+        s.push_str(self.key.name());
+        s
+    }
+}
+
+impl Command {
+    /// Shortcuts follow Photoshop's defaults.
+    pub fn shortcut(self) -> Option<Shortcut> {
+        Some(match self {
+            Self::New => cmd(Key::N),
+            Self::Open => cmd(Key::O),
+            Self::Close => cmd(Key::W),
+            Self::ExportAs => Shortcut {
+                shift: true,
+                ..alt_cmd(Key::W)
+            },
+            Self::Undo => cmd(Key::Z),
+            Self::Redo => shift_cmd(Key::Z),
+            Self::CanvasSize => alt_cmd(Key::C),
+            Self::NewLayer => shift_cmd(Key::N),
+            Self::ZoomIn => cmd(Key::Equals),
+            Self::ZoomOut => cmd(Key::Minus),
+            Self::FitOnScreen => cmd(Key::Num0),
+            Self::ActualPixels => cmd(Key::Num1),
+            Self::DeleteLayer | Self::ToggleHistory => return None,
+        })
+    }
+
+    /// Whether the command can run in the current state (also drives menu
+    /// item enabled states).
+    pub fn enabled(self, app: &AppState) -> bool {
+        // Menus are disabled while a modal dialog is open, as in Photoshop
+        if app.modal_open() {
+            return false;
+        }
+        let doc = app.active_doc.and_then(|id| app.docs.get(&id));
+        match self {
+            Self::New | Self::Open | Self::ToggleHistory => true,
+            Self::Undo => doc.is_some_and(|d| d.history.can_undo()),
+            Self::Redo => doc.is_some_and(|d| d.history.can_redo()),
+            Self::DeleteLayer => doc.is_some_and(|d| d.doc.layers.len() > 1),
+            Self::Close
+            | Self::ExportAs
+            | Self::CanvasSize
+            | Self::NewLayer
+            | Self::ZoomIn
+            | Self::ZoomOut
+            | Self::FitOnScreen
+            | Self::ActualPixels => doc.is_some(),
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+/// Commands that have keyboard shortcuts, most specific first: egui ignores
+/// extra Shift/Alt when matching, so Shift+Cmd+Z must be checked before Cmd+Z.
+const SHORTCUT_ORDER: &[Command] = &[
+    Command::ExportAs,
+    Command::Redo,
+    Command::NewLayer,
+    Command::CanvasSize,
+    Command::Undo,
+    Command::New,
+    Command::Open,
+    Command::Close,
+    Command::ZoomIn,
+    Command::ZoomOut,
+    Command::FitOnScreen,
+    Command::ActualPixels,
+];
+
+#[cfg(not(target_os = "macos"))]
+/// Command shortcuts typed into egui. On macOS the native menu bar handles
+/// these instead, so this is only used on other platforms.
+pub fn from_shortcuts(ctx: &egui::Context) -> Vec<Command> {
+    let mut out = Vec::new();
+    ctx.input_mut(|i| {
+        for &command in SHORTCUT_ORDER {
+            let s = command.shortcut().expect("listed commands have shortcuts");
+            let mut hit = i.consume_key(s.modifiers(), s.key);
+            // Cmd+Shift+= arrives as Cmd+Plus on some layouts
+            if command == Command::ZoomIn {
+                hit |= i.consume_key(s.modifiers(), Key::Plus);
+            }
+            if hit {
+                out.push(command);
+            }
+        }
+    });
+    out
+}
+
+pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState, dock: &mut DockState<DocId>) {
+    if !command.enabled(app) {
+        return;
+    }
+    let ppp = ctx.pixels_per_point();
+    match command {
+        Command::New => actions::new_document(app, dock),
+        Command::Open => actions::open_dialog(app, dock),
+        Command::Close => actions::close_active(app, dock),
+        Command::ExportAs => actions::export_dialog(app),
+        Command::ToggleHistory => app.history_open = !app.history_open,
+        Command::CanvasSize => {
+            if let Some(state) = app.active() {
+                let dialog = crate::dialogs::CanvasSizeDialog::new(&state.doc);
+                app.canvas_size_dialog = Some(dialog);
+            }
+        }
+        _ => {
+            let Some(state) = app.active() else {
+                return;
+            };
+            match command {
+                Command::Undo => {
+                    state.undo();
+                }
+                Command::Redo => {
+                    state.redo();
+                }
+                Command::NewLayer => crate::panels::new_layer(state),
+                Command::DeleteLayer => crate::panels::delete_active_layer(state),
+                Command::ZoomIn => document_view::zoom_step(state, true, ppp),
+                Command::ZoomOut => document_view::zoom_step(state, false, ppp),
+                Command::FitOnScreen => document_view::fit_on_screen(state, ppp),
+                Command::ActualPixels => document_view::actual_pixels(state, ppp),
+                _ => unreachable!("handled above"),
+            }
+        }
+    }
+}

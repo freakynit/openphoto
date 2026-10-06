@@ -2,12 +2,11 @@
 
 use std::path::PathBuf;
 
-use egui::{Key, Modifiers};
+use egui::Key;
 use egui_dock::DockState;
 use op_core::{Color, DocId, Document};
 use op_tools::Tool;
 
-use crate::document_view;
 use crate::state::{AppState, DocState};
 
 /// `initial` names the document's first history state ("Open" or "New").
@@ -83,62 +82,12 @@ pub fn close_active(app: &mut AppState, dock: &mut DockState<DocId>) {
     app.active_doc = None;
 }
 
-pub fn handle_shortcuts(ctx: &egui::Context, app: &mut AppState, dock: &mut DockState<DocId>) {
-    // `consume_key` ignores extra Shift/Alt, so the more specific shortcut
-    // must be checked first (Shift+Cmd+Z before Cmd+Z).
-    let shift_cmd = Modifiers::COMMAND | Modifiers::SHIFT;
-    let pressed = |modifiers, key| ctx.input_mut(|i| i.consume_key(modifiers, key));
-
-    if pressed(shift_cmd, Key::Z)
-        && let Some(state) = app.active()
-    {
-        state.redo();
+/// Single-key tool and color shortcuts. Modifier shortcuts are commands; see
+/// [`crate::commands`].
+pub fn handle_tool_keys(ctx: &egui::Context, app: &mut AppState) {
+    if app.modal_open() {
+        return;
     }
-    if pressed(shift_cmd, Key::N)
-        && let Some(state) = app.active()
-    {
-        crate::panels::new_layer(state);
-    }
-
-    if pressed(Modifiers::COMMAND, Key::Z)
-        && let Some(state) = app.active()
-    {
-        state.undo();
-    }
-    if pressed(Modifiers::COMMAND, Key::O) {
-        open_dialog(app, dock);
-    }
-    if pressed(Modifiers::COMMAND, Key::N) {
-        new_document(app, dock);
-    }
-    if pressed(Modifiers::COMMAND, Key::S) {
-        export_dialog(app);
-    }
-    if pressed(Modifiers::COMMAND, Key::W) {
-        close_active(app, dock);
-    }
-
-    let ppp = ctx.pixels_per_point();
-    let zoom_in =
-        pressed(Modifiers::COMMAND, Key::Equals) || pressed(Modifiers::COMMAND, Key::Plus);
-    let zoom_out = pressed(Modifiers::COMMAND, Key::Minus);
-    let fit = pressed(Modifiers::COMMAND, Key::Num0);
-    let actual = pressed(Modifiers::COMMAND, Key::Num1);
-    if let Some(state) = app.active() {
-        if zoom_in {
-            document_view::zoom_step(state, true, ppp);
-        }
-        if zoom_out {
-            document_view::zoom_step(state, false, ppp);
-        }
-        if fit {
-            document_view::fit_on_screen(state, ppp);
-        }
-        if actual {
-            document_view::actual_pixels(state, ppp);
-        }
-    }
-
     // Single-key shortcuts are ignored while a text field has focus
     if ctx.egui_wants_keyboard_input() {
         return;

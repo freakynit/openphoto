@@ -120,42 +120,68 @@ impl TiledImage {
         }
     }
 
-    /// Copies the image into a tightly packed RGBA8 buffer.
-    pub fn to_rgba8(&self) -> Vec<u8> {
-        let (w, h) = (self.width as usize, self.height as usize);
-        let mut out = vec![0u8; w * h * 4];
-        for (&(tx, ty), tile) in &self.tiles {
-            let (x0, y0) = ((tx * TILE_SIZE) as usize, (ty * TILE_SIZE) as usize);
-            let tw = (TILE_SIZE as usize).min(w - x0);
-            let th = (TILE_SIZE as usize).min(h - y0);
-            for row in 0..th {
-                let src = row * TILE_SIZE as usize * 4;
-                let dst = ((y0 + row) * w + x0) * 4;
-                out[dst..dst + tw * 4].copy_from_slice(&tile.data[src..src + tw * 4]);
+    /// Copies `dst.len() / 4` pixels of row `y`, starting at column `x`, into
+    /// `dst`. Pixels in missing tiles are transparent. The span must lie
+    /// inside the image.
+    fn read_span(&self, x: u32, y: u32, dst: &mut [u8]) {
+        let (ty, row) = (y / TILE_SIZE, y % TILE_SIZE);
+        let mut done = 0;
+        while done < dst.len() / 4 {
+            let sx = x + done as u32;
+            let (tx, col) = (sx / TILE_SIZE, sx % TILE_SIZE);
+            let n = ((TILE_SIZE - col) as usize).min(dst.len() / 4 - done);
+            let out = &mut dst[done * 4..(done + n) * 4];
+            match self.tile(tx, ty) {
+                Some(tile) => {
+                    let i = ((row * TILE_SIZE + col) * 4) as usize;
+                    out.copy_from_slice(&tile.data[i..i + n * 4]);
+                }
+                None => out.fill(0),
             }
+            done += n;
         }
-        out
     }
 
     /// Returns a `width`×`height` image with this one placed at (`dx`, `dy`).
     /// Pixels outside the original image are filled with `fill`.
+    ///
+    /// Works one destination tile at a time, so memory stays proportional to
+    /// the allocated tiles, and fully transparent tiles stay unallocated.
     pub fn with_canvas(&self, width: u32, height: u32, dx: i64, dy: i64, fill: [u8; 4]) -> Self {
-        let src = self.to_rgba8();
-        let mut out = fill.repeat((width * height) as usize);
-        // Overlap of the old image with the new canvas, in new-canvas coordinates
-        let x0 = dx.max(0);
-        let y0 = dy.max(0);
-        let x1 = (dx + self.width as i64).min(width as i64);
-        let y1 = (dy + self.height as i64).min(height as i64);
-        if x0 < x1 {
-            let len = ((x1 - x0) * 4) as usize;
-            for y in y0..y1 {
-                let s = (((y - dy) * self.width as i64 + (x0 - dx)) * 4) as usize;
-                let d = ((y * width as i64 + x0) * 4) as usize;
-                out[d..d + len].copy_from_slice(&src[s..s + len]);
+        let mut out = Self::new(width, height);
+        let (src_w, src_h) = (self.width as i64, self.height as i64);
+        for ty in 0..out.tiles_y() {
+            for tx in 0..out.tiles_x() {
+                let (x0, y0) = ((tx * TILE_SIZE) as i64, (ty * TILE_SIZE) as i64);
+                let tw = (TILE_SIZE as i64).min(width as i64 - x0);
+                let th = (TILE_SIZE as i64).min(height as i64 - y0);
+
+                // Columns of this tile covered by the old image, in source coordinates
+                let sx0 = (x0 - dx).max(0);
+                let sx1 = (x0 + tw - dx).min(src_w);
+                let sy0 = (y0 - dy).max(0);
+                let sy1 = (y0 + th - dy).min(src_h);
+                let covered = sx0 < sx1 && sy0 < sy1;
+                if !covered && fill[3] == 0 {
+                    continue;
+                }
+
+                let mut tile = Tile::filled(fill);
+                if covered {
+                    let col = (sx0 + dx - x0) as usize;
+                    let len = (sx1 - sx0) as usize;
+                    for sy in sy0..sy1 {
+                        let row = (sy + dy - y0) as usize;
+                        let i = (row * TILE_SIZE as usize + col) * 4;
+                        self.read_span(sx0 as u32, sy as u32, &mut tile.data[i..i + len * 4]);
+                    }
+                }
+                if !tile.is_transparent() {
+                    out.tiles.insert((tx, ty), Arc::new(tile));
+                }
             }
         }
-        Self::from_rgba8(width, height, &out)
+        out
     }
 
     /// Number of allocated tiles (for debugging and memory stats).
@@ -192,6 +218,23 @@ mod tests {
 
         let cropped = img.with_canvas(1, 1, -1, -1, [0; 4]);
         assert_eq!(cropped.pixel(0, 0), [1, 1, 1, 255]);
+    }
+
+    #[test]
+    fn with_canvas_across_tiles() {
+        let w = TILE_SIZE + 10;
+        let px: Vec<u8> = (0..w * 3)
+            .flat_map(|i| [(i % 251) as u8, 0, 0, 255])
+            .collect();
+        let img = TiledImage::from_rgba8(w, 3, &px);
+        let moved = img.with_canvas(w + 300, 5, 300, 1, [0; 4]);
+        for x in 0..w {
+            assert_eq!(moved.pixel(x + 300, 2), img.pixel(x, 1));
+        }
+        assert_eq!(moved.pixel(299, 2), [0; 4]);
+        assert_eq!(moved.pixel(300, 0), [0; 4]);
+        // The untouched first tile column stays unallocated
+        assert!(moved.tile(0, 0).is_none());
     }
 
     #[test]

@@ -18,3 +18,6 @@ egui_dock.workspace = true
 egui-phosphor.workspace = true
 rfd.workspace = true
 log.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "0.21", default-features = false }

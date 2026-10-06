@@ -15,7 +15,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
     let full = ui.max_rect();
     let bar = Rect::from_min_size(full.min, Vec2::new(full.width(), size::PANEL_TAB_BAR));
     let bottom = Rect::from_min_max(Pos2::new(full.left(), full.bottom() - BOTTOM_BAR), full.max);
-    let list = Rect::from_min_max(Pos2::new(full.left(), bar.bottom()), bottom.left_top());
+    let list = Rect::from_min_max(Pos2::new(full.left(), bar.bottom()), bottom.right_top());
 
     let painter = ui.painter();
     painter.rect_filled(full, 0, color::PANEL);

@@ -28,7 +28,9 @@ UI dimensions are defined in `crates/op-ui/src/theme.rs`; `UI_SCALE` controls th
 
 | Action | Shortcut |
 |---|---|
-| New / Open / Export PNG / Close | ⌘N / ⌘O / ⌘S / ⌘W |
+| New / Open / Export As / Close | ⌘N / ⌘O / ⌥⇧⌘W / ⌘W |
+| Undo / Redo | ⌘Z / ⇧⌘Z |
+| Canvas Size | ⌥⌘C |
 | Zoom in / Zoom out / Fit on screen / 100% | ⌘= / ⌘- / ⌘0 / ⌘1 |
 | New layer | ⇧⌘N |
 | Pan | Space-drag, Hand tool (H), trackpad scroll |
