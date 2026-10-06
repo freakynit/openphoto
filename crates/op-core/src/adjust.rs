@@ -51,6 +51,9 @@ pub enum Adjustment {
     /// magentas turn (percent, −200–300).
     BlackWhite {
         weights: [i32; 6],
+        /// Tint: the gray takes this color's hue and saturation (Photoshop's
+        /// Color blend).
+        tint: Option<[u8; 3]>,
     },
     /// Vibrance (boosts muted colors most) and Saturation, −100–100 each.
     Vibrance {
@@ -186,8 +189,10 @@ impl Adjustment {
             } => {
                 let mut table = [0u8; 256];
                 for (i, t) in table.iter_mut().enumerate() {
-                    let linear = srgb_to_linear(i as f32 / 255.0) * 2f32.powf(exposure) + offset;
-                    let v = linear_to_srgb(linear.max(0.0).powf(1.0 / gamma)) * 255.0;
+                    // Linear light by a 2.2 gamma (not the sRGB curve), as
+                    // Photoshop's Exposure works
+                    let linear = (i as f32 / 255.0).powf(2.2) * 2f32.powf(exposure) + offset;
+                    let v = linear.max(0.0).powf(1.0 / gamma).powf(1.0 / 2.2) * 255.0;
                     *t = v.round().clamp(0.0, 255.0) as u8;
                 }
                 same(table)
@@ -492,11 +497,49 @@ pub fn curve_table(points: &[(u8, u8)]) -> [u8; 256] {
     table
 }
 
-/// Moves every channel by the same amount so the pixel's luminosity is
-/// `target` again.
-fn keep_luminosity(rgb: [f32; 3], target: f32) -> [f32; 3] {
-    let l = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2];
-    rgb.map(|v| v + (target - l))
+/// Linear sRGB to XYZ adapted to D50 (Photoshop's profile connection
+/// space).
+const SRGB_TO_XYZ_D50: [[f32; 3]; 3] = [
+    [0.4361, 0.3851, 0.1431],
+    [0.2225, 0.7169, 0.0606],
+    [0.0139, 0.0971, 0.7141],
+];
+
+fn to_xyz(rgb: [f32; 3]) -> [f32; 3] {
+    SRGB_TO_XYZ_D50.map(|row| row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2])
+}
+
+fn from_xyz(xyz: [f32; 3]) -> [f32; 3] {
+    // The inverse of SRGB_TO_XYZ_D50
+    const M: [[f32; 3]; 3] = [
+        [3.1336, -1.6168, -0.4907],
+        [-0.9787, 1.9161, 0.0335],
+        [0.0721, -0.2291, 1.4054],
+    ];
+    M.map(|row| row[0] * xyz[0] + row[1] * xyz[1] + row[2] * xyz[2])
+}
+
+fn lum601([r, g, b]: [f32; 3]) -> f32 {
+    0.3 * r + 0.59 * g + 0.11 * b
+}
+
+/// The blend modes' SetLum (0–1 values): moves every channel by the same
+/// amount so the luminosity (0.3 R + 0.59 G + 0.11 B) is `target`, then
+/// pulls the channels toward it until they fit 0–1 (ClipColor).
+fn set_lum(rgb: [f32; 3], target: f32) -> [f32; 3] {
+    let d = target - lum601(rgb);
+    let c = rgb.map(|v| v + d);
+    let l = lum601(c);
+    let n = c[0].min(c[1]).min(c[2]);
+    let x = c[0].max(c[1]).max(c[2]);
+    let mut c = c;
+    if n < 0.0 {
+        c = c.map(|v| l + (v - l) * l / (l - n));
+    }
+    if x > 1.0 {
+        c = c.map(|v| l + (v - l) * (1.0 - l) / (x - l));
+    }
+    c
 }
 
 fn to_u8(rgb: [f32; 3], a: u8) -> [u8; 4] {
@@ -525,7 +568,7 @@ fn color_adjust(adjustment: Adjustment, px: [u8; 4]) -> [u8; 4] {
             [r, g, b, px[3]]
         }
         Adjustment::SelectiveColor { colors, absolute } => selective_color(px, &colors, absolute),
-        Adjustment::BlackWhite { weights } => {
+        Adjustment::BlackWhite { weights, tint } => {
             // The gray is the darkest channel plus the primary and the
             // secondary hue's shares, each weighted
             let (r, g, b) = (rgb[0], rgb[1], rgb[2]);
@@ -549,7 +592,11 @@ fn color_adjust(adjustment: Adjustment, px: [u8; 4]) -> [u8; 4] {
                 w(5)
             };
             let gray = min + (mid - min) * secondary + (max - mid) * primary;
-            to_u8([gray; 3], px[3])
+            let out = match tint {
+                Some(t) => set_lum(t.map(|v| v as f32 / 255.0), gray.clamp(0.0, 1.0)),
+                None => [gray; 3],
+            };
+            to_u8(out, px[3])
         }
         Adjustment::Vibrance {
             vibrance,
@@ -557,23 +604,36 @@ fn color_adjust(adjustment: Adjustment, px: [u8; 4]) -> [u8; 4] {
         } => {
             let [h, s, l] = rgb_to_hsl(rgb);
             let v = vibrance as f32 / 100.0;
-            // Vibrance acts most on muted colors
+            // Vibrance acts most on muted colors (an approximation)
             let s = (s * (1.0 + v * (1.0 - s))).clamp(0.0, 1.0);
-            let s = (s * (1.0 + saturation as f32 / 100.0)).clamp(0.0, 1.0);
-            to_u8(hsl_to_rgb([h, s, l]), px[3])
+            let rgb = hsl_to_rgb([h, s, l]);
+            // Saturation scales the channels away from (or toward) a
+            // linear-light gray of 0.2878 R + 0.7122 G, as Photoshop's
+            let lin = rgb.map(srgb_to_linear);
+            let gray = 0.2878 * lin[0] + 0.7122 * lin[1];
+            let k = 1.0 + saturation as f32 / 100.0;
+            to_u8(
+                lin.map(|c| linear_to_srgb((gray + (c - gray) * k).clamp(0.0, 1.0))),
+                px[3],
+            )
         }
         Adjustment::PhotoFilter {
             color,
             density,
             preserve_luminosity,
         } => {
+            // The filter multiplies X, Y and Z (D50) of the linear color,
+            // each by 1 − density + density × the filter's own (relative to
+            // white), as Photoshop does
             let d = density as f32 / 100.0;
-            let mut out = [0, 1, 2].map(|c| {
-                let v = rgb[c];
-                v + (v * color[c] as f32 / 255.0 - v) * d
-            });
+            let filter = to_xyz(color.map(|v| srgb_to_linear(v as f32 / 255.0)));
+            let white = to_xyz([1.0; 3]);
+            let xyz = to_xyz(rgb.map(srgb_to_linear));
+            let k = [0, 1, 2].map(|i| 1.0 - d + d * filter[i] / white[i]);
+            let mut out = from_xyz([0, 1, 2].map(|i| xyz[i] * k[i]))
+                .map(|v| linear_to_srgb(v.clamp(0.0, 1.0)));
             if preserve_luminosity {
-                out = keep_luminosity(out, lum);
+                out = set_lum(out, lum601(rgb));
             }
             to_u8(out, px[3])
         }
@@ -1199,7 +1259,7 @@ mod tests {
         apply(&mut d, gray).unwrap();
         assert_eq!(first(&d), [191, 191, 191, 255]);
 
-        // One stop up doubles linear light: sRGB 128 (0.216) -> 0.432 -> 175.5
+        // One stop up doubles linear light (gamma 2.2): 128 -> 175.4
         let mut d = doc([128, 128, 128, 255]);
         let exposure = Adjustment::Exposure {
             exposure: 1.0,
@@ -1207,7 +1267,7 @@ mod tests {
             gamma: 1.0,
         };
         apply(&mut d, exposure).unwrap();
-        assert_eq!(first(&d), [176, 176, 176, 255]);
+        assert_eq!(first(&d), [175, 175, 175, 255]);
     }
 
     #[test]
@@ -1216,6 +1276,7 @@ mod tests {
         let mut d = doc([255, 0, 0, 255]);
         let bw = Adjustment::BlackWhite {
             weights: [40, 60, 40, 60, 20, 80],
+            tint: None,
         };
         apply(&mut d, bw).unwrap();
         assert_eq!(first(&d), [102, 102, 102, 255]);
@@ -1242,7 +1303,8 @@ mod tests {
         apply(&mut muted, vib).unwrap();
         assert!(first(&muted)[0] - first(&muted)[1] > 20);
 
-        // Photo filter: a blue filter takes red out
+        // Photo filter: a blue filter takes red out, multiplying in linear
+        // light (200 is 0.578; half of it is 146)
         let mut d = doc([200, 200, 200, 255]);
         let pf = Adjustment::PhotoFilter {
             color: [0, 0, 255],
@@ -1250,7 +1312,7 @@ mod tests {
             preserve_luminosity: false,
         };
         apply(&mut d, pf).unwrap();
-        assert_eq!(first(&d), [100, 100, 200, 255]);
+        assert_eq!(first(&d), [146, 146, 200, 255]);
     }
 
     #[test]
@@ -1555,6 +1617,136 @@ mod tests {
                 colors[i] = v;
                 let (worst, _) = compare(Adjustment::SelectiveColor { colors, absolute }, name);
                 assert!(worst <= 1, "{name}: off by {worst}");
+            }
+        }
+
+        #[test]
+        fn black_white_photo_filter_and_exposure_match_photoshop() {
+            let defaults = [40, 60, 40, 60, 20, 80];
+            for (name, adjustment, allowed) in [
+                (
+                    "bw_x.rgb",
+                    Adjustment::BlackWhite {
+                        weights: [-50, 150, 200, 10, 300, -100],
+                        tint: None,
+                    },
+                    1,
+                ),
+                (
+                    "bw_t.rgb",
+                    Adjustment::BlackWhite {
+                        weights: defaults,
+                        tint: Some([225, 211, 179]),
+                    },
+                    2,
+                ),
+                (
+                    "bw_t2.rgb",
+                    Adjustment::BlackWhite {
+                        weights: defaults,
+                        tint: Some([40, 90, 200]),
+                    },
+                    2,
+                ),
+                (
+                    "pf_w.rgb",
+                    Adjustment::PhotoFilter {
+                        color: [236, 138, 0],
+                        density: 25,
+                        preserve_luminosity: true,
+                    },
+                    6,
+                ),
+                (
+                    "pf_w2.rgb",
+                    Adjustment::PhotoFilter {
+                        color: [236, 138, 0],
+                        density: 60,
+                        preserve_luminosity: false,
+                    },
+                    1,
+                ),
+                (
+                    "pf_b.rgb",
+                    Adjustment::PhotoFilter {
+                        color: [0, 0, 255],
+                        density: 50,
+                        preserve_luminosity: false,
+                    },
+                    1,
+                ),
+                (
+                    "pf_b2.rgb",
+                    Adjustment::PhotoFilter {
+                        color: [0, 0, 255],
+                        density: 80,
+                        preserve_luminosity: true,
+                    },
+                    6,
+                ),
+                (
+                    "ex_1.rgb",
+                    Adjustment::Exposure {
+                        exposure: 1.0,
+                        offset: 0.0,
+                        gamma: 1.0,
+                    },
+                    2,
+                ),
+                (
+                    "ex_m.rgb",
+                    Adjustment::Exposure {
+                        exposure: -1.5,
+                        offset: 0.05,
+                        gamma: 1.0,
+                    },
+                    2,
+                ),
+                (
+                    "ex_g.rgb",
+                    Adjustment::Exposure {
+                        exposure: 0.0,
+                        offset: 0.0,
+                        gamma: 2.0,
+                    },
+                    2,
+                ),
+                (
+                    "ex_o.rgb",
+                    Adjustment::Exposure {
+                        exposure: 0.5,
+                        offset: -0.1,
+                        gamma: 0.7,
+                    },
+                    2,
+                ),
+                (
+                    "vib_sm100.rgb",
+                    Adjustment::Vibrance {
+                        vibrance: 0,
+                        saturation: -100,
+                    },
+                    2,
+                ),
+                (
+                    "vib_s50.rgb",
+                    Adjustment::Vibrance {
+                        vibrance: 0,
+                        saturation: 50,
+                    },
+                    2,
+                ),
+                (
+                    "vib_sm50.rgb",
+                    Adjustment::Vibrance {
+                        vibrance: 0,
+                        saturation: -50,
+                    },
+                    2,
+                ),
+            ] {
+                let (worst, _) = compare(adjustment, name);
+                assert!(worst <= allowed, "{name}: off by {worst}");
             }
         }
 

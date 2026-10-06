@@ -90,6 +90,12 @@ impl Dialog {
         }
         uxp::checkbox(ui, at(20.0, 164.0), "Use Legacy", &mut self.legacy);
         uxp::preview(ui, at(272.0, 174.0), preview);
-        uxp::buttons(ui, frame, Some("Auto"), self.adjustment().is_some(), false)
+        uxp::buttons(
+            ui,
+            frame,
+            Some(("Auto", true)),
+            self.adjustment().is_some(),
+            false,
+        )
     }
 }

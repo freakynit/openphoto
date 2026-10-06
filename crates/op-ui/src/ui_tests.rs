@@ -819,6 +819,10 @@ fn screenshot_adjustment_dialogs() {
         (Command::Curves, "curves_dialog"),
         (Command::ChannelMixer, "channel_mixer_dialog"),
         (Command::SelectiveColor, "selective_color_dialog"),
+        (Command::Vibrance, "vibrance_dialog"),
+        (Command::Posterize, "posterize_dialog"),
+        (Command::PhotoFilter, "photo_filter_dialog"),
+        (Command::BlackWhite, "black_white_dialog"),
     ] {
         let mut h = harness(Vec::new());
         reference_document(&mut h);
@@ -3158,4 +3162,74 @@ fn channel_mixer_and_selective_color_apply() {
     op_core::adjust::apply(&mut doc, want).unwrap();
     let px = composite_pixel(&mut h, 5, 5);
     assert_eq!(&px[..], &doc.composite_rgba8()[..4]);
+}
+
+#[test]
+fn small_uxp_adjustment_dialogs_apply() {
+    use crate::commands::Command;
+    use op_core::adjust::Adjustment;
+    let expect = |h: &mut Harness<'_, OpenPhotoApp>, adjustment: Adjustment, before: [u8; 3]| {
+        let [r, g, b] = before;
+        let mut doc =
+            op_core::Document::new_with_background("t", 1, 1, Color::from_rgba8([r, g, b, 255]));
+        op_core::adjust::apply(&mut doc, adjustment).unwrap();
+        let want: [u8; 4] = doc.composite_rgba8()[..4].try_into().unwrap();
+        assert_eq!(composite_pixel(h, 5, 5), want, "{adjustment:?}");
+        let [r, g, b, _] = want;
+        [r, g, b]
+    };
+    let mut h = harness(Vec::new());
+    color_document(&mut h, [180, 120, 60]);
+    let mut color = [180, 120, 60];
+    // Each dialog's first box is focused with its text selected
+    for (command, typed, adjustment) in [
+        (
+            Command::Vibrance,
+            "40",
+            Adjustment::Vibrance {
+                vibrance: 40,
+                saturation: 0,
+            },
+        ),
+        (Command::Posterize, "6", Adjustment::Posterize(6)),
+        (
+            Command::Exposure,
+            "0.5",
+            Adjustment::Exposure {
+                exposure: 0.5,
+                offset: 0.0,
+                gamma: 1.0,
+            },
+        ),
+        (
+            Command::BlackWhite,
+            "70",
+            Adjustment::BlackWhite {
+                weights: [70, 60, 40, 60, 20, 80],
+                tint: None,
+            },
+        ),
+    ] {
+        run_command(&mut h, command);
+        h.event(egui::Event::Text(typed.into()));
+        h.run_steps(2);
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert!(h.state().state.adjust_dialog.is_none());
+        color = expect(&mut h, adjustment, color);
+    }
+    // Photo Filter: no box has the focus; Enter applies the default
+    run_command(&mut h, Command::PhotoFilter);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(last_history(&h), "Photo Filter");
+    expect(
+        &mut h,
+        Adjustment::PhotoFilter {
+            color: [0xec, 0x8a, 0x00],
+            density: 25,
+            preserve_luminosity: true,
+        },
+        color,
+    );
 }

@@ -86,8 +86,56 @@ pub fn slider(
     x1: f32,
     y: f32,
     value: f32,
+    range: (f32, f32),
+    colors: &dyn Fn(f32) -> Color32,
+) -> Option<f32> {
+    slider_with(ui, id, (x0, x1, y), value, range, colors, true, 1.0)
+}
+
+/// [`slider`] stepping by `step` (fractional values).
+#[allow(clippy::too_many_arguments)]
+pub fn slider_stepped(
+    ui: &mut Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    x0: f32,
+    x1: f32,
+    y: f32,
+    value: f32,
+    range: (f32, f32),
+    colors: &dyn Fn(f32) -> Color32,
+    step: f32,
+) -> Option<f32> {
+    slider_with(ui, id, (x0, x1, y), value, range, colors, true, step)
+}
+
+/// [`slider`] whose values run evenly from `min` at the left to `max` at
+/// the right (Black & White's −200–300, Posterize's 2–255), stepping by
+/// `step`.
+#[allow(clippy::too_many_arguments)]
+pub fn linear_slider(
+    ui: &mut Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    x0: f32,
+    x1: f32,
+    y: f32,
+    value: f32,
+    range: (f32, f32),
+    colors: &dyn Fn(f32) -> Color32,
+    step: f32,
+) -> Option<f32> {
+    slider_with(ui, id, (x0, x1, y), value, range, colors, false, step)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn slider_with(
+    ui: &mut Ui,
+    id: impl std::hash::Hash + std::fmt::Debug,
+    (x0, x1, y): (f32, f32, f32),
+    value: f32,
     (min, max): (f32, f32),
     colors: &dyn Fn(f32) -> Color32,
+    centered: bool,
+    step: f32,
 ) -> Option<f32> {
     // The thumb's center travels between the ends inset by its radius; a
     // range starting at 0 (Colorize's hue and saturation) runs from the
@@ -95,14 +143,18 @@ pub fn slider(
     let (x0, x1) = (x0 + THUMB_RADIUS, x1 - THUMB_RADIUS);
     let mid = if min >= 0.0 { x0 } else { (x0 + x1) / 2.0 };
     let to_x = |v: f32| {
-        if v >= 0.0 || min >= 0.0 {
+        if !centered {
+            x0 + (x1 - x0) * ((v - min) / (max - min)).clamp(0.0, 1.0)
+        } else if v >= 0.0 || min >= 0.0 {
             mid + (x1 - mid) * (v / max).clamp(0.0, 1.0)
         } else {
             mid - (mid - x0) * (v / min).min(1.0)
         }
     };
     let to_value = |x: f32| {
-        if x >= mid || min >= 0.0 {
+        if !centered {
+            min + (max - min) * ((x - x0) / (x1 - x0)).clamp(0.0, 1.0)
+        } else if x >= mid || min >= 0.0 {
             max * ((x - mid) / (x1 - mid)).clamp(0.0, 1.0)
         } else {
             min * ((mid - x) / (mid - x0)).clamp(0.0, 1.0)
@@ -121,11 +173,33 @@ pub fn slider(
     if (response.dragged() || response.clicked() || response.drag_started())
         && let Some(p) = response.interact_pointer_pos()
     {
-        changed = Some(to_value(p.x).round());
+        changed = Some((to_value(p.x) / step).round() * step);
     }
     let value = changed.unwrap_or(value);
-    let x = to_x(value);
-    let painter = ui.painter();
+    let ring = if response.dragged() {
+        THUMB_DRAGGED
+    } else {
+        THUMB
+    };
+    paint_track(
+        ui.painter(),
+        (x0 - THUMB_RADIUS, x1 + THUMB_RADIUS, y),
+        to_x(value),
+        colors,
+        ring,
+    );
+    changed
+}
+
+/// Paints a slider's track along `x0..x1` at `y`, broken around the thumb
+/// at `x`, and the thumb's ring.
+fn paint_track(
+    painter: &egui::Painter,
+    (x0, x1, y): (f32, f32, f32),
+    x: f32,
+    colors: &dyn Fn(f32) -> Color32,
+    ring: Color32,
+) {
     let half = pt(1.0);
     let segment = |a: f32, b: f32| {
         if b <= a {
@@ -136,7 +210,7 @@ pub fn slider(
         let steps = ((b - a) / pt(4.0)).ceil().max(1.0) as usize;
         for k in 0..=steps {
             let px = a + (b - a) * k as f32 / steps as f32;
-            let c = colors((px - x0 + THUMB_RADIUS) / (x1 - x0 + 2.0 * THUMB_RADIUS));
+            let c = colors((px - x0) / (x1 - x0));
             mesh.colored_vertex(Pos2::new(px, y - half), c);
             mesh.colored_vertex(Pos2::new(px, y + half), c);
             if k > 0 {
@@ -147,19 +221,42 @@ pub fn slider(
         }
         painter.add(egui::Shape::mesh(mesh));
     };
-    segment(x0 - THUMB_RADIUS, x - THUMB_RADIUS - TRACK_GAP);
-    segment(x + THUMB_RADIUS + TRACK_GAP, x1 + THUMB_RADIUS);
-    let ring = if response.dragged() {
-        THUMB_DRAGGED
-    } else {
-        THUMB
-    };
+    segment(x0, x - THUMB_RADIUS - TRACK_GAP);
+    segment(x + THUMB_RADIUS + TRACK_GAP, x1);
     painter.circle_stroke(
         Pos2::new(x, y),
         THUMB_RADIUS - pt(0.75),
         Stroke::new(pt(1.0), ring),
     );
-    changed
+}
+
+/// A slider drawn but not usable (a dimmed one), its values running evenly
+/// from `min` to `max`.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_slider(
+    ui: &Ui,
+    x0: f32,
+    x1: f32,
+    y: f32,
+    value: f32,
+    (min, max): (f32, f32),
+    colors: &dyn Fn(f32) -> Color32,
+    ring: Color32,
+) {
+    let t = ((value - min) / (max - min)).clamp(0.0, 1.0);
+    let x = x0 + THUMB_RADIUS + (x1 - x0 - 2.0 * THUMB_RADIUS) * t;
+    paint_track(ui.painter(), (x0, x1, y), x, colors, ring);
+}
+
+/// A gradient from `a` (left end) through `mid` to `b`.
+pub fn three(a: Color32, mid: Color32, b: Color32) -> impl Fn(f32) -> Color32 {
+    move |t| {
+        if t < 0.5 {
+            a.lerp_to_gamma(mid, t * 2.0)
+        } else {
+            mid.lerp_to_gamma(b, t * 2.0 - 1.0)
+        }
+    }
 }
 
 /// A gradient through evenly spaced color stops, blended in sRGB between
@@ -188,7 +285,7 @@ pub enum Button {
 pub fn buttons(
     ui: &mut Ui,
     frame: Rect,
-    third: Option<&str>,
+    third: Option<(&str, bool)>,
     ok_enabled: bool,
     ok_focused: bool,
 ) -> Option<Button> {
@@ -206,7 +303,8 @@ pub fn buttons(
         common::ps_button_with(ui, at(0.0), "OK", true, ok_enabled, bold.clone())
     };
     let cancel = common::ps_button_with(ui, at(1.0), "Cancel", false, true, bold.clone());
-    let third = third.map(|label| common::ps_button_with(ui, at(2.0), label, false, true, bold));
+    let third = third
+        .map(|(label, enabled)| common::ps_button_with(ui, at(2.0), label, false, enabled, bold));
     if cancel.clicked() {
         return Some(Button::Cancel);
     }

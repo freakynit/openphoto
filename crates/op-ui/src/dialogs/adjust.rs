@@ -14,8 +14,8 @@ use op_core::adjust::Adjustment;
 use op_core::filter::{Filter, OffsetFill};
 
 use super::{
-    brightness_contrast, channel_mixer, color_balance, common, curves, hue_saturation, levels,
-    selective_color, uxp,
+    black_white, brightness_contrast, channel_mixer, color_balance, common, curves, exposure,
+    hue_saturation, levels, photo_filter, selective_color, uxp, vibrance,
 };
 use crate::theme::{self, color, pt};
 
@@ -111,62 +111,6 @@ const fn check(label: &'static str, default: bool) -> Param {
 }
 
 const THRESHOLD: &[Param] = &[param("Threshold Level:", 1.0, 255.0, 128.0, 0)];
-const POSTERIZE: &[Param] = &[param("Levels:", 2.0, 255.0, 4.0, 0)];
-const EXPOSURE: &[Param] = &[
-    param("Exposure:", -20.0, 20.0, 0.0, 2),
-    param("Offset:", -0.5, 0.5, 0.0, 4),
-    param("Gamma Correction:", 0.01, 9.99, 1.0, 2),
-];
-/// Photoshop's Black & White default preset.
-const BLACK_WHITE: &[Param] = &[
-    param("Reds (%):", -200.0, 300.0, 40.0, 0),
-    param("Yellows (%):", -200.0, 300.0, 60.0, 0),
-    param("Greens (%):", -200.0, 300.0, 40.0, 0),
-    param("Cyans (%):", -200.0, 300.0, 60.0, 0),
-    param("Blues (%):", -200.0, 300.0, 20.0, 0),
-    param("Magentas (%):", -200.0, 300.0, 80.0, 0),
-];
-const VIBRANCE: &[Param] = &[
-    param("Vibrance:", -100.0, 100.0, 0.0, 0),
-    param("Saturation:", -100.0, 100.0, 0.0, 0),
-];
-/// Photoshop's Photo Filter presets and their colors.
-const PHOTO_FILTERS: [(&str, [u8; 3]); 20] = [
-    ("Warming Filter (85)", [0xec, 0x8a, 0x00]),
-    ("Warming Filter (LBA)", [0xfa, 0x96, 0x00]),
-    ("Warming Filter (81)", [0xeb, 0xb1, 0x13]),
-    ("Cooling Filter (80)", [0x00, 0x6d, 0xff]),
-    ("Cooling Filter (LBB)", [0x00, 0x5d, 0xff]),
-    ("Cooling Filter (82)", [0x00, 0xb5, 0xff]),
-    ("Red", [0xea, 0x1a, 0x1a]),
-    ("Orange", [0xf3, 0x84, 0x17]),
-    ("Yellow", [0xf9, 0xe3, 0x1c]),
-    ("Green", [0x19, 0xc9, 0x19]),
-    ("Cyan", [0x1d, 0xcb, 0xea]),
-    ("Blue", [0x1d, 0x35, 0xea]),
-    ("Violet", [0x9b, 0x1d, 0xea]),
-    ("Magenta", [0xe3, 0x18, 0xe3]),
-    ("Sepia", [0xac, 0x7a, 0x33]),
-    ("Deep Red", [0xff, 0x00, 0x00]),
-    ("Deep Blue", [0x00, 0x22, 0xcd]),
-    ("Deep Emerald", [0x00, 0x8c, 0x00]),
-    ("Deep Yellow", [0xff, 0xd5, 0x00]),
-    ("Underwater", [0x00, 0xc1, 0xb1]),
-];
-const PHOTO_FILTER_NAMES: [&str; 20] = {
-    let mut names = [""; 20];
-    let mut i = 0;
-    while i < 20 {
-        names[i] = PHOTO_FILTERS[i].0;
-        i += 1;
-    }
-    names
-};
-const PHOTO_FILTER: &[Param] = &[
-    choice("Filter:", &PHOTO_FILTER_NAMES, 0),
-    param("Density (%):", 1.0, 100.0, 25.0, 0),
-    check("Preserve Luminosity", true),
-];
 const GRADIENT_MAP: &[Param] = &[check("Reverse", false)];
 const GAUSSIAN_BLUR: &[Param] = &[param("Radius (pixels):", 0.1, 1000.0, 1.0, 1)];
 const BOX_BLUR: &[Param] = &[param("Radius (pixels):", 1.0, 2000.0, 1.0, 0)];
@@ -254,7 +198,6 @@ impl Kind {
     fn params(self) -> &'static [Param] {
         match self {
             Self::Threshold => THRESHOLD,
-            Self::Posterize => POSTERIZE,
             // Their own dialogs keep their settings
             Self::Levels
             | Self::Curves
@@ -262,11 +205,12 @@ impl Kind {
             | Self::BrightnessContrast
             | Self::ColorBalance
             | Self::ChannelMixer
-            | Self::SelectiveColor => &[],
-            Self::Exposure => EXPOSURE,
-            Self::BlackWhite => BLACK_WHITE,
-            Self::Vibrance => VIBRANCE,
-            Self::PhotoFilter => PHOTO_FILTER,
+            | Self::SelectiveColor
+            | Self::Vibrance
+            | Self::Posterize
+            | Self::Exposure
+            | Self::PhotoFilter
+            | Self::BlackWhite => &[],
             Self::GradientMap => GRADIENT_MAP,
             Self::GaussianBlur => GAUSSIAN_BLUR,
             Self::BoxBlur => BOX_BLUR,
@@ -335,6 +279,11 @@ enum Custom {
     Curves(Box<curves::Dialog>),
     ChannelMixer(Box<channel_mixer::Dialog>),
     SelectiveColor(Box<selective_color::Dialog>),
+    Vibrance(vibrance::Vibrance),
+    Posterize(vibrance::Posterize),
+    Exposure(exposure::Dialog),
+    PhotoFilter(photo_filter::Dialog),
+    BlackWhite(Box<black_white::Dialog>),
 }
 
 fn format(v: f32, decimals: usize) -> String {
@@ -364,6 +313,11 @@ impl AdjustDialog {
                 ))),
                 Kind::Levels => Some(Custom::Levels(Box::new(levels::Dialog::new([[0; 256]; 3])))),
                 Kind::ChannelMixer => Some(Custom::ChannelMixer(Default::default())),
+                Kind::Vibrance => Some(Custom::Vibrance(Default::default())),
+                Kind::Posterize => Some(Custom::Posterize(Default::default())),
+                Kind::Exposure => Some(Custom::Exposure(Default::default())),
+                Kind::PhotoFilter => Some(Custom::PhotoFilter(Default::default())),
+                Kind::BlackWhite => Some(Custom::BlackWhite(Default::default())),
                 Kind::SelectiveColor => Some(Custom::SelectiveColor(Default::default())),
                 Kind::Curves => Some(Custom::Curves(Box::new(curves::Dialog::new([[0; 256]; 3])))),
                 _ => None,
@@ -408,6 +362,11 @@ impl AdjustDialog {
             Some(Custom::Curves(d)) => return Some(Effect::Adjustment(d.adjustment())),
             Some(Custom::ChannelMixer(d)) => return d.adjustment().map(Effect::Adjustment),
             Some(Custom::SelectiveColor(d)) => return d.adjustment().map(Effect::Adjustment),
+            Some(Custom::Vibrance(d)) => return d.adjustment().map(Effect::Adjustment),
+            Some(Custom::Posterize(d)) => return d.adjustment().map(Effect::Adjustment),
+            Some(Custom::Exposure(d)) => return d.adjustment().map(Effect::Adjustment),
+            Some(Custom::PhotoFilter(d)) => return d.adjustment().map(Effect::Adjustment),
+            Some(Custom::BlackWhite(d)) => return d.adjustment().map(Effect::Adjustment),
             None => {}
         }
         let v: Vec<f32> = (0..self.values.len())
@@ -456,24 +415,6 @@ impl AdjustDialog {
     fn adjustment(&self, v: &[f32]) -> Option<Adjustment> {
         Some(match self.kind {
             Kind::Threshold => Adjustment::Threshold(v[0] as u8),
-            Kind::Posterize => Adjustment::Posterize(v[0] as u8),
-            Kind::Exposure => Adjustment::Exposure {
-                exposure: v[0],
-                offset: v[1],
-                gamma: v[2],
-            },
-            Kind::BlackWhite => Adjustment::BlackWhite {
-                weights: [0, 1, 2, 3, 4, 5].map(|i| v[i] as i32),
-            },
-            Kind::Vibrance => Adjustment::Vibrance {
-                vibrance: v[0] as i32,
-                saturation: v[1] as i32,
-            },
-            Kind::PhotoFilter => Adjustment::PhotoFilter {
-                color: PHOTO_FILTERS[(v[0] as usize).min(PHOTO_FILTERS.len() - 1)].1,
-                density: v[1] as u8,
-                preserve_luminosity: v[2] == 1.0,
-            },
             Kind::GradientMap => {
                 let (a, b) = self.colors;
                 let (from, to) = if v[0] == 1.0 { (b, a) } else { (a, b) };
@@ -497,6 +438,11 @@ impl AdjustDialog {
                     Some(Custom::Curves(_)) => curves::SIZE,
                     Some(Custom::ChannelMixer(_)) => channel_mixer::SIZE,
                     Some(Custom::SelectiveColor(_)) => selective_color::SIZE,
+                    Some(Custom::Vibrance(_)) => vibrance::VIBRANCE_SIZE,
+                    Some(Custom::Posterize(_)) => vibrance::POSTERIZE_SIZE,
+                    Some(Custom::Exposure(_)) => exposure::SIZE,
+                    Some(Custom::PhotoFilter(_)) => photo_filter::SIZE,
+                    Some(Custom::BlackWhite(_)) => black_white::SIZE,
                     None => self.kind.size(),
                 };
                 let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
@@ -531,6 +477,11 @@ impl AdjustDialog {
             Some(Custom::Curves(d)) => d.ui(ui, frame, &mut self.preview),
             Some(Custom::ChannelMixer(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
             Some(Custom::SelectiveColor(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
+            Some(Custom::Vibrance(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
+            Some(Custom::Posterize(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
+            Some(Custom::Exposure(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
+            Some(Custom::PhotoFilter(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
+            Some(Custom::BlackWhite(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
             None => None,
         };
         match button {
@@ -834,7 +785,14 @@ mod tests {
                 Levels::IDENTITY.composite()
             )))
         );
-        assert_eq!(dialog(Kind::Exposure).values, ["0.00", "0.0000", "1.00"]);
+        assert_eq!(
+            dialog(Kind::Exposure).effect(),
+            Some(Effect::Adjustment(Adjustment::Exposure {
+                exposure: 0.0,
+                offset: 0.0,
+                gamma: 1.0
+            }))
+        );
         assert_eq!(
             dialog(Kind::HueSaturation).effect(),
             Some(Effect::Adjustment(Adjustment::HueSaturation(
