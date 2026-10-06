@@ -119,25 +119,86 @@ pub fn semibold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(SEMIBOLD.into()))
 }
 
-/// Dialog text: Photoshop's dialogs use the macOS system font (SF), loaded
-/// at run time when present (see [`install_fonts`]), else Source Sans 3.
+/// Dialog text as AppKit draws it: the macOS system font (SF) with the
+/// Text optical size, loaded at run time when present (see
+/// [`install_fonts`]), else Source Sans 3. Photoshop's classic dialogs
+/// (Duplicate Layer, Image Size), alerts and window titles use it.
 pub fn dialog(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(DIALOG.into()))
 }
 
-/// Slightly heavier dialog text, as Photoshop's newer dialogs (New Layer)
-/// draw it.
-pub fn dialog_medium(size: f32) -> FontId {
-    FontId::new(size, FontFamily::Name(DIALOG_MEDIUM.into()))
-}
-
-/// Bold dialog text (titles, the default button).
+/// Bold [`dialog`] text (window titles).
 pub fn dialog_bold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(DIALOG_BOLD.into()))
 }
 
+/// Text in Photoshop's UXP dialogs (New Layer, New Group): Spectrum's
+/// Adobe Clean, like the panels, so Source Sans 3 here. Matched on
+/// Photoshop 2026's New Layer dialog (12 pt widths agree within 3%).
+pub fn uxp(size: f32) -> FontId {
+    FontId::proportional(size)
+}
+
+/// Bold [`uxp`] text (the buttons): Adobe Clean Bold, Source Sans 3
+/// Semibold here.
+pub fn uxp_bold(size: f32) -> FontId {
+    semibold(size)
+}
+
+/// The system font's tracking at `size` points (its `trak` table, normal
+/// track, in 1/2048 em), which AppKit applies and egui doesn't: none at
+/// 12 pt, tighter above (−12 at 13 pt, −22 at 14 pt). Returned as extra
+/// letter spacing in egui points.
+pub fn system_tracking(size: f32) -> f32 {
+    const TRAK: [(f32, f32); 12] = [
+        (9.0, 38.0),
+        (10.0, 24.0),
+        (11.0, 12.0),
+        (12.0, 0.0),
+        (13.0, -12.0),
+        (14.0, -22.0),
+        (15.0, -32.0),
+        (16.0, -40.0),
+        (17.0, -52.0),
+        (20.0, -46.0),
+        (22.0, -24.0),
+        (24.0, 6.0),
+    ];
+    let units = match TRAK.iter().position(|&(s, _)| s >= size) {
+        Some(0) => TRAK[0].1,
+        None => TRAK[TRAK.len() - 1].1,
+        Some(i) => {
+            let ((s0, t0), (s1, t1)) = (TRAK[i - 1], TRAK[i]);
+            t0 + (t1 - t0) * (size - s0) / (s1 - s0)
+        }
+    };
+    pt(size * units / 2048.0)
+}
+
+/// Lays out `text` in a system-font `font` with the font's tracking, as
+/// macOS draws it (see [`system_tracking`]).
+pub fn tracked_galley(
+    painter: &egui::Painter,
+    text: &str,
+    font: FontId,
+    color: egui::Color32,
+) -> std::sync::Arc<egui::Galley> {
+    let size = font.size / pt(1.0);
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        text,
+        0.0,
+        egui::TextFormat {
+            font_id: font,
+            color,
+            extra_letter_spacing: system_tracking(size),
+            ..Default::default()
+        },
+    );
+    painter.layout_job(job)
+}
+
 const DIALOG: &str = "dialog";
-const DIALOG_MEDIUM: &str = "dialog-medium";
 const DIALOG_BOLD: &str = "dialog-bold";
 /// Where macOS keeps its system font, a variable font with a weight axis.
 const SYSTEM_FONT: &str = "/System/Library/Fonts/SFNS.ttf";
@@ -193,16 +254,19 @@ pub fn install_fonts(ctx: &egui::Context) {
     // Dialogs: the system font when it can be read (never bundled), with
     // the interface fonts behind it for anything it lacks
     let system = std::fs::read(SYSTEM_FONT).ok();
-    for (family, weight, fallback) in [
-        (DIALOG, 400.0, FontFamily::Proportional),
-        // A little heavier than Regular, as Photoshop's newer dialogs draw it
-        (DIALOG_MEDIUM, 510.0, FontFamily::Proportional),
-        (DIALOG_BOLD, 700.0, FontFamily::Name(SEMIBOLD.into())),
+    // AppKit sets text under 17 pt with the Text optical size (opsz 17),
+    // looser than the font's default Display (28)
+    for (family, weight, opsz, fallback) in [
+        (DIALOG, 400.0, 17.0, FontFamily::Proportional),
+        (DIALOG_BOLD, 700.0, 17.0, FontFamily::Name(SEMIBOLD.into())),
     ] {
         let mut chain = Vec::new();
         if let Some(bytes) = &system {
             let tweak = egui::FontTweak {
-                coords: egui::epaint::text::VariationCoords::new([(b"wght", weight)]),
+                coords: egui::epaint::text::VariationCoords::new([
+                    (b"wght", weight),
+                    (b"opsz", opsz),
+                ]),
                 ..Default::default()
             };
             let key = format!("system-{family}");
@@ -291,4 +355,59 @@ pub fn apply_style(ctx: &egui::Context) {
 
         w.open = w.active;
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Text widths (device pixels at 2x, ink plus about 3 px of side
+    /// bearings) measured on Photoshop 2026's dialogs. They catch a lost
+    /// optical size (opsz 17), lost tracking, or the wrong font for UXP
+    /// dialogs.
+    #[test]
+    fn dialog_text_is_as_wide_as_photoshops() {
+        if !std::path::Path::new(SYSTEM_FONT).exists() {
+            return;
+        }
+        let ctx = egui::Context::default();
+        install_fonts(&ctx);
+        let mut out = ctx.run_ui(Default::default(), |_| {});
+        out.textures_delta.clear();
+        let width = |text: &str, font: FontId, tracked: bool| {
+            let size = font.size / pt(1.0);
+            let mut job = egui::text::LayoutJob::default();
+            job.append(
+                text,
+                0.0,
+                egui::TextFormat {
+                    font_id: font,
+                    extra_letter_spacing: if tracked { system_tracking(size) } else { 0.0 },
+                    ..Default::default()
+                },
+            );
+            ctx.fonts_mut(|f| f.layout_job(job)).size().x / pt(1.0) * 2.0
+        };
+        for (text, font, tracked, photoshop) in [
+            // Image Size and Duplicate Layer: AppKit's 12 pt
+            ("Resolution:", dialog(pt(12.0)), false, 125.0),
+            ("Original Size", dialog(pt(12.0)), false, 142.0),
+            ("Duplicate:", dialog(pt(12.0)), false, 113.0),
+            // Window titles: 13 pt bold, tracked
+            ("Duplicate Layer", dialog_bold(pt(13.0)), true, 202.0),
+            ("Image Size", dialog_bold(pt(13.0)), true, 140.0),
+            // Alerts: 13 pt, tracked
+            ("Discard hidden layers?", dialog_bold(pt(13.0)), true, 293.0),
+            ("Don\u{2019}t show again", dialog(pt(13.0)), true, 208.0),
+            // New Layer (UXP): Adobe Clean, Source Sans 3 here
+            ("Opacity", uxp(pt(12.0)), false, 77.0),
+            ("Cancel", uxp_bold(pt(12.0)), false, 69.0),
+        ] {
+            let got = width(text, font, tracked);
+            assert!(
+                (got - photoshop).abs() <= photoshop * 0.03,
+                "{text}: {got:.1} px, Photoshop {photoshop}"
+            );
+        }
+    }
 }

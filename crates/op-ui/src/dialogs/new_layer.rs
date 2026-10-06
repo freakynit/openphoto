@@ -144,13 +144,13 @@ impl NewLayerDialog {
     fn ui(&mut self, ui: &mut Ui, frame: Rect) -> Outcome {
         let at = |x: f32, y: f32| frame.min + vec2(pt(x), pt(y));
         let r = |x0: f32, y0: f32, x1: f32, y1: f32| Rect::from_min_max(at(x0, y0), at(x1, y1));
-        let font = theme::dialog_medium(FONT);
+        let font = theme::uxp(FONT);
         let title = match self.kind {
             Kind::Layer | Kind::FromBackground => "New Layer",
             Kind::Group => "New Group",
             Kind::GroupFromLayers => "New Group from Layers",
         };
-        common::frame(ui, frame, title, theme::dialog_bold(pt(14.0)));
+        common::frame(ui, frame, title, theme::dialog_bold(pt(13.0)));
         // The group dialogs have no clipping-mask row: the mode row is
         // 29 pt higher
         let dy = if self.is_group() { -29.0 } else { 0.0 };
@@ -165,12 +165,12 @@ impl NewLayerDialog {
             r(59.0, 49.0, 243.0, 71.0),
             &mut self.name,
             "new-layer-name",
-            theme::dialog_medium(FONT),
+            theme::uxp(FONT),
             pt(10.0),
             self.first_frame,
         );
 
-        label(280.5, 61.0, "Color", TEXT);
+        label(282.0, 61.0, "Color", TEXT);
         let color_box = r(290.0, 48.0, 450.0, 72.0);
         let mut chosen = self.color;
         let shown = chosen;
@@ -200,7 +200,7 @@ impl NewLayerDialog {
             );
         }
 
-        label(49.0, 125.5 + dy, "Mode", TEXT);
+        label(49.5, 125.5 + dy, "Mode", TEXT);
         let mut mode = self.mode;
         let shown = mode;
         let is_group = self.is_group();
@@ -213,7 +213,7 @@ impl NewLayerDialog {
                     rect.left_center() + vec2(pt(9.0), 0.0),
                     Align2::LEFT_CENTER,
                     shown.label(),
-                    theme::dialog_medium(FONT),
+                    theme::uxp(FONT),
                     TEXT,
                 );
             },
@@ -234,7 +234,7 @@ impl NewLayerDialog {
         );
         self.mode = mode;
 
-        label(280.5, 125.5 + dy, "Opacity", TEXT);
+        label(281.5, 125.5 + dy, "Opacity", TEXT);
         let opacity_box = r(290.0, 113.0 + dy, 340.0, 137.0 + dy);
         let chevron_box = r(339.0, 113.0 + dy, 358.0, 137.0 + dy);
         ui.painter().rect(
@@ -254,7 +254,7 @@ impl NewLayerDialog {
             opacity_box,
             &mut self.opacity,
             "new-layer-opacity",
-            theme::dialog_medium(FONT),
+            theme::uxp(FONT),
             pt(11.5),
             false,
         );
@@ -377,7 +377,7 @@ fn color_label(painter: &egui::Painter, rect: Rect, c: LayerColor) {
         Pos2::new(rect.left() + pt(31.0), rect.center().y),
         Align2::LEFT_CENTER,
         c.label(),
-        theme::dialog_medium(FONT),
+        theme::uxp(FONT),
         TEXT,
     );
 }

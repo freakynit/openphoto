@@ -10,7 +10,7 @@ use super::common;
 use crate::theme::{self, color, pt};
 
 const SIZE: egui::Vec2 = vec2(pt(447.0), pt(208.0));
-const FONT: f32 = pt(13.0);
+const FONT: f32 = pt(12.0);
 const LABEL: Color32 = Color32::from_gray(0xd7);
 const VALUE: Color32 = Color32::from_gray(0xf1);
 const OFF: Color32 = Color32::from_gray(0x88);
@@ -87,15 +87,15 @@ impl DuplicateLayerDialog {
         let at = |x: f32, y: f32| frame.min + vec2(pt(x), pt(y));
         let r = |x0: f32, y0: f32, x1: f32, y1: f32| Rect::from_min_max(at(x0, y0), at(x1, y1));
         let font = theme::dialog(FONT);
-        common::frame(ui, frame, "Duplicate Layer", theme::dialog_bold(pt(14.0)));
+        common::frame(ui, frame, "Duplicate Layer", theme::dialog_bold(pt(13.0)));
         let painter = ui.painter().clone();
         let label = |cy: f32, text: &str, c: Color32| {
-            painter.text(at(81.0, cy), Align2::RIGHT_CENTER, text, font.clone(), c);
+            painter.text(at(81.5, cy), Align2::RIGHT_CENTER, text, font.clone(), c);
         };
 
         label(45.5, "Duplicate:", LABEL);
         painter.text(
-            at(90.5, 45.5),
+            at(89.5, 45.5),
             Align2::LEFT_CENTER,
             &self.source,
             font.clone(),
@@ -127,7 +127,7 @@ impl DuplicateLayerDialog {
         painter.line_segment([group.right_top(), group.right_bottom()], line);
         painter.line_segment([group.left_bottom(), group.right_bottom()], line);
         painter.text(
-            at(31.0, 95.25),
+            at(30.0, 95.25),
             Align2::LEFT_CENTER,
             "Destination",
             font.clone(),
@@ -245,10 +245,10 @@ fn field_dropdown(
         StrokeKind::Inside,
     );
     // Too long a value is cut short with "..." before the chevron
-    let room = rect.width() - pt(9.0) - pt(20.0);
+    let room = rect.width() - pt(8.5) - pt(18.5);
     let shown = elide(ui, text, room);
     ui.painter().text(
-        rect.left_center() + vec2(pt(9.0), 0.0),
+        rect.left_center() + vec2(pt(8.5), 0.0),
         Align2::LEFT_CENTER,
         shown,
         theme::dialog(FONT),

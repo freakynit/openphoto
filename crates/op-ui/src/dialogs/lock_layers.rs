@@ -49,7 +49,7 @@ impl LockLayersDialog {
 
     fn ui(&mut self, ui: &mut Ui, frame: Rect) -> Outcome {
         let at = |x: f32, y: f32| frame.min + vec2(pt(x), pt(y));
-        common::frame(ui, frame, "Lock Layers", theme::dialog_bold(pt(14.0)));
+        common::frame(ui, frame, "Lock Layers", theme::dialog_bold(pt(13.0)));
         let all = self.locks.all;
         // Rows: center, icon (x, y offset, scale), label; "All" ticks (and
         // greys) the rest

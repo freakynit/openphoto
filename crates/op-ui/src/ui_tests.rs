@@ -1829,6 +1829,16 @@ fn cmd_slash_toggles_lock_all() {
 
 #[test]
 #[ignore]
+fn screenshot_new_layer_dialog() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::N);
+    h.run_steps(3);
+    shot(&mut h, "new_layer");
+}
+
+#[test]
+#[ignore]
 fn screenshot_lock_layers_dialog() {
     let mut h = harness(Vec::new());
     reference_document(&mut h);

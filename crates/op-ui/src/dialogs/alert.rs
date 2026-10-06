@@ -93,9 +93,22 @@ pub enum Answer {
 /// Shows `alert`; returns the answer once given. Enter means OK, Escape
 /// Cancel (or OK when there's no Cancel).
 pub fn show(ctx: &egui::Context, alert: &mut Alert) -> Option<Answer> {
-    let font = theme::dialog_bold(pt(14.0));
-    let galley =
-        ctx.fonts_mut(|f| f.layout(alert.message.clone(), font.clone(), TEXT, MESSAGE_WIDTH));
+    // NSAlert's text: the message in 13 pt bold, tracked as AppKit tracks
+    // it, wrapped to the alert's width
+    let font = theme::dialog_bold(pt(13.0));
+    let mut job = egui::text::LayoutJob::default();
+    job.wrap.max_width = MESSAGE_WIDTH;
+    job.append(
+        &alert.message,
+        0.0,
+        egui::TextFormat {
+            font_id: font,
+            color: TEXT,
+            extra_letter_spacing: theme::system_tracking(13.0),
+            ..Default::default()
+        },
+    );
+    let galley = ctx.fonts_mut(|f| f.layout_job(job));
     let lines = galley.rows.len().max(1) as f32;
     let content_end = pt(103.0) + LINE * lines;
     let buttons_top = match alert.dont_show_again {
@@ -194,8 +207,7 @@ fn draw(
             vec2(pt(16.0), pt(16.0)),
         );
         let label = "Don\u{2019}t show again";
-        let font = theme::dialog_medium(pt(14.0));
-        let text = painter.layout_no_wrap(label.to_string(), font, TEXT);
+        let text = theme::tracked_galley(&painter, label, theme::dialog(pt(13.0)), TEXT);
         let hit = Rect::from_min_max(
             b.min,
             Pos2::new(b.right() + pt(7.0) + text.size().x, b.bottom()),
@@ -231,13 +243,10 @@ fn draw(
             fill
         };
         painter.rect_filled(rect, CornerRadius::same(255), fill);
-        painter.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            label,
-            theme::dialog(pt(14.0)),
-            text,
-        );
+        let galley = theme::tracked_galley(&painter, label, theme::dialog(pt(13.0)), text);
+        // AppKit centers the label 1 pt higher than its line box would
+        let at = rect.center() - galley.size() / 2.0 - vec2(0.0, pt(1.0));
+        painter.galley(at, galley, text);
         response.clicked()
     };
     let row = |x0: f32, x1: f32| {

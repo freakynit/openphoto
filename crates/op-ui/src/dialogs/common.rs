@@ -44,14 +44,11 @@ pub fn frame(ui: &Ui, frame: Rect, title: &str, title_font: FontId) {
         [bar.left_bottom(), bar.right_bottom()],
         Stroke::new(1.0, Color32::from_gray(0x30)),
     );
-    // Photoshop sets the title 1.5 pt above the bar's middle
-    painter.text(
-        bar.center() - vec2(0.0, pt(1.5)),
-        Align2::CENTER_CENTER,
-        title,
-        title_font,
-        TITLE_TEXT,
-    );
+    // Photoshop sets the title 1.5 pt above the bar's middle, tracked as
+    // macOS tracks it
+    let galley = theme::tracked_galley(painter, title, title_font, TITLE_TEXT);
+    let at = bar.center() - vec2(0.0, pt(1.5)) - galley.size() / 2.0;
+    painter.galley(at, galley, TITLE_TEXT);
     painter.rect_stroke(
         frame,
         RADIUS,
@@ -253,15 +250,7 @@ pub fn ps_dropdown(
 
 /// A 12 pt dialog checkbox with its label 9.5 pt to the right.
 pub fn ps_checkbox(ui: &mut Ui, min: Pos2, label: &str, checked: &mut bool, enabled: bool) {
-    ps_checkbox_with(
-        ui,
-        min,
-        label,
-        checked,
-        enabled,
-        theme::dialog_medium(PS_FONT),
-        0.0,
-    );
+    ps_checkbox_with(ui, min, label, checked, enabled, theme::uxp(PS_FONT), 0.0);
 }
 
 /// [`ps_checkbox`] with its label in `font` (Lock Layers labels are in the
@@ -327,11 +316,12 @@ pub fn ps_button(
     enabled: bool,
     bold: bool,
 ) -> egui::Response {
-    // Photoshop's newer dialogs (New Layer) set every button in bold
+    // Photoshop's UXP dialogs (New Layer) set every button in bold; the
+    // classic ones (Duplicate Layer) in AppKit's 12 pt
     let font = if bold {
-        theme::dialog_bold(pt(13.0))
+        theme::uxp_bold(pt(12.0))
     } else {
-        theme::dialog(pt(13.0))
+        theme::dialog(pt(12.0))
     };
     ps_button_with(ui, rect, label, default, enabled, font)
 }
