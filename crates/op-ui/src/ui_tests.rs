@@ -1151,3 +1151,38 @@ fn rulers_and_guides() {
     h.run_steps(2);
     assert!(h.state().state.view.lock_guides);
 }
+
+#[test]
+fn modify_selection_and_grow() {
+    use crate::commands::Command;
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    assert!(!Command::ModifyExpand.enabled(&h.state().state));
+    select_rect(&mut h, 100.0, 100.0, 140.0, 140.0);
+    run_command(&mut h, Command::ModifyExpand);
+    h.event(egui::Event::Text("5".into()));
+    h.run_steps(2);
+    shot(&mut h, "expand_selection");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(
+        active(&h).doc.selection().unwrap().bounds(),
+        Some((95, 95, 145, 145))
+    );
+    assert_eq!(last_history(&h), "Expand");
+
+    // Shift+F6 opens Feather
+    h.key_press_modifiers(Modifiers::SHIFT, egui::Key::F6);
+    h.run_steps(2);
+    assert!(h.state().state.modify_dialog.is_some());
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+
+    // The whole document is one color: Similar selects all of it
+    run_command(&mut h, Command::Similar);
+    assert_eq!(
+        active(&h).doc.selection().unwrap().bounds(),
+        Some((0, 0, 734, 811))
+    );
+    assert_eq!(last_history(&h), "Similar");
+}

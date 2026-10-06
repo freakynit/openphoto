@@ -276,6 +276,25 @@ impl OpenPhotoApp {
         }
     }
 
+    fn modify_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.state.modify_dialog.take() else {
+            return;
+        };
+        match dialog.show(ctx) {
+            dialogs::ModifyOutcome::Open => self.state.modify_dialog = Some(dialog),
+            dialogs::ModifyOutcome::Cancel => {}
+            dialogs::ModifyOutcome::Apply { value, at_bounds } => {
+                if let Some(state) = self.state.active()
+                    && let Some(s) = state.doc.selection()
+                {
+                    let modified = dialog.kind.apply(s, value, at_bounds);
+                    state.doc.set_selection(Some(modified));
+                    state.record(dialog.kind.name());
+                }
+            }
+        }
+    }
+
     fn new_guide_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.state.new_guide_dialog.take() else {
             return;
@@ -475,6 +494,7 @@ impl eframe::App for OpenPhotoApp {
         self.trim_dialog(&ctx);
         self.image_size_dialog(&ctx);
         self.new_guide_dialog(&ctx);
+        self.modify_dialog(&ctx);
         self.adjust_dialog(&ctx);
         self.save_prompt(&ctx);
         self.color_picker(&ctx);

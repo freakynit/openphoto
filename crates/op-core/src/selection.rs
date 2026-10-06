@@ -331,6 +331,160 @@ impl Selection {
         }
     }
 
+    /// Euclidean distance from each pixel to the nearest pixel where `target`
+    /// is true (infinite if there is none). With `edge_counts`, the area
+    /// just outside the canvas counts as a target too.
+    fn distance(&self, target: impl Fn(u8) -> bool, edge_counts: bool) -> Vec<f32> {
+        // Pad by one pixel so the canvas edge can count as a target
+        let pad = usize::from(edge_counts);
+        let (w, h) = (
+            self.width as usize + 2 * pad,
+            self.height as usize + 2 * pad,
+        );
+        let mut f: Vec<f32> = vec![f32::INFINITY; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                let inside = x >= pad && y >= pad && x < w - pad && y < h - pad;
+                let hit = if inside {
+                    target(self.mask[(y - pad) * self.width as usize + (x - pad)])
+                } else {
+                    true
+                };
+                if hit {
+                    f[y * w + x] = 0.0;
+                }
+            }
+        }
+        // Felzenszwalb-Huttenlocher squared distance transform, columns then rows
+        let transform = |line: &mut [f32]| {
+            let n = line.len();
+            let src = line.to_vec();
+            let mut v = vec![0usize; n];
+            let mut z = vec![0f32; n + 1];
+            let mut k = 0;
+            let first = src.iter().position(|d| d.is_finite());
+            let Some(first) = first else {
+                return;
+            };
+            v[0] = first;
+            z[0] = f32::NEG_INFINITY;
+            z[1] = f32::INFINITY;
+            for q in first + 1..n {
+                if !src[q].is_finite() {
+                    continue;
+                }
+                loop {
+                    let p = v[k];
+                    let s = ((src[q] + (q * q) as f32) - (src[p] + (p * p) as f32))
+                        / (2.0 * (q as f32 - p as f32));
+                    if s <= z[k] && k > 0 {
+                        k -= 1;
+                        continue;
+                    }
+                    if s <= z[k] {
+                        v[0] = q;
+                        z[1] = f32::INFINITY;
+                        break;
+                    }
+                    k += 1;
+                    v[k] = q;
+                    z[k] = s;
+                    z[k + 1] = f32::INFINITY;
+                    break;
+                }
+            }
+            let mut k = 0;
+            for (q, out) in line.iter_mut().enumerate() {
+                while z[k + 1] < q as f32 {
+                    k += 1;
+                }
+                let p = v[k];
+                let d = q as f32 - p as f32;
+                *out = d * d + src[p];
+            }
+        };
+        let mut col = vec![0f32; h];
+        for x in 0..w {
+            for y in 0..h {
+                col[y] = f[y * w + x];
+            }
+            transform(&mut col);
+            for y in 0..h {
+                f[y * w + x] = col[y];
+            }
+        }
+        for y in 0..h {
+            transform(&mut f[y * w..(y + 1) * w]);
+        }
+        let (sw, sh) = (self.width as usize, self.height as usize);
+        let mut out = Vec::with_capacity(sw * sh);
+        for y in 0..sh {
+            for x in 0..sw {
+                out.push(f[(y + pad) * w + x + pad].sqrt());
+            }
+        }
+        out
+    }
+
+    fn with_coverage(&self, coverage: impl Fn(usize) -> f32) -> Self {
+        Self {
+            width: self.width,
+            height: self.height,
+            mask: (0..self.mask.len())
+                .map(|i| (coverage(i).clamp(0.0, 1.0) * 255.0).round() as u8)
+                .collect(),
+        }
+    }
+
+    /// Select > Modify > Expand: grows the selection by `radius` pixels
+    /// (round corners), with a one-pixel soft edge.
+    pub fn expand(&self, radius: f32) -> Self {
+        let d = self.distance(|v| v >= 128, false);
+        // Pixels up to `radius` away are fully in; the next ring partly
+        self.with_coverage(|i| radius + 1.0 - d[i])
+    }
+
+    /// Select > Modify > Contract: shrinks the selection by `radius`
+    /// pixels. With `at_bounds` ("Apply effect at canvas bounds") the
+    /// canvas edge counts as unselected and the selection pulls away from
+    /// it; otherwise the edge doesn't shrink it.
+    pub fn contract(&self, radius: f32, at_bounds: bool) -> Self {
+        let d = self.distance(|v| v < 128, at_bounds);
+        self.with_coverage(|i| d[i] - radius)
+    }
+
+    /// Select > Modify > Border: a band `width` pixels wide centered on the
+    /// selection's edge.
+    pub fn border(&self, width: f32) -> Self {
+        let half = width / 2.0;
+        let to_out = self.distance(|v| v < 128, false);
+        let to_in = self.distance(|v| v >= 128, false);
+        self.with_coverage(|i| {
+            let d = if self.mask[i] >= 128 {
+                to_out[i]
+            } else {
+                to_in[i]
+            };
+            half + 1.0 - d
+        })
+    }
+
+    /// Select > Modify > Smooth: each pixel is selected when most pixels
+    /// within `radius` are, rounding off corners and removing specks.
+    pub fn smooth(&self, radius: u32) -> Self {
+        let (w, h) = (self.width as usize, self.height as usize);
+        let buf: Vec<f32> = self
+            .mask
+            .iter()
+            .map(|&v| if v >= 128 { 255.0 } else { 0.0 })
+            .collect();
+        let mut tmp = vec![0.0; buf.len()];
+        let mut out = vec![0.0; buf.len()];
+        box_blur_h(&buf, &mut tmp, w, h, radius as usize);
+        box_blur_v(&tmp, &mut out, w, h, radius as usize);
+        self.with_coverage(|i| if out[i] >= 127.5 { 1.0 } else { 0.0 })
+    }
+
     /// The selection moved to a resized canvas (Canvas Size), placed at
     /// (`dx`, `dy`). New areas are unselected.
     pub fn with_canvas(&self, width: u32, height: u32, dx: i64, dy: i64) -> Self {
@@ -491,6 +645,33 @@ mod tests {
             segs,
             vec![[2, 3, 2, 8], [2, 3, 5, 3], [2, 8, 5, 8], [5, 3, 5, 8]]
         );
+    }
+
+    #[test]
+    fn modify_expand_contract_border_smooth() {
+        // A 4×4 square in the middle of 12×12
+        let s = Selection::rect(12, 12, Rect::new(4.0, 4.0, 8.0, 8.0));
+        let e = s.expand(2.0);
+        assert_eq!(e.bounds(), Some((2, 2, 10, 10)));
+        assert_eq!(e.get(2, 6), 255);
+        // Round corners: the far corner pixel is not fully selected
+        assert!(e.get(2, 2) < 255);
+        let c = s.contract(1.0, false);
+        assert_eq!(c.bounds(), Some((5, 5, 7, 7)));
+        // At the canvas edge, contract only pulls away with at_bounds
+        let all = Selection::all(6, 6);
+        assert_eq!(all.contract(2.0, false).get(0, 0), 255);
+        assert_eq!(all.contract(2.0, true).get(0, 0), 0);
+        assert_eq!(all.contract(2.0, true).get(2, 2), 255);
+        // A 2-pixel border straddles the edge
+        let b = s.border(2.0);
+        assert_eq!((b.get(3, 6), b.get(4, 6), b.get(6, 6)), (255, 255, 0));
+        // Smoothing removes a lone pixel
+        let mut speck = Selection::rect(12, 12, Rect::new(4.0, 4.0, 8.0, 8.0));
+        speck.mask[0] = 255;
+        let sm = speck.smooth(1);
+        assert_eq!(sm.get(0, 0), 0);
+        assert_eq!(sm.get(6, 6), 255);
     }
 
     #[test]

@@ -10,7 +10,7 @@ use op_core::layer_ops::{self, Arrange};
 use op_core::transform::{self, FixedTransform};
 
 use crate::actions;
-use crate::dialogs::{AdjustDialog, AdjustKind};
+use crate::dialogs::{AdjustDialog, AdjustKind, ModifyKind};
 use crate::document_view;
 use crate::state::AppState;
 
@@ -109,6 +109,15 @@ pub enum Command {
     Deselect,
     Reselect,
     SelectInverse,
+    /// Select > Modify > Border... (and the next four: dialogs).
+    ModifyBorder,
+    ModifySmooth,
+    ModifyExpand,
+    ModifyContract,
+    /// Select > Modify > Feather... (Shift+F6).
+    ModifyFeather,
+    Grow,
+    Similar,
     ZoomIn,
     ZoomOut,
     FitOnScreen,
@@ -276,6 +285,19 @@ impl Command {
             Self::Deselect => cmd(Key::D),
             Self::Reselect => shift_cmd(Key::D),
             Self::SelectInverse => shift_cmd(Key::I),
+            Self::ModifyFeather => Shortcut {
+                cmd: false,
+                shift: true,
+                alt: false,
+                ctrl: false,
+                key: Key::F6,
+            },
+            Self::ModifyBorder
+            | Self::ModifySmooth
+            | Self::ModifyExpand
+            | Self::ModifyContract
+            | Self::Grow
+            | Self::Similar => return None,
             // Photoshop shows Cmd++ and also accepts Cmd+=
             Self::ZoomIn => cmd(Key::Equals),
             Self::ZoomOut => cmd(Key::Minus),
@@ -416,9 +438,15 @@ impl Command {
             Self::Redo => doc.is_some_and(|d| d.history.can_redo()),
             Self::DeleteLayer => doc.is_some_and(|d| d.doc.layers.len() > 1),
             Self::CloseOthers => app.docs.len() > 1,
-            Self::Deselect | Self::SelectInverse => {
-                doc.is_some_and(|d| d.doc.selection().is_some())
-            }
+            Self::Deselect
+            | Self::SelectInverse
+            | Self::ModifyBorder
+            | Self::ModifySmooth
+            | Self::ModifyExpand
+            | Self::ModifyContract
+            | Self::ModifyFeather
+            | Self::Grow
+            | Self::Similar => doc.is_some_and(|d| d.doc.selection().is_some()),
             Self::Reselect => doc.is_some_and(|d| d.doc.can_reselect()),
             Self::ToggleLayerVisibility | Self::DuplicateLayer | Self::LayerViaCopy => doc
                 .and_then(|d| d.doc.active_layer.and_then(|id| d.doc.layer(id)))
@@ -512,6 +540,7 @@ impl Command {
 /// extra Shift/Alt when matching, so Shift+Cmd+Z must be checked before Cmd+Z.
 const SHORTCUT_ORDER: &[Command] = &[
     Command::ExportAs,
+    Command::ModifyFeather,
     Command::HideApp,
     Command::LockGuides,
     Command::SaveAs,
@@ -857,6 +886,33 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
         Command::HideApp => {
             #[cfg(target_os = "macos")]
             crate::app_kit::hide_app();
+        }
+        Command::ModifyBorder
+        | Command::ModifySmooth
+        | Command::ModifyExpand
+        | Command::ModifyContract
+        | Command::ModifyFeather => {
+            let kind = match command {
+                Command::ModifyBorder => ModifyKind::Border,
+                Command::ModifySmooth => ModifyKind::Smooth,
+                Command::ModifyExpand => ModifyKind::Expand,
+                Command::ModifyContract => ModifyKind::Contract,
+                _ => ModifyKind::Feather,
+            };
+            app.modify_dialog = Some(crate::dialogs::ModifyDialog::new(kind));
+        }
+        Command::Grow | Command::Similar => {
+            let options = app.wand.region;
+            if let Some(state) = app.active()
+                && let Some(s) = op_core::fill::grow(&state.doc, &options, command == Command::Grow)
+            {
+                state.doc.set_selection(Some(s));
+                state.record(if command == Command::Grow {
+                    "Grow"
+                } else {
+                    "Similar"
+                });
+            }
         }
         Command::Trim => {
             if let Some(state) = app.active() {

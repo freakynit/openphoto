@@ -201,6 +201,82 @@ pub fn magic_wand(doc: &Document, x: u32, y: u32, options: &BucketOptions) -> Op
     Some(bucket_region(&source, x, y, options))
 }
 
+/// Select > Grow (`contiguous`) and Select > Similar: adds the pixels
+/// whose colors lie within the Magic Wand's tolerance of the colors already
+/// selected; Grow only those connected to the selection. The result is the
+/// union with the current selection; `None` without a selection.
+pub fn grow(doc: &Document, options: &BucketOptions, contiguous: bool) -> Option<Selection> {
+    let selection = doc.selection()?;
+    let (w, h) = (doc.width, doc.height);
+    let source = if options.all_layers {
+        TiledImage::from_rgba8(w, h, &doc.composite_rgba8())
+    } else {
+        let layer = doc.active_layer.and_then(|id| doc.layer(id))?;
+        let LayerKind::Raster(image) = &layer.kind;
+        image.clone()
+    };
+    // The range of each channel among the (mostly) selected pixels
+    let mut lo = [255i32; 4];
+    let mut hi = [0i32; 4];
+    let mut seeds = Vec::new();
+    for y in 0..h {
+        for x in 0..w {
+            if selection.get(x, y) >= 128 {
+                let px = source.pixel(x, y);
+                for c in 0..4 {
+                    lo[c] = lo[c].min(px[c] as i32);
+                    hi[c] = hi[c].max(px[c] as i32);
+                }
+                seeds.push((x, y));
+            }
+        }
+    }
+    if seeds.is_empty() {
+        return Some(selection.clone());
+    }
+    let tol = options.tolerance as i32;
+    let similar = |px: [u8; 4]| {
+        (0..4).all(|c| (px[c] as i32) >= lo[c] - tol && (px[c] as i32) <= hi[c] + tol)
+    };
+    let mut mask = vec![0u8; (w * h) as usize];
+    if contiguous {
+        let mut stack = seeds;
+        while let Some((px, py)) = stack.pop() {
+            let i = (py * w + px) as usize;
+            if mask[i] != 0 || !similar(source.pixel(px, py)) {
+                continue;
+            }
+            mask[i] = 255;
+            if px > 0 {
+                stack.push((px - 1, py));
+            }
+            if py > 0 {
+                stack.push((px, py - 1));
+            }
+            if px + 1 < w {
+                stack.push((px + 1, py));
+            }
+            if py + 1 < h {
+                stack.push((px, py + 1));
+            }
+        }
+    } else {
+        for y in 0..h {
+            for x in 0..w {
+                if similar(source.pixel(x, y)) {
+                    mask[(y * w + x) as usize] = 255;
+                }
+            }
+        }
+    }
+    let region = Selection::from_mask(w, h, mask, options.anti_alias);
+    Some(Selection::combine(
+        Some(selection),
+        region,
+        crate::selection::SelectionOp::Add,
+    ))
+}
+
 /// The region a Paint Bucket click at (`x`, `y`) fills: pixels whose
 /// channels all lie within `tolerance` of the clicked pixel, either
 /// connected to it (4-neighborhood) or anywhere.
@@ -279,6 +355,29 @@ mod tests {
     fn px(doc: &Document, x: u32, y: u32) -> [u8; 4] {
         let LayerKind::Raster(img) = &doc.layer(doc.active_layer.unwrap()).unwrap().kind;
         img.pixel(x, y)
+    }
+
+    #[test]
+    fn grow_and_similar() {
+        // White canvas, black squares at 2..4 and 7..9 on one row
+        let mut d = doc();
+        let id = d.active_layer.unwrap();
+        let LayerKind::Raster(image) = &mut d.layer_mut(id).unwrap().kind;
+        for x in (2..4).chain(7..9) {
+            image.set_pixel(x, 5, [0, 0, 0, 255]);
+        }
+        d.set_selection(Some(Selection::rect(10, 10, Rect::new(2.0, 5.0, 3.0, 6.0))));
+        let options = BucketOptions {
+            anti_alias: false,
+            ..Default::default()
+        };
+        let g = grow(&d, &options, true).unwrap();
+        assert_eq!(g.bounds(), Some((2, 5, 4, 6)));
+        let s = grow(&d, &options, false).unwrap();
+        assert_eq!(s.bounds(), Some((2, 5, 9, 6)));
+        assert_eq!(s.get(5, 5), 0);
+        d.set_selection(None);
+        assert!(grow(&d, &options, true).is_none());
     }
 
     #[test]
