@@ -3242,3 +3242,28 @@ fn small_uxp_adjustment_dialogs_apply() {
         color,
     );
 }
+
+#[test]
+fn equalize_asks_about_the_selection() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    // Without a selection it runs at once
+    run_command(&mut h, crate::commands::Command::Equalize);
+    assert!(h.state().state.equalize_dialog.is_none());
+    assert_eq!(last_history(&h), "Equalize");
+    // With one it asks, the entire image chosen
+    select_rect(&mut h, 100.0, 100.0, 140.0, 140.0);
+    run_command(&mut h, crate::commands::Command::Equalize);
+    assert!(
+        h.state()
+            .state
+            .equalize_dialog
+            .as_ref()
+            .is_some_and(|d| d.entire_image)
+    );
+    shot(&mut h, "equalize_dialog");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(h.state().state.equalize_dialog.is_none());
+    assert_eq!(last_history(&h), "Equalize");
+}

@@ -425,6 +425,29 @@ impl OpenPhotoApp {
         }
     }
 
+    fn equalize_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.state.equalize_dialog.take() else {
+            return;
+        };
+        match dialog.show(ctx) {
+            dialogs::EqualizeOutcome::Open => self.state.equalize_dialog = Some(dialog),
+            dialogs::EqualizeOutcome::Cancel => {}
+            dialogs::EqualizeOutcome::Apply { entire_image } => {
+                let adjustment = if entire_image {
+                    op_core::adjust::Adjustment::EqualizeEntireImage
+                } else {
+                    op_core::adjust::Adjustment::Equalize
+                };
+                if let Some(state) = self.state.active() {
+                    match op_core::adjust::apply(&mut state.doc, adjustment) {
+                        Ok(()) => state.record("Equalize"),
+                        Err(e) => self.state.alert = Some(e.message("Equalize")),
+                    }
+                }
+            }
+        }
+    }
+
     /// The Color Picker, drawn after (on top of) Canvas Size.
     fn color_picker(&mut self, ctx: &egui::Context) {
         let Some(mut session) = self.state.color_picker.take() else {
@@ -590,6 +613,7 @@ impl eframe::App for OpenPhotoApp {
         self.canvas_size_dialog(&ctx);
         self.fill_dialog(&ctx);
         self.trim_dialog(&ctx);
+        self.equalize_dialog(&ctx);
         self.image_size_dialog(&ctx);
         self.new_guide_dialog(&ctx);
         self.new_layer_dialog(&ctx);

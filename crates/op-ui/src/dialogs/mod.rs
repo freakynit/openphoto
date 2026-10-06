@@ -12,6 +12,7 @@ mod color_picker;
 mod common;
 mod curves;
 mod duplicate_layer;
+mod equalize;
 mod exposure;
 mod fill;
 mod gradient_map;
@@ -36,6 +37,7 @@ pub use adjust::{AdjustDialog, Effect, Kind as AdjustKind, Outcome as AdjustOutc
 pub use canvas_size::{CanvasSizeDialog, Outcome};
 pub use color_picker::{ColorPicker, Outcome as ColorPickerOutcome};
 pub use duplicate_layer::{Destination, DuplicateLayerDialog, Outcome as DuplicateOutcome};
+pub use equalize::{EqualizeDialog, Outcome as EqualizeOutcome};
 pub use fill::{FillDialog, Outcome as FillOutcome};
 pub use image_size::{ImageSizeDialog, Outcome as ImageSizeOutcome, Preview as ImageSizePreview};
 pub use lock_layers::{LockLayersDialog, Outcome as LockOutcome};

@@ -1064,6 +1064,8 @@ pub struct AppState {
     pub image_size_dialog: Option<crate::dialogs::ImageSizeDialog>,
     /// Image > Trim, while open.
     pub trim_dialog: Option<crate::dialogs::TrimDialog>,
+    /// Equalize's question when there is a selection.
+    pub equalize_dialog: Option<crate::dialogs::EqualizeDialog>,
     /// Paint Bucket options.
     pub bucket: op_core::fill::BucketOptions,
     /// The Color Picker, while open. It can sit on top of Canvas Size.
@@ -1128,6 +1130,7 @@ impl Default for AppState {
             canvas_size_dialog: None,
             fill_dialog: None,
             trim_dialog: None,
+            equalize_dialog: None,
             image_size_dialog: None,
             new_guide_dialog: None,
             new_layer_dialog: None,
@@ -1232,6 +1235,7 @@ impl AppState {
         self.canvas_size_dialog.is_some()
             || self.fill_dialog.is_some()
             || self.trim_dialog.is_some()
+            || self.equalize_dialog.is_some()
             || self.image_size_dialog.is_some()
             || self.new_guide_dialog.is_some()
             || self.new_layer_dialog.is_some()

@@ -17,6 +17,9 @@ pub enum Adjustment {
     Posterize(u8),
     /// Spreads the brightness values evenly (histogram equalization).
     Equalize,
+    /// Equalize with the selected area's histogram applied to the whole
+    /// layer (Photoshop's "Equalize entire image based on selected area").
+    EqualizeEntireImage,
     /// Levels for the composite RGB channel and the red, green and blue
     /// channels (in that order); each channel's own levels apply first.
     Levels([Levels; 4]),
@@ -113,7 +116,7 @@ impl Adjustment {
             Self::Desaturate => "Desaturate",
             Self::Threshold(_) => "Threshold",
             Self::Posterize(_) => "Posterize",
-            Self::Equalize => "Equalize",
+            Self::Equalize | Self::EqualizeEntireImage => "Equalize",
             Self::Levels(_) => "Levels",
             Self::HueSaturation(_) => "Hue/Saturation",
             Self::Exposure { .. } => "Exposure",
@@ -1091,7 +1094,9 @@ pub fn check(doc: &Document) -> Result<(), FillError> {
 pub fn apply(doc: &mut Document, adjustment: Adjustment) -> Result<(), FillError> {
     check(doc)?;
     let tables = match adjustment {
-        Adjustment::Equalize => Some([equalize_table(&channel_histogram(doc)); 3]),
+        Adjustment::Equalize | Adjustment::EqualizeEntireImage => {
+            Some([equalize_table(&channel_histogram(doc)); 3])
+        }
         Adjustment::AutoTone | Adjustment::AutoColor => Some(auto_tables(doc, true)),
         Adjustment::AutoContrast => Some(auto_tables(doc, false)),
         other => other.tables(),
@@ -1115,6 +1120,7 @@ pub fn apply(doc: &mut Document, adjustment: Adjustment) -> Result<(), FillError
                 a,
             ],
             Adjustment::Equalize
+            | Adjustment::EqualizeEntireImage
             | Adjustment::Levels(_)
             | Adjustment::Exposure { .. }
             | Adjustment::BrightnessContrast { .. }
@@ -1135,7 +1141,10 @@ pub fn apply(doc: &mut Document, adjustment: Adjustment) -> Result<(), FillError
             Adjustment::HueSaturation(hs) => hs.apply(px),
         }
     };
-    let selection = doc.selection().cloned();
+    let selection = match adjustment {
+        Adjustment::EqualizeEntireImage => None,
+        _ => doc.selection().cloned(),
+    };
     let (w, h) = (doc.width, doc.height);
     let id = doc.active_layer.expect("checked");
     let image = doc
@@ -1353,6 +1362,28 @@ mod tests {
         assert_eq!((r[10], g[20], b[30], r[255]), (1, 1, 1, 1));
         let merged = channel_histogram(&d);
         assert_eq!((merged[10], merged[255]), (1, 3));
+    }
+
+    #[test]
+    fn equalize_the_entire_image_from_the_selection() {
+        // Selected: the 100 pixel; the 200 one outside is equalized too,
+        // by the selection's table (everything at or above 100 is white)
+        let mut d = doc([100, 100, 100, 255]);
+        let id = d.active_layer.unwrap();
+        let image = d.layer_mut(id).unwrap().image_mut().unwrap();
+        image.set_pixel(1, 0, [200, 200, 200, 255]);
+        d.set_selection(Some(Selection::rect(2, 1, Rect::new(0.0, 0.0, 1.0, 1.0))));
+        let mut selected_only = doc([100, 100, 100, 255]);
+        let other = selected_only.active_layer.unwrap();
+        let image = selected_only.layer_mut(other).unwrap().image_mut().unwrap();
+        image.set_pixel(1, 0, [200, 200, 200, 255]);
+        selected_only.set_selection(d.selection().cloned());
+        apply(&mut d, Adjustment::EqualizeEntireImage).unwrap();
+        assert_eq!(first(&d), [255, 255, 255, 255]);
+        assert_eq!(&d.composite_rgba8()[4..8], [255, 255, 255, 255]);
+        // Selected area only: the outside pixel keeps its 200
+        apply(&mut selected_only, Adjustment::Equalize).unwrap();
+        assert_eq!(&selected_only.composite_rgba8()[4..8], [200, 200, 200, 255]);
     }
 
     #[test]

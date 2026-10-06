@@ -1087,6 +1087,15 @@ impl NativeMenu {
                     }
                     .into(),
                 ),
+                // Equalize asks how to use a selection
+                Command::Equalize => Some(
+                    if doc.is_some_and(|d| d.doc.selection().is_some()) {
+                        "Equalize..."
+                    } else {
+                        "Equalize"
+                    }
+                    .into(),
+                ),
                 // Unlink Layers when every selected layer is linked
                 Command::LinkLayers => Some(
                     if doc.is_some_and(|d| op_core::link::can_unlink(&d.doc)) {

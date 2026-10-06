@@ -1018,6 +1018,14 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 _ => Adjustment::Equalize,
             };
             if let Some(state) = app.active_doc.and_then(|id| app.docs.get_mut(&id)) {
+                // With a selection, Equalize asks how to use it
+                if adjustment == Adjustment::Equalize && state.doc.selection().is_some() {
+                    match adjust::check(&state.doc) {
+                        Ok(()) => app.equalize_dialog = Some(Default::default()),
+                        Err(e) => app.alert = Some(e.message("Equalize")),
+                    }
+                    return;
+                }
                 match adjust::apply(&mut state.doc, adjustment) {
                     Ok(()) => state.record(adjustment.name()),
                     Err(e) => app.alert = Some(e.message(adjustment.name())),

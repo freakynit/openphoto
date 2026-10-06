@@ -243,7 +243,8 @@ pub fn group(painter: &egui::Painter, rect: Rect, gap: (f32, f32)) {
 }
 
 /// A radio button centered on `center` with its label 16.5 pt to the
-/// right: chosen, a light disc with a dark dot; otherwise a gray ring.
+/// right: chosen, a light disc with a dark dot; otherwise a dark disc in
+/// a gray ring.
 pub fn radio(ui: &mut Ui, center: Pos2, label: &str, chosen: bool) -> bool {
     let galley = theme::tracked_galley(ui.painter(), label, font(), TEXT);
     let hit = Rect::from_min_max(
