@@ -57,7 +57,8 @@ impl Move {
     }
 
     /// Shows the layer moved by (`dx`, `dy`) pixels from where it started.
-    /// Pixels moved past the canvas edge are lost.
+    /// Pixels moved past the canvas edge stay on the layer, as in
+    /// Photoshop, except on the background layer, which ends at the canvas.
     pub fn apply(&self, doc: &mut Document, dx: i64, dy: i64) {
         let (w, h) = (doc.width, doc.height);
         let moved = match &self.selection {
@@ -65,11 +66,14 @@ impl Move {
             Some(sel) => {
                 // Lift the selected pixels, leave the rest (or the background
                 // color) behind, and drop the lifted pixels at the new place
-                let mut out = TiledImage::new(w, h);
+                let mut out = self.base.clone();
                 for y in 0..h {
                     for x in 0..w {
-                        let px = self.base.pixel(x, y);
                         let s = sel.get(x, y) as f32 / 255.0;
+                        if s <= 0.0 {
+                            continue;
+                        }
+                        let px = self.base.pixel(x, y);
                         let hole = match self.background_fill {
                             Some([r, g, b]) => mix(px, [r, g, b, 255], s),
                             None => [
@@ -82,24 +86,21 @@ impl Move {
                         out.set_pixel(x, y, hole);
                     }
                 }
-                for y in 0..h as i64 {
-                    let sy = y - dy;
-                    if sy < 0 || sy >= h as i64 {
-                        continue;
-                    }
-                    for x in 0..w as i64 {
-                        let sx = x - dx;
-                        if sx < 0 || sx >= w as i64 {
-                            continue;
-                        }
-                        let s = sel.get(sx as u32, sy as u32) as f32 / 255.0;
+                let clip = self.background_fill.is_some();
+                for sy in 0..h {
+                    for sx in 0..w {
+                        let s = sel.get(sx, sy) as f32 / 255.0;
                         if s <= 0.0 {
                             continue;
                         }
-                        let src = self.base.pixel(sx as u32, sy as u32);
+                        let (x, y) = (sx as i64 + dx, sy as i64 + dy);
+                        if clip && (x < 0 || y < 0 || x >= w as i64 || y >= h as i64) {
+                            continue;
+                        }
+                        let src = self.base.pixel(sx, sy);
                         let lifted = [src[0], src[1], src[2], (src[3] as f32 * s).round() as u8];
-                        let dst = out.pixel(x as u32, y as u32);
-                        out.set_pixel(x as u32, y as u32, over(lifted, dst));
+                        let dst = out.pixel_at(x, y);
+                        out.set_pixel_at(x, y, over(lifted, dst));
                     }
                 }
                 out
@@ -177,6 +178,39 @@ mod tests {
         assert_eq!(px(&doc, id, 7, 7), [0, 0, 255, 255]);
         // The selection moved with them
         assert_eq!(doc.selection().unwrap().bounds(), Some((1, 0, 6, 5)));
+    }
+
+    #[test]
+    fn pixels_moved_off_the_canvas_come_back() {
+        let (mut doc, id) = doc_with_dot();
+        let m = Move::begin(&doc, [0; 3]).unwrap();
+        // The red dot at (2, 2) goes 5 px past the left edge...
+        m.apply(&mut doc, -7, 0);
+        assert_eq!(px(&doc, id, 0, 2)[3], 0);
+        let LayerKind::Raster(img) = &doc.layer(id).unwrap().kind;
+        assert_eq!(img.pixel_at(-5, 2), [255, 0, 0, 255]);
+        // ...and a second move brings it back
+        let m = Move::begin(&doc, [0; 3]).unwrap();
+        m.apply(&mut doc, 7, 0);
+        assert_eq!(px(&doc, id, 2, 2), [255, 0, 0, 255]);
+        assert_eq!(px(&doc, id, 7, 7), [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn selected_pixels_moved_off_the_canvas_are_kept_except_on_the_background() {
+        let (mut doc, id) = doc_with_dot();
+        doc.set_selection(Some(Selection::rect(10, 10, Rect::new(0.0, 0.0, 5.0, 5.0))));
+        let m = Move::begin(&doc, [0; 3]).unwrap();
+        m.apply(&mut doc, 0, -4);
+        let LayerKind::Raster(img) = &doc.layer(id).unwrap().kind;
+        assert_eq!(img.pixel_at(2, -2), [255, 0, 0, 255]);
+
+        let mut doc = Document::new_with_background("t", 10, 10, Color::WHITE);
+        doc.set_selection(Some(Selection::rect(10, 10, Rect::new(0.0, 0.0, 2.0, 2.0))));
+        let m = Move::begin(&doc, [9, 9, 9]).unwrap();
+        m.apply(&mut doc, -1, 0);
+        let LayerKind::Raster(img) = &doc.layers[0].kind;
+        assert!(!img.has_pixels_outside());
     }
 
     #[test]

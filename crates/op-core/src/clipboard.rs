@@ -185,23 +185,15 @@ pub fn placement(
 
 /// Edit > Paste: puts `clip` on a new layer above the active one with its
 /// top-left corner at `at`, and deselects. Pixels outside the canvas are
-/// cut off.
+/// kept on the layer, as in Photoshop (Image > Reveal All shows them).
 pub fn paste(doc: &mut Document, clip: &Clip, at: (i64, i64)) -> LayerId {
     let mut image = TiledImage::new(doc.width, doc.height);
     for y in 0..clip.height {
-        let dy = at.1 + y as i64;
-        if dy < 0 || dy >= doc.height as i64 {
-            continue;
-        }
         for x in 0..clip.width {
-            let dx = at.0 + x as i64;
-            if dx < 0 || dx >= doc.width as i64 {
-                continue;
-            }
             let i = ((y * clip.width + x) * 4) as usize;
             let px: [u8; 4] = clip.pixels[i..i + 4].try_into().unwrap();
             if px[3] > 0 {
-                image.set_pixel(dx as u32, dy as u32, px);
+                image.set_pixel_at(at.0 + x as i64, at.1 + y as i64, px);
             }
         }
     }
@@ -298,12 +290,16 @@ mod tests {
     }
 
     #[test]
-    fn paste_cuts_off_pixels_outside_the_canvas() {
+    fn paste_keeps_pixels_outside_the_canvas() {
         let mut doc = Document::new_with_background("t", 2, 2, Color::WHITE);
-        let clip = Clip::from_rgba8(2, 1, vec![0, 0, 0, 255, 0, 0, 0, 255]);
-        paste(&mut doc, &clip, (1, 1));
+        let clip = Clip::from_rgba8(2, 1, vec![0, 0, 0, 255, 9, 9, 9, 255]);
+        let id = paste(&mut doc, &clip, (1, 1));
         let px = doc.composite_rgba8();
         assert_eq!(&px[12..16], [0, 0, 0, 255]);
         assert_eq!(&px[8..12], [255, 255, 255, 255]);
+        // The second pixel landed past the right edge and is kept
+        let LayerKind::Raster(image) = &doc.layer(id).unwrap().kind;
+        assert_eq!(image.pixel_at(2, 1), [9, 9, 9, 255]);
+        assert_eq!(image.content_bounds(), Some((1, 1, 3, 2)));
     }
 }

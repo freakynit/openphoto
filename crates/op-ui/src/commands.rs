@@ -43,6 +43,8 @@ pub enum Command {
     Crop,
     /// Image > Trim... (opens the dialog).
     Trim,
+    /// Image > Reveal All: grows the canvas over the pixels outside it.
+    RevealAll,
     Invert,
     Desaturate,
     Equalize,
@@ -373,6 +375,7 @@ impl Command {
             | Self::FlipCanvasVertical
             | Self::Crop
             | Self::Trim
+            | Self::RevealAll
             | Self::Equalize
             | Self::Threshold
             | Self::Posterize
@@ -593,6 +596,7 @@ impl Command {
             | Self::FlipCanvasHorizontal
             | Self::FlipCanvasVertical
             | Self::Trim
+            | Self::RevealAll
             | Self::Invert
             | Self::Desaturate
             | Self::Equalize
@@ -1068,6 +1072,14 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 } else {
                     "Similar"
                 });
+            }
+        }
+        Command::RevealAll => {
+            let background = app.background;
+            if let Some(state) = app.active()
+                && op_core::image_ops::reveal_all(&mut state.doc, background)
+            {
+                state.record("Reveal All");
             }
         }
         Command::Trim => {

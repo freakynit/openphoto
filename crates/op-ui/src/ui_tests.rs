@@ -1708,3 +1708,39 @@ fn layers_panel_footer_and_lock_buttons() {
     assert_eq!(layer_names(&h), ["Background"]);
     assert_eq!(last_history(&h), "Delete Layer");
 }
+
+#[test]
+fn dragging_a_layer_off_the_canvas_and_reveal_all() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    // A red square on a new layer, dragged 100 px past the left edge
+    crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    h.state_mut().state.foreground = Color::from_rgba8([255, 0, 0, 255]);
+    select_rect(&mut h, 10.0, 100.0, 50.0, 140.0);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::D);
+    h.key_press(egui::Key::V);
+    h.run_steps(2);
+    let (a, b) = (
+        doc_point(&h, 30.0, 120.0),
+        doc_point(&h, 30.0 - 100.0, 120.0),
+    );
+    drag(&mut h, a, b, Modifiers::NONE);
+    assert_eq!(layer_pixel(&h, 1, 10, 120)[3], 0);
+    // The pixels past the edge are kept: dragging back brings them back
+    let (a, b) = (doc_point(&h, 5.0, 120.0), doc_point(&h, 105.0, 120.0));
+    drag(&mut h, a, b, Modifiers::NONE);
+    assert_eq!(layer_pixel(&h, 1, 10, 120), [255, 0, 0, 255]);
+    // Move it out again and reveal it: the canvas grows on the left
+    h.key_press(egui::Key::V);
+    let (a, b) = (
+        doc_point(&h, 30.0, 120.0),
+        doc_point(&h, 30.0 - 100.0, 120.0),
+    );
+    drag(&mut h, a, b, Modifiers::NONE);
+    run_command(&mut h, crate::commands::Command::RevealAll);
+    let doc = &active(&h).doc;
+    assert_eq!((doc.width, doc.height), (734 + 90, 811));
+    assert_eq!(layer_pixel(&h, 1, 0, 120), [255, 0, 0, 255]);
+    assert_eq!(last_history(&h), "Reveal All");
+}

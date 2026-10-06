@@ -26,11 +26,18 @@ impl Tile {
 ///
 /// Tiles are shared through `Arc`: cloning an image (e.g. for a history snapshot)
 /// only copies pointers, and [`TiledImage::tile_mut`] copies on write.
+///
+/// `width` × `height` is the canvas. A layer's pixels can also lie outside
+/// it, like Photoshop's: tiles left of or above the canvas (negative tile
+/// indices), right of or below it, and the part of an edge tile past the
+/// canvas edge all hold pixels outside the canvas. So nothing may write
+/// into an edge tile's part past the canvas unless it means to put pixels
+/// there.
 #[derive(Clone)]
 pub struct TiledImage {
     width: u32,
     height: u32,
-    tiles: HashMap<(u32, u32), Arc<Tile>>,
+    tiles: HashMap<(i32, i32), Arc<Tile>>,
 }
 
 impl std::fmt::Debug for TiledImage {
@@ -53,17 +60,50 @@ impl TiledImage {
         }
     }
 
+    /// The canvas filled with `rgba`; nothing outside the canvas.
     pub fn filled(width: u32, height: u32, rgba: [u8; 4]) -> Self {
         let mut img = Self::new(width, height);
         if rgba[3] != 0 {
             let tile = Arc::new(Tile::filled(rgba));
             for ty in 0..img.tiles_y() {
                 for tx in 0..img.tiles_x() {
-                    img.tiles.insert((tx, ty), tile.clone());
+                    img.tiles.insert((tx as i32, ty as i32), tile.clone());
+                }
+            }
+            img.clear_edge_padding();
+        }
+        img
+    }
+
+    /// Clears the part of the edge tiles past the canvas (after filling
+    /// whole tiles), so it holds no pixels outside the canvas.
+    fn clear_edge_padding(&mut self) {
+        let (w, h) = (self.width, self.height);
+        let edge_x = w % TILE_SIZE != 0;
+        let edge_y = h % TILE_SIZE != 0;
+        if !edge_x && !edge_y {
+            return;
+        }
+        let (last_tx, last_ty) = (self.tiles_x() - 1, self.tiles_y() - 1);
+        for ty in 0..self.tiles_y() {
+            for tx in 0..self.tiles_x() {
+                if !(edge_x && tx == last_tx) && !(edge_y && ty == last_ty) {
+                    continue;
+                }
+                if !self.tiles.contains_key(&(tx as i32, ty as i32)) {
+                    continue;
+                }
+                let tile = self.tile_mut(tx, ty);
+                for row in 0..TILE_SIZE {
+                    for col in 0..TILE_SIZE {
+                        if tx * TILE_SIZE + col >= w || ty * TILE_SIZE + row >= h {
+                            let i = ((row * TILE_SIZE + col) * 4) as usize;
+                            tile.data[i..i + 4].fill(0);
+                        }
+                    }
                 }
             }
         }
-        img
     }
 
     /// Builds from a tightly packed RGBA8 buffer, dropping fully transparent tiles.
@@ -81,7 +121,7 @@ impl TiledImage {
                     tile.data[dst..dst + w * 4].copy_from_slice(&pixels[src..src + w * 4]);
                 }
                 if !tile.is_transparent() {
-                    img.tiles.insert((tx, ty), Arc::new(tile));
+                    img.tiles.insert((tx as i32, ty as i32), Arc::new(tile));
                 }
             }
         }
@@ -104,18 +144,106 @@ impl TiledImage {
         self.height.div_ceil(TILE_SIZE)
     }
 
+    /// A tile of the canvas.
     pub fn tile(&self, tx: u32, ty: u32) -> Option<&Tile> {
+        self.tile_at(tx as i32, ty as i32)
+    }
+
+    /// Any tile, inside the canvas or not.
+    pub fn tile_at(&self, tx: i32, ty: i32) -> Option<&Tile> {
         self.tiles.get(&(tx, ty)).map(|t| t.as_ref())
     }
 
-    /// Returns a writable tile, allocating a transparent one if missing and
-    /// copying it first if shared.
+    /// Returns a writable tile of the canvas, allocating a transparent one
+    /// if missing and copying it first if shared.
     pub fn tile_mut(&mut self, tx: u32, ty: u32) -> &mut Tile {
+        self.tile_at_mut(tx as i32, ty as i32)
+    }
+
+    /// [`Self::tile_mut`] for any tile, inside the canvas or not.
+    pub fn tile_at_mut(&mut self, tx: i32, ty: i32) -> &mut Tile {
         let tile = self
             .tiles
             .entry((tx, ty))
             .or_insert_with(|| Arc::new(Tile::filled([0; 4])));
         Arc::make_mut(tile)
+    }
+
+    /// Reads a pixel anywhere, inside the canvas or outside it.
+    pub fn pixel_at(&self, x: i64, y: i64) -> [u8; 4] {
+        let ts = TILE_SIZE as i64;
+        let (tx, ty) = (x.div_euclid(ts) as i32, y.div_euclid(ts) as i32);
+        match self.tile_at(tx, ty) {
+            Some(tile) => {
+                let (col, row) = (x.rem_euclid(ts), y.rem_euclid(ts));
+                let i = ((row * ts + col) * 4) as usize;
+                tile.data[i..i + 4].try_into().unwrap()
+            }
+            None => [0; 4],
+        }
+    }
+
+    /// Writes a pixel anywhere, inside the canvas or outside it. Writing a
+    /// transparent pixel into a missing tile allocates nothing.
+    pub fn set_pixel_at(&mut self, x: i64, y: i64, rgba: [u8; 4]) {
+        let ts = TILE_SIZE as i64;
+        let (tx, ty) = (x.div_euclid(ts) as i32, y.div_euclid(ts) as i32);
+        if rgba[3] == 0 && self.tile_at(tx, ty).is_none() {
+            return;
+        }
+        let (col, row) = (x.rem_euclid(ts), y.rem_euclid(ts));
+        let i = ((row * ts + col) * 4) as usize;
+        self.tile_at_mut(tx, ty).data[i..i + 4].copy_from_slice(&rgba);
+    }
+
+    /// The box around all non-transparent pixels, inside the canvas or
+    /// not, as (x0, y0, x1, y1); `None` when there are none.
+    pub fn content_bounds(&self) -> Option<(i64, i64, i64, i64)> {
+        let ts = TILE_SIZE as i64;
+        let mut b: Option<(i64, i64, i64, i64)> = None;
+        for (&(tx, ty), tile) in &self.tiles {
+            for row in 0..ts {
+                for col in 0..ts {
+                    if tile.data[((row * ts + col) * 4 + 3) as usize] == 0 {
+                        continue;
+                    }
+                    let (x, y) = (tx as i64 * ts + col, ty as i64 * ts + row);
+                    b = Some(match b {
+                        None => (x, y, x + 1, y + 1),
+                        Some((x0, y0, x1, y1)) => {
+                            (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1))
+                        }
+                    });
+                }
+            }
+        }
+        b
+    }
+
+    /// Whether any pixel lies outside the canvas.
+    pub fn has_pixels_outside(&self) -> bool {
+        self.content_bounds().is_some_and(|(x0, y0, x1, y1)| {
+            x0 < 0 || y0 < 0 || x1 > self.width as i64 || y1 > self.height as i64
+        })
+    }
+
+    /// This image with the pixels outside the canvas deleted (Photoshop's
+    /// background layer, and Crop with Delete Cropped Pixels on).
+    pub fn clipped(&self) -> Self {
+        let mut out = Self::new(self.width, self.height);
+        for (&(tx, ty), tile) in &self.tiles {
+            if tx < 0 || ty < 0 || tx as u32 >= self.tiles_x() || ty as u32 >= self.tiles_y() {
+                continue;
+            }
+            out.tiles.insert((tx, ty), tile.clone());
+        }
+        out.clear_edge_padding();
+        out.drop_transparent_tiles();
+        out
+    }
+
+    fn drop_transparent_tiles(&mut self) {
+        self.tiles.retain(|_, t| !t.is_transparent());
     }
 
     pub fn pixel(&self, x: u32, y: u32) -> [u8; 4] {
@@ -153,45 +281,68 @@ impl TiledImage {
         }
     }
 
-    /// Returns a `width`×`height` image with this one placed at (`dx`, `dy`).
-    /// Pixels outside the original image are filled with `fill`.
+    /// Writes `src` (whole pixels) into row `y` starting at column `x`,
+    /// anywhere, allocating tiles as needed; spans of transparent pixels
+    /// over missing tiles allocate nothing.
+    fn write_span_at(&mut self, x: i64, y: i64, src: &[u8]) {
+        let ts = TILE_SIZE as i64;
+        let (ty, row) = (y.div_euclid(ts) as i32, y.rem_euclid(ts));
+        let mut done = 0usize;
+        let n_px = src.len() / 4;
+        while done < n_px {
+            let sx = x + done as i64;
+            let (tx, col) = (sx.div_euclid(ts) as i32, sx.rem_euclid(ts));
+            let n = ((ts - col) as usize).min(n_px - done);
+            let part = &src[done * 4..(done + n) * 4];
+            if self.tile_at(tx, ty).is_some() || part.as_chunks::<4>().0.iter().any(|p| p[3] != 0) {
+                let i = ((row * ts + col) * 4) as usize;
+                self.tile_at_mut(tx, ty).data[i..i + n * 4].copy_from_slice(part);
+            }
+            done += n;
+        }
+    }
+
+    /// Returns a `width`×`height` canvas with this image's pixels moved by
+    /// (`dx`, `dy`), keeping the ones that end up outside it (like a
+    /// Photoshop layer's). Canvas pixels that the old canvas didn't cover are
+    /// filled with `fill` when it's opaque, e.g. the background color.
     ///
-    /// Works one destination tile at a time, so memory stays proportional to
-    /// the allocated tiles, and fully transparent tiles stay unallocated.
+    /// Works one allocated tile row at a time, so memory stays proportional
+    /// to the allocated tiles, and fully transparent tiles stay unallocated.
     pub fn with_canvas(&self, width: u32, height: u32, dx: i64, dy: i64, fill: [u8; 4]) -> Self {
         let mut out = Self::new(width, height);
-        let (src_w, src_h) = (self.width as i64, self.height as i64);
-        for ty in 0..out.tiles_y() {
-            for tx in 0..out.tiles_x() {
-                let (x0, y0) = ((tx * TILE_SIZE) as i64, (ty * TILE_SIZE) as i64);
-                let tw = (TILE_SIZE as i64).min(width as i64 - x0);
-                let th = (TILE_SIZE as i64).min(height as i64 - y0);
-
-                // Columns of this tile covered by the old image, in source coordinates
-                let sx0 = (x0 - dx).max(0);
-                let sx1 = (x0 + tw - dx).min(src_w);
-                let sy0 = (y0 - dy).max(0);
-                let sy1 = (y0 + th - dy).min(src_h);
-                let covered = sx0 < sx1 && sy0 < sy1;
-                if !covered && fill[3] == 0 {
+        let ts = TILE_SIZE as i64;
+        let mut keys: Vec<(i32, i32)> = self.tiles.keys().copied().collect();
+        keys.sort_unstable();
+        for (tx, ty) in keys {
+            let tile = &self.tiles[&(tx, ty)];
+            for row in 0..ts {
+                let src = &tile.data[(row * ts * 4) as usize..((row + 1) * ts * 4) as usize];
+                out.write_span_at(tx as i64 * ts + dx, ty as i64 * ts + row + dy, src);
+            }
+        }
+        if fill[3] != 0 {
+            // The new canvas area outside the old canvas
+            let (ox0, oy0) = (dx, dy);
+            let (ox1, oy1) = (dx + self.width as i64, dy + self.height as i64);
+            let w = width as i64;
+            let row = fill.repeat(width as usize);
+            for y in 0..height as i64 {
+                if y < oy0 || y >= oy1 {
+                    out.write_span_at(0, y, &row);
                     continue;
                 }
-
-                let mut tile = Tile::filled(fill);
-                if covered {
-                    let col = (sx0 + dx - x0) as usize;
-                    let len = (sx1 - sx0) as usize;
-                    for sy in sy0..sy1 {
-                        let row = (sy + dy - y0) as usize;
-                        let i = (row * TILE_SIZE as usize + col) * 4;
-                        self.read_span(sx0 as u32, sy as u32, &mut tile.data[i..i + len * 4]);
-                    }
+                let left = ox0.clamp(0, w);
+                let right = ox1.clamp(0, w);
+                if left > 0 {
+                    out.write_span_at(0, y, &row[..left as usize * 4]);
                 }
-                if !tile.is_transparent() {
-                    out.tiles.insert((tx, ty), Arc::new(tile));
+                if right < w {
+                    out.write_span_at(right, y, &row[..(w - right) as usize * 4]);
                 }
             }
         }
+        out.drop_transparent_tiles();
         out
     }
 
@@ -233,12 +384,7 @@ impl TiledImage {
         if x >= self.width || y >= self.height {
             return;
         }
-        let (tx, ty) = (x / TILE_SIZE, y / TILE_SIZE);
-        if rgba[3] == 0 && self.tile(tx, ty).is_none() {
-            return;
-        }
-        let i = (((y % TILE_SIZE) * TILE_SIZE + x % TILE_SIZE) * 4) as usize;
-        self.tile_mut(tx, ty).data[i..i + 4].copy_from_slice(&rgba);
+        self.set_pixel_at(x as i64, y as i64, rgba);
     }
 
     /// Number of allocated tiles (for debugging and memory stats).
@@ -301,5 +447,56 @@ mod tests {
         b.tile_mut(0, 0).data[0] = 0;
         assert_eq!(a.pixel(0, 0), [9, 9, 9, 255]);
         assert_eq!(b.pixel(0, 0)[0], 0);
+    }
+
+    #[test]
+    fn filled_leaves_nothing_past_the_canvas() {
+        // 10 × 10 inside a 256 × 256 tile: the rest of the tile is outside
+        let img = TiledImage::filled(10, 10, [9, 9, 9, 255]);
+        assert_eq!(img.pixel_at(9, 9), [9, 9, 9, 255]);
+        assert_eq!(img.pixel_at(10, 0), [0; 4]);
+        assert_eq!(img.content_bounds(), Some((0, 0, 10, 10)));
+        assert!(!img.has_pixels_outside());
+    }
+
+    #[test]
+    fn moving_keeps_pixels_outside_the_canvas() {
+        let mut img = TiledImage::new(10, 10);
+        img.set_pixel(1, 1, [1, 2, 3, 255]);
+        img.set_pixel(8, 8, [4, 5, 6, 255]);
+        let moved = img.with_canvas(10, 10, -300, 5, [0; 4]);
+        assert_eq!(moved.pixel_at(-299, 6), [1, 2, 3, 255]);
+        assert_eq!(moved.content_bounds(), Some((-299, 6, -291, 14)));
+        assert!(moved.has_pixels_outside());
+        // Moving back restores both
+        let back = moved.with_canvas(10, 10, 300, -5, [0; 4]);
+        assert_eq!(back.pixel(1, 1), [1, 2, 3, 255]);
+        assert_eq!(back.pixel(8, 8), [4, 5, 6, 255]);
+        assert!(!back.has_pixels_outside());
+    }
+
+    #[test]
+    fn clipped_drops_what_is_outside() {
+        let mut img = TiledImage::new(10, 10);
+        img.set_pixel(1, 1, [1, 2, 3, 255]);
+        img.set_pixel_at(-1, 0, [7, 7, 7, 255]);
+        img.set_pixel_at(12, 3, [7, 7, 7, 255]);
+        img.set_pixel_at(3, 400, [7, 7, 7, 255]);
+        let c = img.clipped();
+        assert_eq!(c.content_bounds(), Some((1, 1, 2, 2)));
+        assert_eq!(c.allocated_tiles(), 1);
+    }
+
+    #[test]
+    fn opaque_fill_only_covers_new_canvas_area() {
+        let mut img = TiledImage::filled(2, 2, [1, 1, 1, 255]);
+        img.set_pixel(0, 0, [0, 0, 0, 0]);
+        let grown = img.with_canvas(4, 3, 1, 0, [9, 9, 9, 255]);
+        // The transparent pixel of the old canvas stays transparent
+        assert_eq!(grown.pixel(1, 0), [0; 4]);
+        assert_eq!(grown.pixel(0, 0), [9, 9, 9, 255]);
+        assert_eq!(grown.pixel(3, 2), [9, 9, 9, 255]);
+        assert_eq!(grown.pixel(2, 1), [1, 1, 1, 255]);
+        assert!(!grown.has_pixels_outside());
     }
 }

@@ -86,8 +86,22 @@ pub fn reorient(doc: &mut Document, orientation: Orientation) {
     });
 }
 
+/// Image > Reveal All: grows the canvas so every layer's pixels, including
+/// the ones outside it, are on it. The background layer is extended with
+/// `background`. Returns false (and changes nothing) when nothing lies
+/// outside the canvas.
+pub fn reveal_all(doc: &mut Document, background: crate::Color) -> bool {
+    let (x0, y0, x1, y1) = doc.content_bounds();
+    if (x0, y0, x1, y1) == (0, 0, doc.width as i64, doc.height as i64) {
+        return false;
+    }
+    doc.place_canvas((x1 - x0) as u32, (y1 - y0) as u32, -x0, -y0, background);
+    true
+}
+
 /// Cuts the canvas down to x0..x1 × y0..y1 (exclusive ends, inside the
-/// canvas). The selection keeps its place on the image.
+/// canvas). The selection keeps its place on the image. Pixels outside the
+/// new canvas are deleted (Photoshop's Delete Cropped Pixels).
 pub fn crop(doc: &mut Document, x0: u32, y0: u32, x1: u32, y1: u32) {
     assert!(x0 < x1 && y0 < y1 && x1 <= doc.width && y1 <= doc.height);
     let (w, h) = (x1 - x0, y1 - y0);
@@ -95,7 +109,7 @@ pub fn crop(doc: &mut Document, x0: u32, y0: u32, x1: u32, y1: u32) {
     doc.transform_canvas(
         w,
         h,
-        |image| image.with_canvas(w, h, dx, dy, [0; 4]),
+        |image| image.with_canvas(w, h, dx, dy, [0; 4]).clipped(),
         |selection| selection.with_canvas(w, h, dx, dy),
     );
     doc.map_guides(|g| Guide {
@@ -537,5 +551,25 @@ mod tests {
         assert!(!trim(&mut d, TrimBasis::Transparent, TrimSides::default()));
         assert!(trim(&mut d, TrimBasis::TopLeftColor, TrimSides::default()));
         assert_eq!((d.width, d.height), (2, 3));
+    }
+
+    #[test]
+    fn reveal_all_grows_the_canvas_to_the_hidden_pixels() {
+        let mut doc = Document::new_with_background("t", 4, 4, Color::WHITE);
+        let id = doc.new_layer_id();
+        let mut image = crate::TiledImage::new(4, 4);
+        image.set_pixel_at(-2, 1, [255, 0, 0, 255]);
+        image.set_pixel_at(5, 6, [0, 0, 255, 255]);
+        doc.layers.push(crate::Layer::raster(id, "L", image));
+        assert!(reveal_all(&mut doc, Color::BLACK));
+        assert_eq!((doc.width, doc.height), (8, 7));
+        let LayerKind::Raster(image) = &doc.layer(id).unwrap().kind;
+        assert_eq!(image.pixel(0, 1), [255, 0, 0, 255]);
+        assert_eq!(image.pixel(7, 6), [0, 0, 255, 255]);
+        // The background is extended with the background color
+        let LayerKind::Raster(bg) = &doc.layers[0].kind;
+        assert_eq!(bg.pixel(0, 0), [0, 0, 0, 255]);
+        assert_eq!(bg.pixel(2, 0), [255, 255, 255, 255]);
+        assert!(!reveal_all(&mut doc, Color::BLACK));
     }
 }

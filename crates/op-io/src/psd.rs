@@ -148,30 +148,14 @@ impl Writer {
     }
 }
 
-/// The non-transparent bounds of a layer (x0, y0, x1, y1), or `None` if
-/// the layer is empty.
-fn content_bounds(image: &TiledImage, w: u32, h: u32) -> Option<(u32, u32, u32, u32)> {
-    let mut b: Option<(u32, u32, u32, u32)> = None;
-    for y in 0..h {
-        for x in 0..w {
-            if image.pixel(x, y)[3] > 0 {
-                b = Some(match b {
-                    None => (x, y, x + 1, y + 1),
-                    Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1)),
-                });
-            }
-        }
-    }
-    b
-}
-
-/// The four planes (alpha, red, green, blue) of a region of a layer.
-fn planes(image: &TiledImage, (x0, y0, x1, y1): (u32, u32, u32, u32)) -> [Vec<u8>; 4] {
+/// The four planes (alpha, red, green, blue) of a region of a layer, in
+/// canvas coordinates (it can reach outside the canvas).
+fn planes(image: &TiledImage, (x0, y0, x1, y1): (i64, i64, i64, i64)) -> [Vec<u8>; 4] {
     let n = ((x1 - x0) * (y1 - y0)) as usize;
     let mut p: [Vec<u8>; 4] = std::array::from_fn(|_| Vec::with_capacity(n));
     for y in y0..y1 {
         for x in x0..x1 {
-            let [r, g, b, a] = image.pixel(x, y);
+            let [r, g, b, a] = image.pixel_at(x, y);
             p[0].push(a);
             p[1].push(r);
             p[2].push(g);
@@ -227,7 +211,9 @@ pub fn write(doc: &Document) -> Vec<u8> {
         let mut channel_data: Vec<Vec<(u16, Vec<u8>)>> = Vec::new();
         for layer in &doc.layers {
             let LayerKind::Raster(image) = &layer.kind;
-            let bounds = content_bounds(image, w, h);
+            // The record covers the layer's non-transparent pixels,
+            // including any outside the canvas (Photoshop keeps them too)
+            let bounds = image.content_bounds();
             let (x0, y0, x1, y1) = bounds.unwrap_or((0, 0, 0, 0));
             out.i32(y0 as i32);
             out.i32(x0 as i32);
@@ -613,24 +599,20 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                     continue;
                 }
                 let mut image = TiledImage::new(w, h);
+                // Pixels outside the canvas are kept on the layer
                 for y in 0..rows {
                     let dy = top as i64 + y as i64;
-                    if dy < 0 || dy >= h as i64 {
-                        continue;
-                    }
                     for x in 0..cols {
                         let dx = left as i64 + x as i64;
-                        if dx < 0 || dx >= w as i64 {
-                            continue;
-                        }
                         let k = y * cols + x;
                         let get = |s: usize, d: u8| planes[s].as_ref().map_or(d, |p| p[k]);
                         let px = [get(1, 0), get(2, 0), get(3, 0), get(0, 255)];
                         if px[3] > 0 {
-                            image.set_pixel(dx as u32, dy as u32, px);
+                            image.set_pixel_at(dx, dy, px);
                         }
                     }
                 }
+
                 let mut layer = Layer::raster(doc.new_layer_id(), rec.name.clone(), image);
                 if let (Some(m), Some(plane)) = (&rec.mask, &mask_plane) {
                     let (t, l, b, rt) = m.rect;
@@ -660,6 +642,9 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                 let no_alpha = !rec.channels.iter().any(|&(id, _)| id == -1);
                 if i == 0 && rec.flags & 1 != 0 && (no_alpha || rec.name == "Background") {
                     layer.is_background = true;
+                    // The background ends at the canvas
+                    let LayerKind::Raster(image) = &mut layer.kind;
+                    *image = image.clipped();
                 } else {
                     layer.lock_transparency = rec.flags & 1 != 0;
                 }
@@ -801,9 +786,10 @@ mod photoshop_check {
     fn write_sample() {
         let mut doc = Document::new_with_background("ours.psd", 64, 48, Color::WHITE);
         let mut image = TiledImage::new(64, 48);
-        for y in 10..30 {
-            for x in 20..50 {
-                image.set_pixel(x, y, [220, 30, 30, 255]);
+        // Reaches 26 px past the right edge and 5 px above the top
+        for y in -5..30 {
+            for x in 20..90 {
+                image.set_pixel_at(x, y, [220, 30, 30, 255]);
             }
         }
         let mut layer = Layer::raster(doc.new_layer_id(), "Red Box", image);
@@ -828,5 +814,23 @@ mod photoshop_check {
             );
         }
         assert!(doc.layers[0].is_background);
+    }
+
+    #[test]
+    fn pixels_outside_the_canvas_round_trip() {
+        let mut doc = Document::new_with_background("t", 4, 3, Color::WHITE);
+        let mut image = TiledImage::new(4, 3);
+        image.set_pixel_at(-3, 1, [255, 0, 0, 255]);
+        image.set_pixel_at(2, 1, [0, 255, 0, 255]);
+        image.set_pixel_at(6, 5, [0, 0, 255, 255]);
+        let id = doc.new_layer_id();
+        doc.layers
+            .push(op_core::Layer::raster(id, "Layer 1", image));
+        let back = read(&write(&doc), "t.psd".into()).unwrap();
+        let LayerKind::Raster(image) = &back.layers[1].kind;
+        assert_eq!(image.content_bounds(), Some((-3, 1, 7, 6)));
+        assert_eq!(image.pixel_at(-3, 1), [255, 0, 0, 255]);
+        assert_eq!(image.pixel_at(6, 5), [0, 0, 255, 255]);
+        assert_eq!(image.pixel(2, 1), [0, 255, 0, 255]);
     }
 }

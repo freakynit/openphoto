@@ -236,11 +236,31 @@ impl Document {
         self.guides = self.guides.iter().map(|&g| f(g)).collect();
     }
 
-    /// Image > Canvas Size. The background layer is extended with `fill`;
-    /// other layers are extended with transparency.
+    /// Image > Canvas Size. The background layer is extended with `fill`
+    /// and cut to the new canvas; other layers are extended with
+    /// transparency and keep their pixels outside it, as in Photoshop.
     pub fn resize_canvas(&mut self, width: u32, height: u32, anchor: Anchor, fill: Color) {
         let dx = Anchor::offset(anchor.x, self.width, width);
         let dy = Anchor::offset(anchor.y, self.height, height);
+        self.place_canvas(width, height, dx, dy, fill);
+    }
+
+    /// The box around every layer's pixels and the canvas, as (x0, y0, x1,
+    /// y1) in canvas coordinates: what Image > Reveal All shows.
+    pub fn content_bounds(&self) -> (i64, i64, i64, i64) {
+        let mut b = (0, 0, self.width as i64, self.height as i64);
+        for layer in &self.layers {
+            let LayerKind::Raster(image) = &layer.kind;
+            if let Some((x0, y0, x1, y1)) = image.content_bounds() {
+                b = (b.0.min(x0), b.1.min(y0), b.2.max(x1), b.3.max(y1));
+            }
+        }
+        b
+    }
+
+    /// A `width`×`height` canvas with the old one at (`dx`, `dy`): the
+    /// common part of Canvas Size and Reveal All.
+    pub fn place_canvas(&mut self, width: u32, height: u32, dx: i64, dy: i64, fill: Color) {
         let fill = fill.to_rgba8();
         for layer in &mut self.layers {
             let LayerKind::Raster(image) = &mut layer.kind;
@@ -250,6 +270,9 @@ impl Document {
                 [0; 4]
             };
             *image = image.with_canvas(width, height, dx, dy, extension);
+            if layer.is_background {
+                *image = image.clipped();
+            }
             // New canvas areas are revealed by the mask
             if let Some(mask) = &mut layer.mask {
                 mask.image = mask.image.with_canvas(width, height, dx, dy, [255; 4]);
@@ -648,5 +671,25 @@ mod tests {
         doc.layers[1].visible = false;
         assert_eq!(doc.layer_at(1, 1), Some(bg));
         assert_eq!(doc.layer_at(9, 9), None);
+    }
+
+    #[test]
+    fn canvas_size_keeps_hidden_pixels_except_on_the_background() {
+        let mut doc = Document::new_with_background("t", 4, 4, Color::WHITE);
+        let id = doc.new_layer_id();
+        doc.layers.push(Layer::raster(
+            id,
+            "L",
+            TiledImage::filled(4, 4, [1, 2, 3, 255]),
+        ));
+        doc.resize_canvas(2, 2, Anchor::CENTER, Color::BLACK);
+        let LayerKind::Raster(image) = &doc.layer(id).unwrap().kind;
+        assert_eq!(image.content_bounds(), Some((-1, -1, 3, 3)));
+        let LayerKind::Raster(bg) = &doc.layers[0].kind;
+        assert!(!bg.has_pixels_outside());
+        // Growing back brings the hidden pixels back
+        doc.resize_canvas(4, 4, Anchor::CENTER, Color::BLACK);
+        let LayerKind::Raster(image) = &doc.layer(id).unwrap().kind;
+        assert_eq!(image.pixel(0, 0), [1, 2, 3, 255]);
     }
 }
