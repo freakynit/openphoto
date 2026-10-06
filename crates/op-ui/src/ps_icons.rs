@@ -27,6 +27,16 @@ pub enum Icon {
     DistributeHorizontally,
     More,
     Gear,
+    /// The toolbar's collapse "»": pixel-aligned and bold.
+    CollapseToolbar,
+    /// The panel column's thin collapse "»".
+    CollapseRight,
+    /// The icon strip's thin expand "«".
+    CollapseLeft,
+    /// The History panel's icon: three stacked squares and a curved arrow.
+    History,
+    /// The Comments panel's icon: a filled speech bubble.
+    Comments,
 }
 
 struct Pen<'a> {
@@ -218,6 +228,65 @@ pub fn paint(painter: &Painter, center: Pos2, icon: Icon, color: Color32, backgr
             for x in [-12.0, 0.0, 12.0] {
                 pen.dot(x, 0.0, 4.0);
             }
+        }
+        Icon::CollapseToolbar => {
+            for left in [-6.5, 1.5] {
+                let rows = [
+                    (-5.0, 0.0, 1.0),
+                    (-3.0, 0.0, 3.0),
+                    (-1.0, 2.0, 5.0),
+                    (1.0, 2.0, 5.0),
+                    (3.0, 0.0, 3.0),
+                    (5.0, 0.0, 1.0),
+                ]
+                .map(|(y, l, r)| (y, left + l, left + r));
+                pen.profile(&rows);
+            }
+        }
+        Icon::CollapseRight | Icon::CollapseLeft => {
+            let flip = if icon == Icon::CollapseLeft {
+                -1.0
+            } else {
+                1.0
+            };
+            for dx in [-8.0, 0.0] {
+                pen.line(
+                    &[
+                        (flip * (dx + 2.5), -4.0),
+                        (flip * (dx + 5.5), 0.0),
+                        (flip * (dx + 2.5), 4.0),
+                    ],
+                    1.3,
+                );
+            }
+        }
+        Icon::History => {
+            // Traced around (2013, 195): two outlined squares over a filled
+            // one, and an arrow curving from the top right down to the left
+            for y in [-17.0, -5.0] {
+                pen.rect(-14.0, y, -4.0, y + 2.0);
+                pen.rect(-14.0, y + 8.0, -4.0, y + 10.0);
+                pen.rect(-14.0, y, -12.0, y + 10.0);
+                pen.rect(-6.0, y, -4.0, y + 10.0);
+            }
+            pen.rect(-14.0, 7.0, -4.0, 17.0);
+            let arc: Vec<(f32, f32)> = (0..=12)
+                .map(|k| {
+                    let a = (-40.0 + 135.0 * k as f32 / 12.0).to_radians();
+                    (11.0 * a.cos(), 1.0 + 11.0 * a.sin())
+                })
+                .collect();
+            pen.line(&arc, 4.0);
+            pen.poly(&[(2.0, -14.0), (13.5, -14.0), (2.0, -2.5)]);
+        }
+        Icon::Comments => {
+            // Traced around (2013, 251)
+            pen.painter.rect_filled(
+                Rect::from_min_max(pen.p(-15.0, -15.0), pen.p(15.0, 6.0)),
+                pt(1.0),
+                pen.color,
+            );
+            pen.poly(&[(-10.0, 5.0), (0.0, 5.0), (-9.5, 14.5)]);
         }
         Icon::Gear => {
             pen.dot(0.0, 0.0, 10.0);

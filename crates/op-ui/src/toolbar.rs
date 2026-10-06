@@ -14,15 +14,19 @@ const RIGHT_BORDER: f32 = crate::theme::pt(3.0);
 
 pub fn show(ui: &mut Ui, app: &mut AppState) {
     let full = ui.max_rect();
+    // The 3 pt divider next to the canvas: a light line between dark ones
     let border = Rect::from_min_max(Pos2::new(full.right() - RIGHT_BORDER, full.top()), full.max);
-    ui.painter()
-        .rect_filled(border, 0, Color32::from_gray(0x39));
+    ui.painter().rect_filled(border, 0, color::DIVIDER_DARK);
+    ui.painter().rect_filled(
+        border.shrink2(Vec2::new(crate::theme::pt(1.0), 0.0)),
+        0,
+        color::DIVIDER_LIGHT,
+    );
     ui.set_max_width(full.width() - RIGHT_BORDER);
     ui.spacing_mut().item_spacing = Vec2::new(0.0, 0.0);
-    let x_pad = (size::TOOLBAR - RIGHT_BORDER - size::TOOL_BUTTON) / 2.0;
 
     // Collapse arrows and drag grip at the top
-    header(ui, icons::CARET_DOUBLE_RIGHT, Align2::LEFT_CENTER);
+    header(ui, Collapse::Toolbar);
     grip(ui);
     // Measured on Photoshop 2026: the first tool's center 43 pt below the
     // toolbar's top, then one tool every 25.9 pt, with no gaps between groups
@@ -70,54 +74,246 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
         ui.add_space(1.0);
     }
 
-    ui.horizontal(|ui| {
-        ui.add_space(x_pad);
-        widgets::icon_button(ui, icons::DOTS_THREE, size::TOOL_BUTTON, false)
-            .on_hover_text("Edit Toolbar");
-    });
-    ui.add_space(10.0);
-
-    color_swatches(ui, app);
-    ui.add_space(14.0);
-    ui.horizontal(|ui| {
-        ui.add_space(x_pad);
-        let on = app
-            .active_doc
-            .and_then(|id| app.docs.get(&id))
-            .is_some_and(|d| d.doc.quick_mask.is_some());
-        if widgets::icon_button(ui, icons::SELECTION_BACKGROUND, size::TOOL_BUTTON, on)
-            .on_hover_text("Edit in Quick Mask Mode (Q)")
-            .clicked()
-            && let Some(state) = app.active()
-        {
-            toggle_quick_mask(state);
-        }
-    });
-    ui.add_space(2.0);
-    ui.horizontal(|ui| {
-        ui.add_space(x_pad);
-        widgets::icon_button(ui, icons::APP_WINDOW, size::TOOL_BUTTON, false)
-            .on_hover_text("Change Screen Mode (F)");
-    });
+    bottom(ui, app, full, Vec2::new(button_w, pitch - 1.0));
 }
 
-pub fn header(ui: &mut Ui, icon: &str, align: Align2) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 16.0), Sense::hover());
-    let pos = match align.x() {
-        egui::Align::Min => rect.left_center() + Vec2::new(6.0, 0.0),
-        _ => rect.right_center() - Vec2::new(6.0, 0.0),
+/// Below the tools, at Photoshop 2026's positions: Edit Toolbar (•••), the
+/// default-colors and swap icons, the color swatches, Quick Mask and Change
+/// Screen Mode. Shapes are traced from Photoshop at 2x; `p` takes 2x
+/// device pixels measured from the toolbar's top-left corner.
+fn bottom(ui: &mut Ui, app: &mut AppState, full: Rect, button: Vec2) {
+    use crate::ps_icons::Icon;
+    use crate::theme::pt;
+    let p = |x: f32, y: f32| Pos2::new(full.left() + pt(x / 2.0), full.top() + pt(y / 2.0));
+    let r = |x0: f32, y0: f32, x1: f32, y1: f32| Rect::from_min_max(p(x0, y0), p(x1, y1));
+    let painter = ui.painter().clone();
+    let icon_color = color::OPTIONS_ICON;
+    let marker = |y: f32| {
+        painter.add(Shape::convex_polygon(
+            vec![p(62.5, y), p(62.5, y + 6.0), p(56.5, y + 6.0)],
+            Color32::from_gray(0xbc),
+            Stroke::NONE,
+        ));
     };
-    ui.painter()
-        .text(pos, align, icon, theme::icon(11.0), color::TEXT_DIM);
+    let button_at = |ui: &mut Ui, center: Pos2, id: &str| {
+        let rect = Rect::from_center_size(center, button);
+        let response = ui.interact(rect, ui.id().with(id), Sense::click());
+        if response.hovered() {
+            painter.rect_filled(rect, 4, color::HOVER);
+        }
+        response
+    };
+
+    // Edit Toolbar
+    button_at(ui, p(38.5, 1227.5), "edit-toolbar").on_hover_text("Edit Toolbar");
+    crate::ps_icons::paint(
+        &painter,
+        p(38.5, 1227.5),
+        Icon::More,
+        icon_color,
+        color::PANEL,
+    );
+    marker(1240.0);
+
+    // Default colors: two small overlapping squares, black over white
+    let reset_rect = r(4.0, 1262.0, 32.0, 1290.0);
+    let reset = ui.interact(reset_rect, ui.id().with("reset"), Sense::click());
+    let light = Color32::from_gray(0xc3);
+    painter.rect_filled(r(6.0, 1264.0, 24.0, 1282.0), 0, light);
+    painter.rect_filled(r(12.0, 1270.0, 30.0, 1288.0), 0, light);
+    painter.rect_filled(r(14.0, 1272.0, 28.0, 1286.0), 0, Color32::BLACK);
+    painter.rect_filled(r(16.0, 1274.0, 26.0, 1284.0), 0, Color32::WHITE);
+    painter.rect_filled(r(8.0, 1266.0, 22.0, 1280.0), 0, Color32::BLACK);
+    if reset
+        .on_hover_text("Default Foreground and Background Colors (D)")
+        .clicked()
+    {
+        reset_colors(app);
+    }
+
+    // Switch colors: a quarter-circle arrow from left to down
+    let swap_rect = r(40.0, 1262.0, 70.0, 1288.0);
+    let swap = ui.interact(swap_rect, ui.id().with("swap"), Sense::click());
+    let center = p(52.0, 1280.0);
+    let arc: Vec<Pos2> = (0..=12)
+        .map(|k| {
+            let a = -std::f32::consts::FRAC_PI_2 * (1.0 - k as f32 / 12.0);
+            center + Vec2::new(a.cos(), a.sin()) * pt(5.0)
+        })
+        .collect();
+    painter.add(Shape::line(arc, Stroke::new(pt(2.0), icon_color)));
+    painter.add(Shape::convex_polygon(
+        vec![p(52.0, 1263.5), p(52.0, 1276.5), p(43.5, 1270.0)],
+        icon_color,
+        Stroke::NONE,
+    ));
+    painter.add(Shape::convex_polygon(
+        vec![p(55.5, 1280.0), p(67.5, 1280.0), p(61.5, 1286.5)],
+        icon_color,
+        Stroke::NONE,
+    ));
+    if swap
+        .on_hover_text("Switch Foreground and Background Colors (X)")
+        .clicked()
+    {
+        swap_colors(app);
+    }
+
+    // The swatches: background (dark and white frame) under foreground
+    // (dark frame)
+    let bg_rect = r(26.0, 1316.0, 66.0, 1356.0);
+    let fg_rect = r(6.0, 1296.0, 46.0, 1336.0);
+    let bg = ui.interact(bg_rect, ui.id().with("bg"), Sense::click());
+    let fg = ui.interact(fg_rect, ui.id().with("fg"), Sense::click());
+    swatch(&painter, bg_rect, app.background, true);
+    swatch(&painter, fg_rect, app.foreground, false);
+    if fg.on_hover_text("Set foreground color").clicked() {
+        app.editing_background = false;
+        app.open_color_picker(PickerTarget::Foreground);
+    }
+    if bg.on_hover_text("Set background color").clicked() {
+        app.editing_background = true;
+        app.open_color_picker(PickerTarget::Background);
+    }
+
+    // Quick Mask: a rounded frame around a dotted circle
+    let on = app
+        .active_doc
+        .and_then(|id| app.docs.get(&id))
+        .is_some_and(|d| d.doc.quick_mask.is_some());
+    let qm_center = p(36.0, 1391.0);
+    let qm = button_at(ui, qm_center, "quick-mask");
+    if on {
+        painter.rect_filled(
+            Rect::from_center_size(qm_center, button),
+            4,
+            color::TOOL_ACTIVE,
+        );
+    }
+    painter.rect_stroke(
+        r(18.0, 1378.0, 54.0, 1404.0),
+        1,
+        Stroke::new(pt(1.0), icon_color),
+        StrokeKind::Inside,
+    );
+    for (x, y) in [
+        (33.0, 1383.0),
+        (37.0, 1383.0),
+        (29.0, 1385.0),
+        (41.0, 1385.0),
+        (27.0, 1389.0),
+        (43.0, 1389.0),
+        (27.0, 1393.0),
+        (43.0, 1393.0),
+        (29.0, 1397.0),
+        (41.0, 1397.0),
+        (33.0, 1399.0),
+        (37.0, 1399.0),
+    ] {
+        painter.rect_filled(
+            Rect::from_center_size(p(x, y), Vec2::splat(pt(1.0))),
+            0,
+            icon_color,
+        );
+    }
+    if qm.on_hover_text("Edit in Quick Mask Mode (Q)").clicked()
+        && let Some(state) = app.active()
+    {
+        toggle_quick_mask(state);
+    }
+
+    // Change Screen Mode: two overlapping windows, the back one on top
+    let sm_center = p(36.0, 1443.0);
+    button_at(ui, sm_center, "screen-mode").on_hover_text("Change Screen Mode (F)");
+    let window = |rect: Rect, fill: bool| {
+        if fill {
+            painter.rect_filled(rect, 0, color::PANEL);
+        }
+        painter.rect_stroke(
+            rect,
+            0,
+            Stroke::new(pt(1.0), icon_color),
+            StrokeKind::Inside,
+        );
+        painter.rect_filled(
+            Rect::from_min_size(rect.min, Vec2::new(rect.width(), pt(2.0))),
+            0,
+            icon_color,
+        );
+    };
+    window(r(18.0, 1436.0, 42.0, 1456.0), false);
+    window(r(28.0, 1430.0, 54.0, 1450.0), true);
+    marker(1456.0);
 }
 
+/// Which collapse bar a column has: the toolbar's bold "»", the panel
+/// column's thin "»" or the icon strip's thin "«".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Collapse {
+    Toolbar,
+    Panels,
+    IconStrip,
+}
+
+/// Height of the collapse bar at the top of the toolbar, the icon strip and
+/// the panel column, its two 1 pt lines included (Photoshop 2026).
+pub const COLLAPSE_BAR: f32 = crate::theme::pt(13.0);
+
+/// The collapse bar: `#424242` between two `#383838` lines, with the
+/// chevrons Photoshop draws in it.
+pub fn header(ui: &mut Ui, kind: Collapse) {
+    use crate::theme::pt;
+    let (rect, _) = ui.allocate_exact_size(
+        Vec2::new(ui.available_width(), COLLAPSE_BAR),
+        Sense::hover(),
+    );
+    let painter = ui.painter();
+    painter.rect_filled(rect, 0, color::DIVIDER_DARK);
+    painter.rect_filled(
+        rect.shrink2(Vec2::new(0.0, pt(1.0))),
+        0,
+        color::COLLAPSE_BAR,
+    );
+    let (center, icon) = match kind {
+        Collapse::Toolbar => (
+            Pos2::new(rect.left() + pt(9.25), rect.top() + pt(6.5)),
+            crate::ps_icons::Icon::CollapseToolbar,
+        ),
+        Collapse::Panels => (
+            Pos2::new(rect.right() - pt(11.0), rect.top() + pt(6.5)),
+            crate::ps_icons::Icon::CollapseRight,
+        ),
+        Collapse::IconStrip => (
+            Pos2::new(rect.right() - pt(9.25), rect.top() + pt(6.5)),
+            crate::ps_icons::Icon::CollapseLeft,
+        ),
+    };
+    crate::ps_icons::paint(
+        painter,
+        center,
+        icon,
+        color::COLLAPSE_CHEVRON,
+        color::COLLAPSE_BAR,
+    );
+}
+
+/// The toolbar's drag grip under the collapse bar: ten 1 × 4 pt dashes.
 fn grip(ui: &mut Ui) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 6.0), Sense::hover());
-    let c = rect.center();
-    for i in -6..=6 {
-        let x = c.x + i as f32 * 2.0;
-        ui.painter()
-            .circle_filled(Pos2::new(x, c.y), 0.6, Color32::from_gray(0x80));
+    use crate::theme::pt;
+    let (rect, _) =
+        ui.allocate_exact_size(Vec2::new(ui.available_width(), pt(7.0)), Sense::hover());
+    for k in 0..10 {
+        ui.painter().rect_filled(
+            Rect::from_min_size(
+                Pos2::new(
+                    rect.left() + pt(10.0 + 2.0 * k as f32),
+                    rect.top() + pt(3.0),
+                ),
+                Vec2::new(pt(1.0), pt(4.0)),
+            ),
+            0,
+            Color32::from_gray(0x45),
+        );
     }
 }
 
@@ -196,80 +392,18 @@ fn group_marker(ui: &Ui, rect: Rect) {
     ));
 }
 
-/// Foreground/background swatches; the top-left icon resets to defaults and the
-/// top-right one swaps them.
-fn color_swatches(ui: &mut Ui, app: &mut AppState) {
-    let (rect, _) = ui.allocate_exact_size(
-        Vec2::new(size::TOOLBAR - RIGHT_BORDER, 58.0),
-        Sense::hover(),
-    );
-    let sw = 26.0;
-    let fg_rect = Rect::from_min_size(rect.min + Vec2::new(9.0, 16.0), Vec2::splat(sw));
-    let bg_rect = fg_rect.translate(Vec2::splat(13.0));
-
-    let reset_rect = Rect::from_min_size(rect.min + Vec2::new(6.0, 0.0), Vec2::splat(14.0));
-    let swap_rect = Rect::from_min_size(rect.min + Vec2::new(34.0, 0.0), Vec2::splat(14.0));
-
-    let reset = ui.interact(reset_rect, ui.id().with("reset"), Sense::click());
-    let swap = ui.interact(swap_rect, ui.id().with("swap"), Sense::click());
-    let bg = ui.interact(bg_rect, ui.id().with("bg"), Sense::click());
-    let fg = ui.interact(fg_rect, ui.id().with("fg"), Sense::click());
-
-    if reset
-        .on_hover_text("Default Foreground and Background Colors (D)")
-        .clicked()
-    {
-        reset_colors(app);
-    }
-    if swap
-        .on_hover_text("Switch Foreground and Background Colors (X)")
-        .clicked()
-    {
-        swap_colors(app);
-    }
-    if fg.on_hover_text("Set foreground color").clicked() {
-        app.editing_background = false;
-        app.open_color_picker(PickerTarget::Foreground);
-    }
-    if bg.on_hover_text("Set background color").clicked() {
-        app.editing_background = true;
-        app.open_color_picker(PickerTarget::Background);
-    }
-
-    let painter = ui.painter();
-    painter.text(
-        reset_rect.center(),
-        Align2::CENTER_CENTER,
-        icons::SQUARE_HALF,
-        theme::icon(12.0),
-        color::ICON,
-    );
-    painter.text(
-        swap_rect.center(),
-        Align2::CENTER_CENTER,
-        icons::ARROWS_CLOCKWISE,
-        theme::icon(12.0),
-        color::ICON,
-    );
-    swatch(painter, bg_rect, app.background);
-    swatch(painter, fg_rect, app.foreground);
-}
-
-pub fn swatch(painter: &egui::Painter, rect: Rect, c: Color) {
+/// A color swatch with Photoshop's 1 pt dark frame; `white_frame` adds the
+/// 1 pt white frame inside it that the background swatch has.
+pub fn swatch(painter: &egui::Painter, rect: Rect, c: Color, white_frame: bool) {
+    use crate::theme::pt;
     let [r, g, b, _] = c.to_rgba8();
-    painter.rect(
-        rect,
-        0,
-        Color32::from_rgb(r, g, b),
-        Stroke::new(1.0, Color32::from_gray(0xe0)),
-        StrokeKind::Inside,
-    );
-    painter.rect_stroke(
-        rect.expand(1.0),
-        0,
-        Stroke::new(1.0, Color32::from_gray(0x30)),
-        StrokeKind::Inside,
-    );
+    painter.rect_filled(rect, 0, Color32::from_gray(0x36));
+    let mut inner = rect.shrink(pt(1.0));
+    if white_frame {
+        painter.rect_filled(inner, 0, Color32::WHITE);
+        inner = inner.shrink(pt(1.0));
+    }
+    painter.rect_filled(inner, 0, Color32::from_rgb(r, g, b));
 }
 
 /// Q: enters or leaves Quick Mask, recorded as "Quick Mask" either way.

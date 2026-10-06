@@ -5,6 +5,7 @@ use op_color::Hsb;
 use op_core::Color;
 
 use crate::state::{AppState, PickerTarget};
+use crate::theme::pt;
 use crate::toolbar::swatch;
 
 fn to_c32(c: Color) -> Color32 {
@@ -12,8 +13,12 @@ fn to_c32(c: Color) -> Color32 {
     Color32::from_rgb(r, g, b)
 }
 
+/// Photoshop 2026's Color panel, measured: the swatches' frames, a 224 ×
+/// 94 pt saturation/brightness field 45 pt from the body's left edge and
+/// 7 pt from its top, and a 19 pt hue strip 17 pt from the right edge.
 pub fn show(ui: &mut Ui, app: &mut AppState) {
-    let area = ui.max_rect().shrink2(Vec2::new(14.0, 14.0));
+    let body = ui.max_rect();
+    let at = |x: f32, y: f32| body.min + Vec2::new(pt(x), pt(y));
 
     // Re-sync the cached HSB when the color was changed elsewhere (eyedropper, swatches)
     let current = app.editing_color();
@@ -21,9 +26,9 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
         app.picker_hsb = Hsb::from_color(current);
     }
 
-    // Foreground/background swatches in the top-left corner
-    let fg_rect = Rect::from_min_size(area.min, Vec2::splat(30.0));
-    let bg_rect = fg_rect.translate(Vec2::splat(15.0));
+    // Foreground/background swatches in the top-left corner, 20 pt each
+    let fg_rect = Rect::from_min_size(at(9.0, 10.0), Vec2::splat(pt(20.0)));
+    let bg_rect = Rect::from_min_size(at(19.0, 20.0), Vec2::splat(pt(20.0)));
     if ui
         .interact(bg_rect, ui.id().with("bg"), Sense::click())
         .clicked()
@@ -48,21 +53,23 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
     }
     let painter = ui.painter();
     if app.editing_background {
-        swatch(painter, fg_rect, app.foreground);
-        swatch(painter, bg_rect, app.background);
+        panel_swatch(painter, fg_rect, app.foreground, false, false);
+        panel_swatch(painter, bg_rect, app.background, true, true);
     } else {
-        swatch(painter, bg_rect, app.background);
-        swatch(painter, fg_rect, app.foreground);
+        panel_swatch(painter, bg_rect, app.background, true, false);
+        panel_swatch(painter, fg_rect, app.foreground, false, true);
     }
 
-    let field_h = (area.height()).max(40.0);
+    // The field and strip keep Photoshop's margins when the group is
+    // resized: 18 pt below, 17 pt right of the strip
+    let field_bottom = (body.bottom() - pt(18.0)).max(body.top() + pt(47.0));
     let sv_rect = Rect::from_min_max(
-        Pos2::new(area.left() + 54.0, area.top()),
-        Pos2::new(area.right() - 56.0, area.top() + field_h),
+        at(45.0, 7.0),
+        Pos2::new(body.right() - pt(53.0), field_bottom),
     );
     let hue_rect = Rect::from_min_max(
-        Pos2::new(area.right() - 28.0, area.top()),
-        Pos2::new(area.right(), area.top() + field_h),
+        Pos2::new(body.right() - pt(36.0), body.top() + pt(7.0)),
+        Pos2::new(body.right() - pt(17.0), field_bottom),
     );
 
     let mut hsb = app.picker_hsb;
@@ -104,15 +111,44 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
     } else {
         Color32::WHITE
     };
-    painter.circle_stroke(marker, 6.0, Stroke::new(1.5, ring));
+    // A 5 pt ring, clipped to the field like Photoshop's
+    ui.painter_at(sv_rect)
+        .circle_stroke(marker, pt(5.0), Stroke::new(pt(1.0), ring));
 
+    // The hue pointer: a white drop pointing at the strip from its left
     let y = hue_rect.top() + (1.0 - hsb.h / 360.0) * hue_rect.height();
-    let tip = Pos2::new(hue_rect.left() - 2.0, y);
+    let center = Pos2::new(hue_rect.left() - pt(5.25), y);
+    let mut points: Vec<Pos2> = (0..=16)
+        .map(|k| {
+            let a = std::f32::consts::FRAC_PI_4 + k as f32 * (1.5 * std::f32::consts::PI / 16.0);
+            center + Vec2::new(a.cos(), a.sin()) * pt(4.0)
+        })
+        .collect();
+    points.push(Pos2::new(hue_rect.left(), y));
     painter.add(Shape::convex_polygon(
-        vec![tip, tip + Vec2::new(-9.0, -6.0), tip + Vec2::new(-9.0, 6.0)],
+        points,
         Color32::WHITE,
-        Stroke::new(1.0, Color32::from_gray(0x30)),
+        Stroke::new(pt(1.0), Color32::BLACK),
     ));
+}
+
+/// A swatch in the Color panel: 1 pt dark frame, plus a 1 pt white one
+/// inside for the background color; the color being edited gets a light
+/// outer frame (and a darker dark frame).
+fn panel_swatch(painter: &egui::Painter, rect: Rect, c: Color, white_frame: bool, selected: bool) {
+    if selected {
+        painter.rect_filled(rect.expand(pt(1.0)), 0, Color32::from_gray(0x8c));
+        painter.rect_filled(rect, 0, Color32::from_gray(0x25));
+        let inner = rect.shrink(pt(1.0));
+        if white_frame {
+            painter.rect_filled(inner, 0, Color32::WHITE);
+            painter.rect_filled(inner.shrink(pt(1.0)), 0, to_c32(c));
+        } else {
+            painter.rect_filled(inner, 0, to_c32(c));
+        }
+    } else {
+        swatch(painter, rect, c, white_frame);
+    }
 }
 
 /// Saturation/brightness field: the top row goes from white to the pure hue and

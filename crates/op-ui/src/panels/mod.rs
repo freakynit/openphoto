@@ -15,11 +15,10 @@ mod layers;
 pub use layers::{delete_active_layer, new_layer, toggle_active_visibility};
 mod properties;
 
-use egui::{Align2, Color32, CursorIcon, Pos2, Rect, Sense, Stroke, Ui, UiBuilder, Vec2};
+use egui::{Align2, Color32, CursorIcon, Pos2, Rect, Sense, Ui, UiBuilder, Vec2};
 
-use crate::icons;
 use crate::state::AppState;
-use crate::theme::{self, color, size};
+use crate::theme::{self, color, pt, size};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PanelKind {
@@ -83,18 +82,21 @@ impl Default for Panels {
                     active: 0,
                 },
             ],
-            heights: vec![228.0, 0.0, 430.0],
+            // Photoshop 2026's default Essentials layout, measured
+            heights: vec![pt(147.0), 0.0, pt(286.0)],
             flex: 1,
         }
     }
 }
 
-const GROUP_GAP: f32 = 3.0;
+/// The divider between groups: a light line between two dark ones.
+const GROUP_GAP: f32 = pt(3.0);
 const MIN_GROUP: f32 = size::PANEL_TAB_BAR + 40.0;
 
 impl Panels {
     pub fn show(&mut self, ui: &mut Ui, app: &mut AppState) {
-        crate::toolbar::header(ui, icons::CARET_DOUBLE_RIGHT, Align2::RIGHT_CENTER);
+        ui.spacing_mut().item_spacing.y = 0.0;
+        crate::toolbar::header(ui, crate::toolbar::Collapse::Panels);
 
         let area = ui.available_rect_before_wrap();
         let n = self.groups.len();
@@ -121,7 +123,12 @@ impl Panels {
                     Pos2::new(area.left(), y),
                     Vec2::new(area.width(), GROUP_GAP),
                 );
-                ui.painter().rect_filled(gap, 0, color::SEPARATOR);
+                ui.painter().rect_filled(gap, 0, color::DIVIDER_DARK);
+                ui.painter().rect_filled(
+                    gap.shrink2(Vec2::new(0.0, pt(1.0))),
+                    0,
+                    color::DIVIDER_LIGHT,
+                );
                 let r = ui.interact(
                     gap.expand2(Vec2::new(0.0, 2.0)),
                     ui.id().with(("gap", i)),
@@ -153,45 +160,70 @@ impl Panels {
         let painter = ui.painter_at(rect);
         painter.rect_filled(bar, 0, color::TAB_BAR);
         painter.rect_filled(body, 0, color::PANEL);
+        // The bar's 1 pt bottom line, and the 1 pt line on the column's
+        // right edge (Photoshop 2026)
+        let tabs = Rect::from_min_max(bar.min, Pos2::new(bar.right(), bar.bottom() - pt(1.0)));
+        painter.rect_filled(
+            Rect::from_min_max(Pos2::new(bar.left(), tabs.bottom()), bar.max),
+            0,
+            color::DIVIDER_DARK,
+        );
 
-        // Tabs
+        // Tabs: the title with 9 pt on its left and 10 pt on its right,
+        // then a 1 pt line; the active tab takes the panel's color and is
+        // joined to the body (no line under it)
         let mut x = bar.left();
         for (i, &tab) in group.tabs.iter().enumerate() {
             let font = theme::semibold(theme::font::BODY);
-            let galley = ui
-                .painter()
-                .layout_no_wrap(tab.title().into(), font, Color32::WHITE);
-            let w = galley.size().x + 30.0;
-            let tab_rect = Rect::from_min_size(Pos2::new(x, bar.top()), Vec2::new(w, bar.height()));
+            let galley =
+                ui.painter()
+                    .layout_no_wrap(tab.title().into(), font, Color32::PLACEHOLDER);
+            let w = (galley.size().x + pt(19.0)).round();
+            let tab_rect =
+                Rect::from_min_size(Pos2::new(x, tabs.top()), Vec2::new(w, tabs.height()));
             let response = ui.interact(tab_rect, ui.id().with(("tab", index, i)), Sense::click());
             if response.clicked() {
                 group.active = i;
             }
             let active = group.active == i;
             if active {
-                painter.rect_filled(tab_rect, 0, color::TAB_ACTIVE);
-            } else {
-                painter.line_segment(
-                    [tab_rect.right_top(), tab_rect.right_bottom()],
-                    Stroke::new(1.0, color::SEPARATOR),
+                painter.rect_filled(
+                    Rect::from_min_max(tab_rect.min, Pos2::new(tab_rect.right(), bar.bottom())),
+                    0,
+                    color::TAB_ACTIVE,
                 );
             }
+            painter.rect_filled(
+                Rect::from_min_size(tab_rect.right_top(), Vec2::new(pt(1.0), bar.height())),
+                0,
+                color::DIVIDER_DARK,
+            );
             let text_color = if active || response.hovered() {
-                color::TEXT
+                color::TAB_TEXT_ACTIVE
             } else {
-                color::TEXT_DIM
+                color::TAB_TEXT
             };
-            painter.galley(tab_rect.center() - galley.size() / 2.0, galley, text_color);
-            x += w;
+            let pos = Pos2::new(
+                tab_rect.left() + pt(9.0),
+                tabs.center().y - galley.size().y / 2.0,
+            );
+            painter.galley(pos, galley, text_color);
+            x += w + pt(1.0);
         }
-        // Panel menu
-        painter.text(
-            bar.right_center() - Vec2::new(14.0, 0.0),
-            Align2::CENTER_CENTER,
-            icons::LIST,
-            theme::icon(16.0),
-            color::TEXT_DIM,
-        );
+        // Panel menu: four 10 × 1 pt lines, 2 pt apart (Photoshop 2026)
+        for k in 0..4 {
+            painter.rect_filled(
+                Rect::from_min_size(
+                    Pos2::new(
+                        bar.right() - pt(15.5),
+                        bar.top() + pt(10.0 + 2.0 * k as f32),
+                    ),
+                    Vec2::new(pt(10.0), pt(1.0)),
+                ),
+                0,
+                Color32::from_gray(0xa8),
+            );
+        }
 
         let kind = group.tabs[group.active];
         let mut child = ui.new_child(
@@ -224,47 +256,76 @@ fn placeholder(ui: &mut Ui, kind: PanelKind) {
 /// Returns the rect of the History button, which the History popout is anchored to.
 pub fn icon_strip(ui: &mut Ui, app: &mut AppState) -> Rect {
     use crate::theme::pt;
-    // Photoshop: a 3 pt dark border on the left (next to the document's
-    // scrollbar) and a 5 pt divider on the right (next to the panels)
+    // Photoshop: a 3 pt divider on each side (next to the document's
+    // scrollbar and next to the panels), each a light line between two
+    // dark ones
     let full = ui.max_rect();
     let painter = ui.painter();
-    painter.rect_filled(
-        Rect::from_min_max(full.min, Pos2::new(full.left() + pt(3.0), full.bottom())),
-        0,
-        egui::Color32::from_gray(0x3f),
-    );
-    let divider = Rect::from_min_max(Pos2::new(full.right() - pt(5.0), full.top()), full.max);
-    painter.rect_filled(divider, 0, egui::Color32::from_gray(0x4d));
-    painter.rect_filled(
-        divider.shrink2(Vec2::new(pt(1.0), 0.0)),
-        0,
-        egui::Color32::from_gray(0x41),
-    );
+    for left in [full.left(), full.right() - pt(3.0)] {
+        let divider = Rect::from_min_max(
+            Pos2::new(left, full.top()),
+            Pos2::new(left + pt(3.0), full.bottom()),
+        );
+        painter.rect_filled(divider, 0, color::DIVIDER_DARK);
+        painter.rect_filled(
+            divider.shrink2(Vec2::new(pt(1.0), 0.0)),
+            0,
+            color::DIVIDER_LIGHT,
+        );
+    }
     let content = Rect::from_min_max(
         Pos2::new(full.left() + pt(3.0), full.top()),
-        Pos2::new(full.right() - pt(5.0), full.bottom()),
+        Pos2::new(full.right() - pt(3.0), full.bottom()),
     );
     let mut inner = ui.new_child(egui::UiBuilder::new().max_rect(content));
     let ui = &mut inner;
-    crate::toolbar::header(ui, icons::CARET_DOUBLE_LEFT, Align2::RIGHT_CENTER);
-    ui.add_space(4.0);
-    let history = ui.vertical_centered(|ui| {
-        let r =
-            crate::widgets::icon_button(ui, icons::CLOCK_COUNTER_CLOCKWISE, 38.0, app.history_open)
-                .on_hover_text("History");
-        if r.clicked() {
-            app.history_open = !app.history_open;
+    ui.spacing_mut().item_spacing.y = 0.0;
+    crate::toolbar::header(ui, crate::toolbar::Collapse::IconStrip);
+    // Below the collapse bar, at Photoshop 2026's positions: a drag grip,
+    // the History and Comments buttons, and a line under them
+    let top = full.top();
+    let painter = ui.painter().clone();
+    for k in 0..10 {
+        painter.rect_filled(
+            Rect::from_min_size(
+                Pos2::new(content.left() + pt(9.0 + 2.0 * k as f32), top + pt(16.0)),
+                Vec2::new(pt(1.0), pt(4.0)),
+            ),
+            0,
+            egui::Color32::from_gray(0x45),
+        );
+    }
+    let button = Vec2::new(pt(30.0), pt(26.0));
+    let strip_button = |ui: &mut Ui, y: f32, icon, tip: &str, on: bool| {
+        let center = Pos2::new(content.center().x, top + pt(y));
+        let rect = Rect::from_center_size(center, button);
+        let response = ui.interact(rect, ui.id().with(tip), Sense::click());
+        if on {
+            painter.rect_filled(rect, 4, color::TOOL_ACTIVE);
+        } else if response.hovered() {
+            painter.rect_filled(rect, 4, color::HOVER);
         }
-        crate::widgets::icon_button(ui, icons::CHAT_TEXT, 38.0, false).on_hover_text("Comments");
-        r.rect
-    });
-    let r = ui.available_rect_before_wrap();
-    ui.painter().line_segment(
-        [
-            r.left_top() + Vec2::new(8.0, 6.0),
-            r.right_top() + Vec2::new(-8.0, 6.0),
-        ],
-        Stroke::new(1.0, color::SEPARATOR_LIGHT),
+        crate::ps_icons::paint(&painter, center, icon, color::OPTIONS_ICON, color::PANEL);
+        response.on_hover_text(tip)
+    };
+    let history = strip_button(
+        ui,
+        35.5,
+        crate::ps_icons::Icon::History,
+        "History",
+        app.history_open,
     );
-    history.inner
+    if history.clicked() {
+        app.history_open = !app.history_open;
+    }
+    strip_button(ui, 63.5, crate::ps_icons::Icon::Comments, "Comments", false);
+    painter.rect_filled(
+        Rect::from_min_size(
+            Pos2::new(content.left(), top + pt(81.0)),
+            Vec2::new(content.width(), pt(1.0)),
+        ),
+        0,
+        color::DIVIDER_DARK,
+    );
+    history.rect
 }

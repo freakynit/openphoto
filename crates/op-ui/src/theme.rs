@@ -37,6 +37,14 @@ pub mod color {
     pub const SEPARATOR_LIGHT: Color32 = gray(0x44);
     /// The options bar (Photoshop 2026, measured).
     pub const OPTIONS_BAR: Color32 = gray(0x53);
+    /// The 3 pt dividers between the canvas, the icon strip and the panels,
+    /// and the lines of the collapse bars (Photoshop 2026, measured).
+    pub const DIVIDER_DARK: Color32 = gray(0x38);
+    pub const DIVIDER_LIGHT: Color32 = gray(0x47);
+    pub const COLLAPSE_BAR: Color32 = gray(0x42);
+    pub const COLLAPSE_CHEVRON: Color32 = gray(0xc8);
+    pub const TAB_TEXT_ACTIVE: Color32 = gray(0xf0);
+    pub const TAB_TEXT: Color32 = gray(0xb0);
     pub const OPTIONS_SEPARATOR: Color32 = gray(0x3e);
     pub const OPTIONS_ICON: Color32 = gray(0xdd);
     pub const OPTIONS_BELL: Color32 = gray(0xb9);
@@ -67,12 +75,12 @@ pub mod size {
     pub const TOOLBAR: f32 = pt(42.0);
     pub const STATUS_BAR: f32 = pt(16.0);
     /// Icon strip including the 3 pt border on its left and the divider on its right.
-    pub const ICON_STRIP: f32 = pt(44.0);
-    pub const PANEL_COLUMN: f32 = pt(321.0);
+    pub const ICON_STRIP: f32 = pt(43.0);
+    pub const PANEL_COLUMN: f32 = pt(322.0);
 
     // Measured on the reference screenshot (scaled by UI_SCALE)
-    pub const TOOL_BUTTON: f32 = 38.0;
-    pub const PANEL_TAB_BAR: f32 = 42.0;
+    /// Panel tab bar: 27 pt of tabs and a 1 pt line under them.
+    pub const PANEL_TAB_BAR: f32 = super::pt(28.0);
     pub const FIELD_HEIGHT: f32 = 26.0;
     pub const LAYER_ROW: f32 = 60.0;
 }
