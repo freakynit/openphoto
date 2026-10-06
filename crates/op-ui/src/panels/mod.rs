@@ -5,6 +5,7 @@
 //! and collapse-to-icons comes later.
 
 mod color_panel;
+pub use color_panel::DEFAULT_SWATCHES;
 pub mod history;
 mod layers;
 pub use layers::{delete_active_layer, new_layer, toggle_active_visibility};

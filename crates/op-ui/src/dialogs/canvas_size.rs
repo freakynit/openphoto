@@ -11,6 +11,7 @@ use egui::{
 };
 use op_core::{Anchor, Color, Document};
 
+use super::common;
 use crate::theme::{self, color};
 
 /// Photoshop's maximum canvas dimension for regular documents.
@@ -33,13 +34,10 @@ const BUTTON_W: f32 = 103.0;
 const ANCHOR_CELL: f32 = 34.4;
 const FONT: f32 = 15.5;
 
-const TITLE_FILL: Color32 = Color32::from_rgb(0xd0, 0xd2, 0xd4);
-const TITLE_TEXT: Color32 = Color32::from_rgb(0x33, 0x33, 0x33);
 const RULE: Color32 = Color32::from_gray(0x73);
 const FIELD_BORDER: Color32 = Color32::from_gray(0x77);
 const DROPDOWN_BORDER: Color32 = Color32::from_gray(0x6a);
 const FOCUS: Color32 = Color32::from_rgb(0x14, 0x73, 0xe6);
-const BUTTON_BORDER: Color32 = Color32::from_gray(0xd0);
 const ANCHOR_LINE: Color32 = Color32::from_gray(0x78);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -220,7 +218,9 @@ pub struct CanvasSizeDialog {
     relative: bool,
     anchor: Anchor,
     extension: Extension,
-    other: Color32,
+    other: Color,
+    /// Set when "Other..." or the swatch asks for the Color Picker.
+    wants_color_picker: bool,
     /// The extension color only applies to a background layer.
     has_background: bool,
     first_frame: bool,
@@ -237,7 +237,8 @@ impl CanvasSizeDialog {
             relative: false,
             anchor: Anchor::CENTER,
             extension: Extension::Background,
-            other: Color32::WHITE,
+            other: Color::WHITE,
+            wants_color_picker: false,
             has_background: doc.has_background(),
             first_frame: true,
         }
@@ -257,76 +258,67 @@ impl CanvasSizeDialog {
             Extension::White => Color::WHITE,
             Extension::Black => Color::BLACK,
             Extension::Gray => Color::from_rgba8([128, 128, 128, 255]),
-            Extension::Other => {
-                let [r, g, b, _] = self.other.to_array();
-                Color::from_rgba8([r, g, b, 255])
-            }
+            Extension::Other => self.other,
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context, foreground: Color, background: Color) -> Outcome {
+    /// The Color Picker the dialog asked for, with the color to start from.
+    /// Returns it once per request.
+    pub fn take_color_picker_request(
+        &mut self,
+        foreground: Color,
+        background: Color,
+    ) -> Option<Color> {
+        std::mem::take(&mut self.wants_color_picker)
+            .then(|| self.extension_color(foreground, background))
+    }
+
+    /// The Color Picker was confirmed: the extension becomes "Other..." with
+    /// that color. (Cancelling leaves the previous choice in place.)
+    pub fn set_other_color(&mut self, color: Color) {
+        self.extension = Extension::Other;
+        self.other = color;
+    }
+
+    /// `active` is false while a dialog on top (the Color Picker) has the
+    /// keyboard, so Enter and Esc go to that dialog only.
+    pub fn show(
+        &mut self,
+        ctx: &egui::Context,
+        foreground: Color,
+        background: Color,
+        active: bool,
+    ) -> Outcome {
         let mut outcome = Outcome::Open;
         egui::Modal::new(egui::Id::new("canvas-size"))
             .frame(egui::Frame::NONE)
             .backdrop_color(Color32::TRANSPARENT)
             .show(ctx, |ui| {
                 let (rect, _) = ui.allocate_exact_size(SIZE, Sense::hover());
-                outcome = self.ui(ui, rect, foreground, background);
+                outcome = self.ui(ui, rect, foreground, background, active);
             });
         self.first_frame = false;
 
-        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+        if active && ctx.input(|i| i.key_pressed(Key::Escape)) {
             outcome = Outcome::Cancel;
         }
         outcome
     }
 
-    fn ui(&mut self, ui: &mut Ui, frame: Rect, foreground: Color, background: Color) -> Outcome {
+    fn ui(
+        &mut self,
+        ui: &mut Ui,
+        frame: Rect,
+        foreground: Color,
+        background: Color,
+        active: bool,
+    ) -> Outcome {
         let at = |x: f32, y: f32| frame.min + vec2(x, y);
         let font = FontId::proportional(FONT);
         let bold = theme::semibold(FONT);
-        let radius = 10;
 
-        // Frame and title bar
         let painter = ui.painter().clone();
-        painter.add(
-            egui::Shadow {
-                offset: [0, 8],
-                blur: 30,
-                spread: 0,
-                color: Color32::from_black_alpha(110),
-            }
-            .as_shape(frame, radius),
-        );
-        painter.rect_filled(frame, radius, color::PANEL);
-        let title = Rect::from_min_size(frame.min, vec2(SIZE.x, TITLE_BAR));
-        painter.rect_filled(
-            title,
-            CornerRadius {
-                nw: radius,
-                ne: radius,
-                sw: 0,
-                se: 0,
-            },
-            TITLE_FILL,
-        );
-        painter.line_segment(
-            [title.left_bottom(), title.right_bottom()],
-            Stroke::new(1.0, Color32::from_gray(0x30)),
-        );
-        painter.text(
-            title.center(),
-            Align2::CENTER_CENTER,
-            "Canvas Size",
-            theme::semibold(17.0),
-            TITLE_TEXT,
-        );
-        painter.rect_stroke(
-            frame,
-            radius,
-            Stroke::new(1.0, Color32::from_gray(0x2a)),
-            StrokeKind::Outside,
-        );
+        common::frame(ui, frame, "Canvas Size", theme::semibold(17.0));
 
         let body = TITLE_BAR;
         let new_size = self.new_size();
@@ -489,7 +481,13 @@ impl CanvasSizeDialog {
                 }
             },
         );
-        self.extension = extension;
+        if extension == Extension::Other {
+            // "Other..." opens the Color Picker; the choice only changes once
+            // a color is confirmed there, as in Photoshop
+            self.wants_color_picker = true;
+        } else {
+            self.extension = extension;
+        }
 
         let swatch = Rect::from_min_max(
             at(459.0, y - CONTROL_H / 2.0),
@@ -505,20 +503,11 @@ impl CanvasSizeDialog {
                 Stroke::new(1.5, Color32::from_gray(0xc0)),
                 StrokeKind::Inside,
             );
-            let response = ui.interact(swatch, ui.id().with("canvas-size-swatch"), Sense::click());
-            let mut other = Color32::from_rgb(r, g, b);
-            let picked = egui::Popup::menu(&response)
-                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                .show(|ui| {
-                    egui::widgets::color_picker::color_picker_color32(
-                        ui,
-                        &mut other,
-                        egui::color_picker::Alpha::Opaque,
-                    )
-                });
-            if picked.is_some_and(|r| r.inner) {
-                self.extension = Extension::Other;
-                self.other = other;
+            if ui
+                .interact(swatch, ui.id().with("canvas-size-swatch"), Sense::click())
+                .clicked()
+            {
+                self.wants_color_picker = true;
             }
         } else {
             painter.rect_stroke(
@@ -532,10 +521,17 @@ impl CanvasSizeDialog {
         // Buttons
         let ok_rect = Rect::from_min_size(at(BUTTON_X, body + 29.0), vec2(BUTTON_W, CONTROL_H));
         let cancel_rect = Rect::from_min_size(at(BUTTON_X, body + 82.0), vec2(BUTTON_W, CONTROL_H));
-        let ok = pill_button(ui, ok_rect, "OK", new_size.is_some());
-        let cancel = pill_button(ui, cancel_rect, "Cancel", true);
+        let ok = common::pill_button(
+            ui,
+            ok_rect,
+            "OK",
+            theme::semibold(FONT + 0.5),
+            new_size.is_some(),
+        );
+        let cancel =
+            common::pill_button(ui, cancel_rect, "Cancel", theme::semibold(FONT + 0.5), true);
 
-        let enter = ui.input(|i| i.key_pressed(Key::Enter));
+        let enter = active && ui.input(|i| i.key_pressed(Key::Enter));
         if cancel.clicked() {
             return Outcome::Cancel;
         }
@@ -717,43 +713,6 @@ fn dropdown(
             .selected_text(egui::RichText::new(selected).font(FontId::proportional(FONT)))
             .show_ui(ui, menu);
     });
-}
-
-fn pill_button(ui: &mut Ui, rect: Rect, label: &str, enabled: bool) -> egui::Response {
-    let sense = if enabled {
-        Sense::click()
-    } else {
-        Sense::hover()
-    };
-    let response = ui.interact(rect, ui.id().with(("pill", label)), sense);
-    let fill = if enabled && response.is_pointer_button_down_on() {
-        color::TOOL_ACTIVE
-    } else if enabled && response.hovered() {
-        color::HOVER
-    } else {
-        color::PANEL
-    };
-    let (border, text) = if enabled {
-        (BUTTON_BORDER, color::TEXT)
-    } else {
-        (color::SEPARATOR_LIGHT, color::TEXT_DISABLED)
-    };
-    let painter = ui.painter();
-    painter.rect(
-        rect,
-        CornerRadius::same(255),
-        fill,
-        Stroke::new(1.5, border),
-        StrokeKind::Inside,
-    );
-    painter.text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        label,
-        theme::semibold(FONT + 0.5),
-        text,
-    );
-    response
 }
 
 #[cfg(test)]

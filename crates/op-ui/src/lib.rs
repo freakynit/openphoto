@@ -18,6 +18,9 @@ mod titlebar;
 mod toolbar;
 mod widgets;
 
+#[cfg(test)]
+mod ui_tests;
+
 use std::path::PathBuf;
 
 use egui::{Frame, Margin, Stroke};
@@ -31,12 +34,25 @@ pub struct OpenPhotoApp {
     state: AppState,
     dock: DockState<DocId>,
     panels: panels::Panels,
+    /// The native menu bar; `None` in headless tests.
     #[cfg(target_os = "macos")]
-    menu: menu::NativeMenu,
+    menu: Option<menu::NativeMenu>,
 }
 
 impl OpenPhotoApp {
     pub fn new(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>) -> Self {
+        let mut app = Self::new_headless(cc, files);
+        #[cfg(target_os = "macos")]
+        {
+            app.menu = Some(menu::NativeMenu::install(&cc.egui_ctx));
+        }
+        app
+    }
+
+    /// Like [`Self::new`] but without installing the native menu bar, which
+    /// needs a running macOS application. Used by UI tests.
+    #[doc(hidden)]
+    pub fn new_headless(cc: &eframe::CreationContext<'_>, files: Vec<PathBuf>) -> Self {
         theme::install_fonts(&cc.egui_ctx);
         theme::apply_style(&cc.egui_ctx);
         let render_state = cc
@@ -50,7 +66,7 @@ impl OpenPhotoApp {
             dock: DockState::new(Vec::new()),
             panels: panels::Panels::default(),
             #[cfg(target_os = "macos")]
-            menu: menu::NativeMenu::install(&cc.egui_ctx),
+            menu: None,
         };
         if files.is_empty() {
             actions::new_document(&mut app.state, &mut app.dock);
@@ -115,10 +131,13 @@ impl OpenPhotoApp {
     /// (other platforms, where there is no native menu).
     fn run_commands(&mut self, ctx: &egui::Context) {
         #[cfg(target_os = "macos")]
-        let commands = {
-            let mut c = self.menu.poll();
-            c.extend(commands::from_shortcuts(ctx));
-            c
+        let commands = match &self.menu {
+            Some(menu) => {
+                let mut c = menu.poll();
+                c.extend(commands::from_shortcuts_beside_menu(ctx));
+                c
+            }
+            None => commands::from_shortcuts(ctx),
         };
         #[cfg(not(target_os = "macos"))]
         let commands = commands::from_shortcuts(ctx);
@@ -132,7 +151,15 @@ impl OpenPhotoApp {
             return;
         };
         let (fg, bg) = (self.state.foreground, self.state.background);
-        match dialog.show(ctx, fg, bg) {
+        let active = self.state.color_picker.is_none();
+        let outcome = dialog.show(ctx, fg, bg, active);
+        if let Some(color) = dialog.take_color_picker_request(fg, bg) {
+            self.state.color_picker = Some(state::PickerSession {
+                picker: dialogs::ColorPicker::new("Color Picker", color),
+                target: state::PickerTarget::CanvasExtension,
+            });
+        }
+        match outcome {
             dialogs::Outcome::Open => self.state.canvas_size_dialog = Some(dialog),
             dialogs::Outcome::Cancel => {}
             dialogs::Outcome::Apply {
@@ -148,6 +175,30 @@ impl OpenPhotoApp {
                     state.record("Canvas Size");
                 }
             }
+        }
+    }
+
+    /// The Color Picker, drawn after (on top of) Canvas Size.
+    fn color_picker(&mut self, ctx: &egui::Context) {
+        let Some(mut session) = self.state.color_picker.take() else {
+            return;
+        };
+        let outcome = session.picker.show(ctx);
+        self.state
+            .swatches
+            .extend(session.picker.take_added_swatches());
+        match outcome {
+            dialogs::ColorPickerOutcome::Open => self.state.color_picker = Some(session),
+            dialogs::ColorPickerOutcome::Cancel => {}
+            dialogs::ColorPickerOutcome::Ok(color) => match session.target {
+                state::PickerTarget::Foreground => self.state.foreground = color,
+                state::PickerTarget::Background => self.state.background = color,
+                state::PickerTarget::CanvasExtension => {
+                    if let Some(dialog) = &mut self.state.canvas_size_dialog {
+                        dialog.set_other_color(color);
+                    }
+                }
+            },
         }
     }
 
@@ -319,9 +370,12 @@ impl eframe::App for OpenPhotoApp {
         }
 
         self.canvas_size_dialog(&ctx);
+        self.color_picker(&ctx);
 
         #[cfg(target_os = "macos")]
-        self.menu.update(&self.state);
+        if let Some(menu) = &mut self.menu {
+            menu.update(&self.state);
+        }
 
         if let Some(msg) = self.state.alert.clone() {
             egui::Modal::new(egui::Id::new("alert")).show(&ctx, |ui| {

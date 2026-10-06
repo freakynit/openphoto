@@ -5,7 +5,7 @@ use op_core::Color;
 use op_tools::{TOOLBAR, Tool};
 
 use crate::icons;
-use crate::state::AppState;
+use crate::state::{AppState, PickerTarget};
 use crate::theme::{self, color, size};
 use crate::widgets;
 
@@ -123,9 +123,11 @@ fn color_swatches(ui: &mut Ui, app: &mut AppState) {
     }
     if fg.on_hover_text("Set foreground color").clicked() {
         app.editing_background = false;
+        app.open_color_picker(PickerTarget::Foreground);
     }
     if bg.on_hover_text("Set background color").clicked() {
         app.editing_background = true;
+        app.open_color_picker(PickerTarget::Background);
     }
 
     let painter = ui.painter();

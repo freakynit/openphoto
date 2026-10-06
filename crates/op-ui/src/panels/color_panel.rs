@@ -4,7 +4,7 @@ use egui::{Color32, Mesh, Pos2, Rect, Sense, Shape, Stroke, Ui, Vec2};
 use op_color::Hsb;
 use op_core::Color;
 
-use crate::state::AppState;
+use crate::state::{AppState, PickerTarget};
 use crate::toolbar::swatch;
 
 fn to_c32(c: Color) -> Color32 {
@@ -28,6 +28,11 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
         .interact(bg_rect, ui.id().with("bg"), Sense::click())
         .clicked()
     {
+        // Like Photoshop: the first click selects, clicking the selected
+        // swatch again opens the Color Picker
+        if app.editing_background {
+            app.open_color_picker(PickerTarget::Background);
+        }
         app.editing_background = true;
         app.picker_hsb = Hsb::from_color(app.background);
     }
@@ -35,6 +40,9 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
         .interact(fg_rect, ui.id().with("fg"), Sense::click())
         .clicked()
     {
+        if !app.editing_background {
+            app.open_color_picker(PickerTarget::Foreground);
+        }
         app.editing_background = false;
         app.picker_hsb = Hsb::from_color(app.foreground);
     }
@@ -160,7 +168,8 @@ fn hue_mesh(rect: Rect) -> Shape {
     Shape::mesh(mesh)
 }
 
-const SWATCHES: &[u32] = &[
+/// The swatches a new session starts with.
+pub const DEFAULT_SWATCHES: &[u32] = &[
     0xffffff, 0xd9d9d9, 0xa6a6a6, 0x737373, 0x404040, 0x000000, 0xff0000, 0xffff00, 0x00ff00,
     0x00ffff, 0x0000ff, 0xff00ff, 0xf26c4f, 0xf68e55, 0xfbaf5c, 0xfff467, 0xacd372, 0x7cc576,
     0x3bb878, 0x1abbb4, 0x00bff3, 0x438cca, 0x5574b9, 0x605ca8, 0x855fa8, 0xa763a8, 0xf06eaa,
@@ -172,13 +181,12 @@ pub fn swatches(ui: &mut Ui, app: &mut AppState) {
     let cell = 24.0;
     let gap = 4.0;
     let cols = ((area.width() + gap) / (cell + gap)).floor().max(1.0) as usize;
-    for (i, &hex) in SWATCHES.iter().enumerate() {
+    for (i, &c) in app.swatches.clone().iter().enumerate() {
         let (col, row) = (i % cols, i / cols);
         let rect = Rect::from_min_size(
             area.min + Vec2::new(col as f32 * (cell + gap), row as f32 * (cell + gap)),
             Vec2::splat(cell),
         );
-        let c = Color::from_rgba8([(hex >> 16) as u8, (hex >> 8) as u8, hex as u8, 255]);
         let r = ui.interact(rect, ui.id().with(("swatch", i)), Sense::click());
         ui.painter().rect_filled(rect, 1, to_c32(c));
         if r.hovered() {

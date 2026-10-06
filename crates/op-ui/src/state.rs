@@ -245,6 +245,20 @@ pub struct MarqueeOptions {
     pub style: MarqueeStyle,
 }
 
+/// What a confirmed Color Picker color is applied to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PickerTarget {
+    Foreground,
+    Background,
+    /// The "Other..." canvas extension color in the Canvas Size dialog.
+    CanvasExtension,
+}
+
+pub struct PickerSession {
+    pub picker: crate::dialogs::ColorPicker,
+    pub target: PickerTarget,
+}
+
 pub struct AppState {
     pub docs: HashMap<DocId, DocState>,
     pub active_doc: Option<DocId>,
@@ -264,6 +278,10 @@ pub struct AppState {
     pub history_panel: crate::panels::history::PanelState,
     /// Image > Canvas Size, while open.
     pub canvas_size_dialog: Option<crate::dialogs::CanvasSizeDialog>,
+    /// The Color Picker, while open. It can sit on top of Canvas Size.
+    pub color_picker: Option<PickerSession>,
+    /// Swatches panel contents; "Add to Swatches" appends here.
+    pub swatches: Vec<Color>,
 }
 
 impl Default for AppState {
@@ -283,6 +301,13 @@ impl Default for AppState {
             history_open: false,
             history_panel: Default::default(),
             canvas_size_dialog: None,
+            color_picker: None,
+            swatches: crate::panels::DEFAULT_SWATCHES
+                .iter()
+                .map(|&hex| {
+                    Color::from_rgba8([(hex >> 16) as u8, (hex >> 8) as u8, hex as u8, 255])
+                })
+                .collect(),
         }
     }
 }
@@ -290,7 +315,21 @@ impl Default for AppState {
 impl AppState {
     /// Whether a modal dialog is open; menus and shortcuts are disabled meanwhile.
     pub fn modal_open(&self) -> bool {
-        self.canvas_size_dialog.is_some() || self.alert.is_some()
+        self.canvas_size_dialog.is_some() || self.color_picker.is_some() || self.alert.is_some()
+    }
+
+    /// Opens the Color Picker for the foreground or background color, titled
+    /// like Photoshop's ("Color Picker (Foreground Color)").
+    pub fn open_color_picker(&mut self, target: PickerTarget) {
+        let (title, color) = match target {
+            PickerTarget::Foreground => ("Color Picker (Foreground Color)", self.foreground),
+            PickerTarget::Background => ("Color Picker (Background Color)", self.background),
+            PickerTarget::CanvasExtension => ("Color Picker", self.background),
+        };
+        self.color_picker = Some(PickerSession {
+            picker: crate::dialogs::ColorPicker::new(title, color),
+            target,
+        });
     }
 
     pub fn active(&mut self) -> Option<&mut DocState> {

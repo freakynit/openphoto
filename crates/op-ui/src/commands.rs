@@ -1,9 +1,7 @@
 //! Application commands. Menu items and keyboard shortcuts both resolve to a
 //! [`Command`], which is executed in one place.
 
-use egui::Key;
-#[cfg(not(target_os = "macos"))]
-use egui::Modifiers;
+use egui::{Key, Modifiers};
 use egui_dock::DockState;
 use op_core::DocId;
 
@@ -67,7 +65,6 @@ const fn alt_cmd(key: Key) -> Shortcut {
 }
 
 impl Shortcut {
-    #[cfg(not(target_os = "macos"))]
     fn modifiers(self) -> Modifiers {
         let mut m = Modifiers::NONE;
         m.command = self.cmd;
@@ -151,7 +148,6 @@ impl Command {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
 /// Commands that have keyboard shortcuts, most specific first: egui ignores
 /// extra Shift/Alt when matching, so Shift+Cmd+Z must be checked before Cmd+Z.
 const SHORTCUT_ORDER: &[Command] = &[
@@ -177,8 +173,8 @@ const SHORTCUT_ORDER: &[Command] = &[
 /// like Photoshop, which macOS only matches with Shift held, so the plain
 /// Cmd+= key is handled here.
 #[cfg(target_os = "macos")]
-pub fn from_shortcuts(ctx: &egui::Context) -> Vec<Command> {
-    let hit = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::Equals));
+pub fn from_shortcuts_beside_menu(ctx: &egui::Context) -> Vec<Command> {
+    let hit = ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Equals));
     if hit {
         vec![Command::ZoomIn]
     } else {
@@ -186,8 +182,8 @@ pub fn from_shortcuts(ctx: &egui::Context) -> Vec<Command> {
     }
 }
 
-#[cfg(not(target_os = "macos"))]
-/// Command shortcuts typed into egui. On macOS the native menu bar handles
+/// Command shortcuts typed into egui, used where there is no native menu bar
+/// (other platforms, and headless tests on macOS). On macOS the native menu bar handles
 /// these instead, so this is only used on other platforms.
 pub fn from_shortcuts(ctx: &egui::Context) -> Vec<Command> {
     let mut out = Vec::new();
