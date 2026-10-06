@@ -39,6 +39,11 @@ pub enum Icon {
     Comments,
     /// The larger V of dialog dropdowns (10 × 6 pt).
     DialogChevron,
+    /// A Layers panel group row: expanded (V) and collapsed (>) arrows, and
+    /// the folder.
+    GroupExpanded,
+    GroupCollapsed,
+    Folder,
     // The Layers panel: filter buttons, lock buttons, the visibility eye,
     // the background's lock badge and the footer buttons
     FilterPixel,
@@ -151,6 +156,22 @@ pub fn paint(painter: &Painter, center: Pos2, icon: Icon, color: Color32, backgr
             pen.poly(&[(15.5, 0.0), (9.0, 5.0), (9.0, -5.0)]);
         }
         Icon::Caret => pen.line(&[(-6.0, -3.0), (0.0, 3.0), (6.0, -3.0)], 2.2),
+        Icon::GroupExpanded => pen.line(&[(-7.0, -4.0), (0.0, 4.0), (7.0, -4.0)], 3.0),
+        Icon::GroupCollapsed => pen.line(&[(-4.0, -7.0), (4.0, 0.0), (-4.0, 7.0)], 3.0),
+        Icon::Folder => {
+            // Traced around (2163, 1310) at 2x: the tab's outline, the top
+            // edge of the front, and the filled front
+            pen.rect(-14.0, -11.0, 0.0, -9.0);
+            pen.rect(-14.0, -11.0, -12.0, 0.0);
+            pen.rect(-4.0, -9.0, -2.0, -7.0);
+            pen.rect(-4.0, -7.0, 13.0, -5.0);
+            pen.rect(11.0, -5.0, 13.0, 0.0);
+            pen.painter.rect_filled(
+                Rect::from_min_max(pen.p(-14.0, 0.0), pen.p(13.0, 11.0)),
+                pt(0.5),
+                color,
+            );
+        }
         Icon::DialogChevron => pen.line(&[(-8.5, -4.5), (0.0, 4.0), (8.5, -4.5)], 3.5),
         Icon::Share => {
             // The tray, open at the top around the arrow

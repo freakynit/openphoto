@@ -13,8 +13,8 @@ pub use color_panel::DEFAULT_SWATCHES;
 pub mod history;
 mod layers;
 pub use layers::{
-    delete_active_layer, layer_color, layer_from_background_with, new_layer, new_layer_from,
-    toggle_active_visibility,
+    delete_active_layer, layer_color, layer_from_background_with, new_group_from, new_layer,
+    new_layer_from, toggle_active_visibility,
 };
 mod properties;
 

@@ -207,6 +207,162 @@ pub fn move_layer(doc: &mut Document, from: usize, to: usize) -> bool {
     true
 }
 
+/// The selected layers that aren't inside another selected layer (the
+/// blocks a group or move takes along), bottom to top.
+fn selected_roots(doc: &Document) -> Vec<LayerId> {
+    let selected = doc.selected_layers();
+    selected
+        .iter()
+        .copied()
+        .filter(|&id| {
+            let mut parent = doc.layer(id).and_then(|l| l.parent);
+            while let Some(p) = parent {
+                if selected.contains(&p) {
+                    return false;
+                }
+                parent = doc.layer(p).and_then(|l| l.parent);
+            }
+            true
+        })
+        .collect()
+}
+
+/// Whether Layer > Group Layers can run: layers are selected, none of them
+/// the background.
+pub fn can_group(doc: &Document) -> bool {
+    let roots = selected_roots(doc);
+    !roots.is_empty()
+        && roots
+            .iter()
+            .all(|&id| doc.layer(id).is_some_and(|l| !l.is_background))
+}
+
+/// Layer > Group Layers (Cmd+G): the selected layers (with what's in them)
+/// go into a new "Group N" where the topmost of them was, in its group.
+/// The new group is selected.
+pub fn group_selected(doc: &mut Document) -> Option<LayerId> {
+    if !can_group(doc) {
+        return None;
+    }
+    let roots = selected_roots(doc);
+    let top = *roots.last().expect("not empty");
+    let parent = doc.layer(top).and_then(|l| l.parent);
+    let top_index = doc.layers.iter().position(|l| l.id == top).expect("exists");
+    let mut taken: Vec<LayerId> = Vec::new();
+    for &root in &roots {
+        taken.push(root);
+        taken.extend(doc.descendants(root));
+    }
+    let before = doc.layers[..top_index]
+        .iter()
+        .filter(|l| !taken.contains(&l.id))
+        .count();
+    let (mut moved, rest): (Vec<Layer>, Vec<Layer>) = std::mem::take(&mut doc.layers)
+        .into_iter()
+        .partition(|l| taken.contains(&l.id));
+    doc.layers = rest;
+    let id = doc.new_layer_id();
+    for layer in &mut moved {
+        if roots.contains(&layer.id) {
+            layer.parent = Some(id);
+        }
+    }
+    let mut group = Layer::group(id, doc.next_group_name());
+    group.parent = parent;
+    moved.push(group);
+    doc.layers.splice(before..before, moved);
+    doc.select_layer(id);
+    doc.mark_dirty();
+    Some(id)
+}
+
+/// Layer > Ungroup Layers (Shift+Cmd+G): the active group goes away and its
+/// layers take its place in its own group; they become selected.
+pub fn ungroup(doc: &mut Document) -> bool {
+    let Some(group) = doc
+        .active_layer
+        .and_then(|id| doc.layer(id))
+        .filter(|l| l.is_group())
+    else {
+        return false;
+    };
+    let (id, parent) = (group.id, group.parent);
+    let children: Vec<LayerId> = doc
+        .layers
+        .iter()
+        .filter(|l| l.parent == Some(id))
+        .map(|l| l.id)
+        .collect();
+    doc.layers.retain(|l| l.id != id);
+    for layer in &mut doc.layers {
+        if layer.parent == Some(id) {
+            layer.parent = parent;
+        }
+    }
+    doc.set_selected_layers(children);
+    doc.mark_dirty();
+    true
+}
+
+/// Layer > New > Group: an empty "Group N" above the active layer (inside
+/// it when it's an expanded group).
+pub fn new_group(doc: &mut Document) -> LayerId {
+    let id = doc.new_layer_id();
+    let group = Layer::group(id, doc.next_group_name());
+    doc.insert_above_active(group);
+    doc.select_layer(id);
+    id
+}
+
+/// Whether [`move_block`] would move anything.
+pub fn can_move_block(doc: &Document, id: LayerId, gap: usize) -> bool {
+    let Some(range) = doc.block(id) else {
+        return false;
+    };
+    !(doc.layers[range.end - 1].is_background
+        || gap > doc.layers.len()
+        || (range.start..=range.end).contains(&gap)
+        || (gap == 0 && doc.layers.first().is_some_and(|l| l.is_background)))
+}
+
+/// Moves a layer, with everything in it, so it sits at `gap` (an index into
+/// `layers` before the move: between `gap - 1` and `gap`). It joins the
+/// group the gap is in: the group right above when the gap is at the top
+/// of its layers, else the group of the layer above. Nothing goes below
+/// the background, the background doesn't move, and a group can't go into
+/// itself. Returns whether anything moved.
+pub fn move_block(doc: &mut Document, id: LayerId, gap: usize) -> bool {
+    if !can_move_block(doc, id, gap) {
+        return false;
+    }
+    let range = doc.block(id).expect("checked");
+    let above = doc.layers.get(gap);
+    let below = gap.checked_sub(1).and_then(|i| doc.layers.get(i));
+    let parent = match (above, below) {
+        (Some(a), Some(b))
+            if a.is_group()
+                && b.parent
+                    .is_some_and(|p| p == a.id || doc.descendants(a.id).contains(&p)) =>
+        {
+            Some(a.id)
+        }
+        (Some(a), _) => a.parent,
+        (None, _) => None,
+    };
+    let block: Vec<Layer> = doc.layers.drain(range.clone()).collect();
+    let at = if gap > range.end {
+        gap - block.len()
+    } else {
+        gap
+    };
+    doc.layers.splice(at..at, block);
+    if let Some(layer) = doc.layer_mut(id) {
+        layer.parent = parent;
+    }
+    doc.mark_dirty();
+    true
+}
+
 /// Layer > Rename Layer. Returns whether the name changed; empty names are
 /// refused.
 pub fn rename(doc: &mut Document, id: LayerId, name: &str) -> bool {
@@ -309,12 +465,20 @@ pub fn delete_selected(doc: &mut Document) -> bool {
     if selected.is_empty() || selected.len() >= doc.layers.len() {
         return false;
     }
+    // A group goes with everything in it
+    let mut doomed = selected.clone();
+    for &id in &selected {
+        doomed.extend(doc.descendants(id));
+    }
+    if doomed.len() >= doc.layers.len() {
+        return false;
+    }
     let lowest = doc
         .layers
         .iter()
-        .position(|l| selected.contains(&l.id))
+        .position(|l| doomed.contains(&l.id))
         .expect("selected layers exist");
-    doc.layers.retain(|l| !selected.contains(&l.id));
+    doc.layers.retain(|l| !doomed.contains(&l.id));
     let next = doc.layers[lowest.saturating_sub(1).min(doc.layers.len() - 1)].id;
     doc.select_layer(next);
     doc.mark_dirty();
@@ -735,5 +899,68 @@ mod tests {
         assert_eq!(doc.active_layer, Some(doc.layers[0].id));
         // The last layer can't go
         assert!(!delete_selected(&mut doc));
+    }
+
+    #[test]
+    fn grouping_ungrouping_and_moving_blocks() {
+        let mut doc = Document::new_with_background("t", 2, 2, crate::Color::WHITE);
+        let ids: Vec<LayerId> = (0..3)
+            .map(|i| {
+                let id = doc.new_layer_id();
+                doc.layers
+                    .push(Layer::raster(id, format!("L{i}"), TiledImage::new(2, 2)));
+                id
+            })
+            .collect();
+        // Group L0 and L2: they go together where L2 was, L1 stays below
+        doc.select_layer(ids[0]);
+        doc.toggle_layer_selection(ids[2]);
+        let g = group_selected(&mut doc).unwrap();
+        let names = |doc: &Document| {
+            doc.layers
+                .iter()
+                .map(|l| l.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(names(&doc), ["Background", "L1", "L0", "L2", "Group 1"]);
+        assert_eq!(doc.layer(ids[0]).unwrap().parent, Some(g));
+        assert_eq!(doc.layer(ids[1]).unwrap().parent, None);
+        assert_eq!(doc.selected_layers(), [g]);
+        // A new layer with the expanded group active goes on top inside it
+        let mut l3 = Layer::raster(doc.new_layer_id(), "L3", TiledImage::new(2, 2));
+        l3.parent = Some(ids[1]); // overwritten
+        doc.insert_above_active(l3);
+        assert_eq!(
+            names(&doc),
+            ["Background", "L1", "L0", "L2", "L3", "Group 1"]
+        );
+        assert_eq!(doc.layers[4].parent, Some(g));
+        // Move L1 to the top of the group's layers (gap below the group)
+        assert!(move_block(&mut doc, ids[1], 5));
+        assert_eq!(
+            names(&doc),
+            ["Background", "L0", "L2", "L3", "L1", "Group 1"]
+        );
+        assert_eq!(doc.layer(ids[1]).unwrap().parent, Some(g));
+        // The group is already right above the background: no move; not
+        // below the background, and not into itself either
+        assert!(!move_block(&mut doc, g, 1));
+        assert!(!move_block(&mut doc, g, 0));
+        assert!(!move_block(&mut doc, g, 3));
+        // Ungroup: the layers stay, top-level now
+        doc.select_layer(g);
+        assert!(ungroup(&mut doc));
+        assert!(
+            doc.layers
+                .iter()
+                .all(|l| l.parent.is_none() && !l.is_group())
+        );
+        assert_eq!(doc.selected_layers().len(), 4);
+        // Deleting a group deletes what's in it
+        doc.select_all_layers();
+        let g = group_selected(&mut doc).unwrap();
+        assert!(delete_selected(&mut doc));
+        assert_eq!(names(&doc), ["Background"]);
+        assert!(doc.layer(g).is_none());
     }
 }

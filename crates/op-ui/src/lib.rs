@@ -329,10 +329,15 @@ impl OpenPhotoApp {
             dialogs::NewLayerOutcome::Cancel => {}
             dialogs::NewLayerOutcome::Create(layer) => {
                 if let Some(state) = self.state.active() {
-                    if dialog.is_from_background() {
-                        panels::layer_from_background_with(state, layer);
-                    } else {
-                        panels::new_layer_from(state, layer);
+                    match dialog.kind() {
+                        dialogs::NewLayerKind::Layer => panels::new_layer_from(state, layer),
+                        dialogs::NewLayerKind::FromBackground => {
+                            panels::layer_from_background_with(state, layer)
+                        }
+                        dialogs::NewLayerKind::Group => panels::new_group_from(state, layer, false),
+                        dialogs::NewLayerKind::GroupFromLayers => {
+                            panels::new_group_from(state, layer, true)
+                        }
                     }
                 }
             }

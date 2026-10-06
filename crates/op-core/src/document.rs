@@ -182,14 +182,50 @@ impl Document {
 
     /// Adds `layer` directly above the active layer (on top without one)
     /// and makes it active.
-    pub fn insert_above_active(&mut self, layer: Layer) {
-        let index = self
+    pub fn insert_above_active(&mut self, mut layer: Layer) {
+        let index = match self
             .active_layer
             .and_then(|a| self.layers.iter().position(|l| l.id == a))
-            .map_or(self.layers.len(), |i| i + 1);
+        {
+            // Onto the top of an expanded group's layers, as in Photoshop
+            Some(i) if matches!(self.layers[i].kind, LayerKind::Group { collapsed: false }) => {
+                layer.parent = Some(self.layers[i].id);
+                i
+            }
+            // Otherwise directly above it, in the same group
+            Some(i) => {
+                layer.parent = self.layers[i].parent;
+                i + 1
+            }
+            None => self.layers.len(),
+        };
         self.active_layer = Some(layer.id);
         self.layers.insert(index, layer);
         self.mark_dirty();
+    }
+
+    /// "Group N" for a new group: one more than the highest N in use.
+    pub fn next_group_name(&self) -> String {
+        let n = self
+            .layers
+            .iter()
+            .filter_map(|l| l.name.strip_prefix("Group ")?.parse::<u32>().ok())
+            .max()
+            .map_or(1, |max| max + 1);
+        format!("Group {n}")
+    }
+
+    /// Where a layer's block (the layers in it, then the layer itself)
+    /// sits in `layers`.
+    pub fn block(&self, id: LayerId) -> Option<std::ops::Range<usize>> {
+        let end = self.layers.iter().position(|l| l.id == id)? + 1;
+        let start = self
+            .descendants(id)
+            .into_iter()
+            .filter_map(|d| self.layers.iter().position(|l| l.id == d))
+            .min()
+            .unwrap_or(end - 1);
+        Some(start..end)
     }
 
     pub fn revision(&self) -> u64 {
@@ -533,6 +569,12 @@ impl Document {
         let (a, b) = (from.min(to), from.max(to));
         self.selected_layers = self.layers[a..=b].iter().map(|l| l.id).collect();
         self.active_layer = Some(id);
+    }
+
+    /// Selects exactly `ids`, the last one active (none: nothing selected).
+    pub fn set_selected_layers(&mut self, ids: Vec<LayerId>) {
+        self.active_layer = ids.last().copied();
+        self.selected_layers = ids;
     }
 
     /// Select > All Layers (Alt+Cmd+A): every layer but the background.

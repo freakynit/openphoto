@@ -156,6 +156,10 @@ const ALL_COMMANDS: &[Command] = &[
     Command::Distribute(Distribute::Right),
     Command::Distribute(Distribute::Horizontally),
     Command::Distribute(Distribute::Vertically),
+    Command::GroupLayers,
+    Command::UngroupLayers,
+    Command::NewGroup,
+    Command::NewGroupFromLayers,
 ];
 
 fn id(command: Command) -> String {
@@ -468,8 +472,8 @@ impl NativeMenu {
                     &[
                         &item("Layer...", Command::NewLayer) as &dyn IsMenuItem,
                         &item("Layer from Background...", Command::LayerFromBackground),
-                        &todo("Group...", None),
-                        &todo("Group from Layers...", None),
+                        &item("Group...", Command::NewGroup),
+                        &item("Group from Layers...", Command::NewGroupFromLayers),
                         &todo("Artboard...", None),
                         &todo("Artboard from Group", None),
                         &todo("Artboard from Layers...", None),
@@ -534,8 +538,8 @@ impl NativeMenu {
                 &sep(),
                 &todo("New Layer Based Slice", None),
                 &sep(),
-                &todo("Group Layers", Some("CmdOrCtrl+G")),
-                &todo("Ungroup Layers", Some("CmdOrCtrl+Shift+G")),
+                &item("Group Layers", Command::GroupLayers),
+                &item("Ungroup Layers", Command::UngroupLayers),
                 &item("Hide Layers", Command::ToggleLayerVisibility),
                 &sep(),
                 &Submenu::with_items(

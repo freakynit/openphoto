@@ -1851,7 +1851,7 @@ fn duplicate_layer_and_layer_from_background_dialogs() {
             .state
             .new_layer_dialog
             .as_ref()
-            .is_some_and(|d| d.is_from_background())
+            .is_some_and(|d| d.kind() == crate::dialogs::NewLayerKind::FromBackground)
     );
     h.event(egui::Event::Text("Base".into()));
     h.key_press(egui::Key::Enter);
@@ -1871,7 +1871,7 @@ fn double_clicking_the_background_asks_for_a_name() {
             .state
             .new_layer_dialog
             .as_ref()
-            .is_some_and(|d| d.is_from_background())
+            .is_some_and(|d| d.kind() == crate::dialogs::NewLayerKind::FromBackground)
     );
     h.key_press(egui::Key::Escape);
     h.run_steps(2);
@@ -2036,4 +2036,104 @@ fn align_buttons_line_up_selected_layers() {
     assert!(lefts.iter().all(|&x| x == lefts[0]), "{lefts:?}");
     run_command(&mut h, Command::Distribute(Distribute::VerticalCenter));
     assert_eq!(last_history(&h), "Distribute Vertical Centers");
+}
+
+#[test]
+fn layer_groups_in_the_layers_panel() {
+    use op_core::LayerKind;
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    for _ in 0..2 {
+        crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    }
+    h.run_steps(2);
+    // Cmd+G groups the selected layers
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, egui::Key::A);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::G);
+    h.run_steps(2);
+    assert_eq!(
+        layer_names(&h),
+        ["Background", "Layer 1", "Layer 2", "Group 1"]
+    );
+    assert_eq!(last_history(&h), "Group Layers");
+    let group = active(&h).doc.layers[3].id;
+    assert!(
+        active(&h).doc.layers[1..3]
+            .iter()
+            .all(|l| l.parent == Some(group))
+    );
+    // Rows: Group 1 (632, 25 pt), Layer 2, Layer 1 (42.5 pt each), Background.
+    // The arrow collapses the group (and isn't a history state)
+    click(&mut h, at_pt(1028.0 + 38.0, 632.0 + 11.75));
+    assert!(matches!(
+        active(&h).doc.layers[3].kind,
+        LayerKind::Group { collapsed: true }
+    ));
+    assert_eq!(last_history(&h), "Group Layers");
+    click(&mut h, at_pt(1028.0 + 38.0, 632.0 + 11.75));
+    assert!(matches!(
+        active(&h).doc.layers[3].kind,
+        LayerKind::Group { collapsed: false }
+    ));
+    // Drag Layer 1 (the third row) above the group: out of it
+    drag(
+        &mut h,
+        at_pt(1150.0, 632.0 + 25.0 + 42.5 + 20.0),
+        at_pt(1150.0, 633.0),
+        Modifiers::NONE,
+    );
+    assert_eq!(
+        layer_names(&h),
+        ["Background", "Layer 2", "Group 1", "Layer 1"]
+    );
+    assert_eq!(active(&h).doc.layers[3].parent, None);
+    assert_eq!(last_history(&h), "Layer Order");
+    // Shift+Cmd+G on the group ungroups it
+    click(&mut h, at_pt(1150.0, 632.0 + 42.5 + 12.0));
+    assert_eq!(active(&h).doc.active_layer, Some(group));
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::G);
+    h.run_steps(2);
+    assert_eq!(layer_names(&h), ["Background", "Layer 2", "Layer 1"]);
+    assert_eq!(last_history(&h), "Ungroup Layers");
+    // The footer's folder button makes an empty group
+    click(&mut h, at_pt(1350.0 - 86.5, 787.5));
+    assert!(
+        active(&h)
+            .doc
+            .layers
+            .iter()
+            .any(|l| l.is_group() && l.name == "Group 1")
+    );
+    assert_eq!(last_history(&h), "New Group");
+}
+
+#[test]
+#[ignore]
+fn screenshot_layer_groups() {
+    let mut h = harness(Vec::new());
+    let app = &mut h.state_mut().state;
+    crate::actions::close_all(app);
+    let mut doc = op_core::Document::new_with_background("groups", 200, 200, Color::WHITE);
+    let ids: Vec<op_core::LayerId> = (0..5).map(|_| doc.new_layer_id()).collect();
+    let (g1, l1, g2, l2, g3) = (ids[0], ids[1], ids[2], ids[3], ids[4]);
+    let layer = |id, name: &str, parent| {
+        let mut l = op_core::Layer::raster(id, name, op_core::TiledImage::new(200, 200));
+        l.parent = parent;
+        l
+    };
+    let a = layer(l1, "Layer 1", Some(g1));
+    let b = layer(l2, "Layer 2", Some(g2));
+    let mut group2 = op_core::Layer::group(g2, "Group 2");
+    group2.parent = Some(g1);
+    doc.layers.extend([
+        a,
+        b,
+        group2,
+        op_core::Layer::group(g1, "Group 1"),
+        op_core::Layer::group(g3, "Group 3"),
+    ]);
+    doc.select_layer(l1);
+    app.add_document(doc, "New");
+    h.run_steps(6);
+    shot(&mut h, "layer_groups");
 }

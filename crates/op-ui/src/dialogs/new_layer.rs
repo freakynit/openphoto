@@ -12,6 +12,21 @@ use crate::theme::{self, color, pt};
 const SIZE: egui::Vec2 = vec2(pt(552.0), pt(186.0));
 /// Layer from Background's version has no neutral-color row.
 const SIZE_FROM_BACKGROUND: egui::Vec2 = vec2(pt(552.0), pt(157.0));
+/// The group versions have neither the clipping-mask nor the neutral row.
+const SIZE_GROUP: egui::Vec2 = vec2(pt(552.0), pt(128.0));
+
+/// Which of Photoshop's dialogs of this layout it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    /// Layer > New > Layer...
+    Layer,
+    /// Layer > New > Layer from Background...
+    FromBackground,
+    /// Layer > New > Group...
+    Group,
+    /// Layer > New > Group from Layers...
+    GroupFromLayers,
+}
 const FONT: f32 = pt(12.0);
 const TEXT: Color32 = Color32::from_gray(0xf1);
 const BORDER: Color32 = Color32::from_gray(0x7a);
@@ -40,9 +55,7 @@ pub struct NewLayerDialog {
     opacity: String,
     fill_neutral: bool,
     first_frame: bool,
-    /// Layer > New > Layer from Background...: the same dialog, turning the
-    /// background into a regular layer.
-    from_background: bool,
+    kind: Kind,
 }
 
 impl NewLayerDialog {
@@ -55,20 +68,33 @@ impl NewLayerDialog {
             opacity: "100%".into(),
             fill_neutral: false,
             first_frame: true,
-            from_background: false,
+            kind: Kind::Layer,
         }
+    }
+
+    /// The group dialogs: "Group N", Pass Through.
+    pub fn group(name: String, kind: Kind) -> Self {
+        Self {
+            kind,
+            mode: BlendMode::PassThrough,
+            ..Self::new(name)
+        }
+    }
+
+    pub fn kind(&self) -> Kind {
+        self.kind
     }
 
     /// The dialog of Layer > New > Layer from Background... ("Layer 0").
     pub fn from_background() -> Self {
         Self {
-            from_background: true,
+            kind: Kind::FromBackground,
             ..Self::new("Layer 0".into())
         }
     }
 
-    pub fn is_from_background(&self) -> bool {
-        self.from_background
+    fn is_group(&self) -> bool {
+        matches!(self.kind, Kind::Group | Kind::GroupFromLayers)
     }
 
     /// The layer to create, or `None` while the opacity isn't a number.
@@ -100,10 +126,10 @@ impl NewLayerDialog {
             .frame(egui::Frame::NONE)
             .backdrop_color(Color32::TRANSPARENT)
             .show(ctx, |ui| {
-                let size = if self.from_background {
-                    SIZE_FROM_BACKGROUND
-                } else {
-                    SIZE
+                let size = match self.kind {
+                    Kind::Layer => SIZE,
+                    Kind::FromBackground => SIZE_FROM_BACKGROUND,
+                    Kind::Group | Kind::GroupFromLayers => SIZE_GROUP,
                 };
                 let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
                 outcome = self.ui(ui, rect);
@@ -119,7 +145,15 @@ impl NewLayerDialog {
         let at = |x: f32, y: f32| frame.min + vec2(pt(x), pt(y));
         let r = |x0: f32, y0: f32, x1: f32, y1: f32| Rect::from_min_max(at(x0, y0), at(x1, y1));
         let font = theme::dialog_medium(FONT);
-        common::frame(ui, frame, "New Layer", theme::dialog_bold(pt(14.0)));
+        let title = match self.kind {
+            Kind::Layer | Kind::FromBackground => "New Layer",
+            Kind::Group => "New Group",
+            Kind::GroupFromLayers => "New Group from Layers",
+        };
+        common::frame(ui, frame, title, theme::dialog_bold(pt(14.0)));
+        // The group dialogs have no clipping-mask row: the mode row is
+        // 29 pt higher
+        let dy = if self.is_group() { -29.0 } else { 0.0 };
         let painter = ui.painter().clone();
         let label = |right: f32, cy: f32, text: &str, c: Color32| {
             painter.text(at(right, cy), Align2::RIGHT_CENTER, text, font.clone(), c);
@@ -156,20 +190,23 @@ impl NewLayerDialog {
         self.color = chosen;
 
         // Clipping masks aren't supported yet, so this stays off
-        common::ps_checkbox(
-            ui,
-            at(58.0, 83.0),
-            "Use previous layer to create clipping mask",
-            &mut false,
-            false,
-        );
+        if !self.is_group() {
+            common::ps_checkbox(
+                ui,
+                at(58.0, 83.0),
+                "Use previous layer to create clipping mask",
+                &mut false,
+                false,
+            );
+        }
 
-        label(49.0, 125.5, "Mode", TEXT);
+        label(49.0, 125.5 + dy, "Mode", TEXT);
         let mut mode = self.mode;
         let shown = mode;
+        let is_group = self.is_group();
         common::ps_dropdown(
             ui,
-            r(58.0, 113.0, 218.0, 137.0),
+            r(58.0, 113.0 + dy, 218.0, 137.0 + dy),
             "new-layer-mode",
             move |painter, rect| {
                 painter.text(
@@ -181,6 +218,10 @@ impl NewLayerDialog {
                 );
             },
             |ui| {
+                // Groups can also pass through
+                if is_group {
+                    ui.selectable_value(&mut mode, BlendMode::PassThrough, "Pass Through");
+                }
                 for (gi, group) in BlendMode::GROUPS.iter().enumerate() {
                     if gi > 0 {
                         ui.separator();
@@ -193,9 +234,9 @@ impl NewLayerDialog {
         );
         self.mode = mode;
 
-        label(280.5, 125.5, "Opacity", TEXT);
-        let opacity_box = r(290.0, 113.0, 340.0, 137.0);
-        let chevron_box = r(339.0, 113.0, 358.0, 137.0);
+        label(280.5, 125.5 + dy, "Opacity", TEXT);
+        let opacity_box = r(290.0, 113.0 + dy, 340.0, 137.0 + dy);
+        let chevron_box = r(339.0, 113.0 + dy, 358.0, 137.0 + dy);
         ui.painter().rect(
             chevron_box,
             CornerRadius {
@@ -235,8 +276,8 @@ impl NewLayerDialog {
             }
         });
 
-        let neutral = neutral_color(self.mode).filter(|_| !self.from_background);
-        if !self.from_background {
+        let neutral = neutral_color(self.mode).filter(|_| self.kind == Kind::Layer);
+        if self.kind == Kind::Layer {
             let neutral_label = format!("Fill with {}-neutral color", self.mode.label());
             common::ps_checkbox(
                 ui,

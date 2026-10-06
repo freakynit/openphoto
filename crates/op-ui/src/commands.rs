@@ -85,6 +85,14 @@ pub enum Command {
     NewLayerNoDialog,
     /// Select > All Layers (Alt+Cmd+A): every layer but the background.
     SelectAllLayers,
+    /// Layer > Group Layers (Cmd+G).
+    GroupLayers,
+    /// Layer > Ungroup Layers (Shift+Cmd+G).
+    UngroupLayers,
+    /// Layer > New > Group... (opens the New Group dialog).
+    NewGroup,
+    /// Layer > New > Group from Layers... (opens its dialog).
+    NewGroupFromLayers,
     /// Layer > Align (and the Move tool's align buttons).
     Align(op_core::align::Align),
     /// Layer > Distribute.
@@ -389,7 +397,11 @@ impl Command {
             | Self::RenameLayer
             | Self::DeselectLayers
             | Self::Align(_)
-            | Self::Distribute(_) => return None,
+            | Self::Distribute(_)
+            | Self::NewGroup
+            | Self::NewGroupFromLayers => return None,
+            Self::GroupLayers => cmd(Key::G),
+            Self::UngroupLayers => shift_cmd(Key::G),
             Self::SelectAllLayers => Shortcut {
                 alt: true,
                 ..cmd(Key::A)
@@ -549,6 +561,16 @@ impl Command {
             }
             Self::DeselectLayers => doc.is_some_and(|d| d.doc.active_layer.is_some()),
             Self::Align(_) => doc.is_some_and(|d| op_core::align::can_align(&d.doc)),
+            Self::GroupLayers | Self::NewGroupFromLayers => {
+                doc.is_some_and(|d| layer_ops::can_group(&d.doc))
+            }
+            Self::UngroupLayers => doc.is_some_and(|d| {
+                d.doc
+                    .active_layer
+                    .and_then(|id| d.doc.layer(id))
+                    .is_some_and(|l| l.is_group())
+            }),
+            Self::NewGroup => doc.is_some(),
             Self::Distribute(_) => doc.is_some_and(|d| op_core::align::can_distribute(&d.doc)),
             Self::CloseOthers => app.docs.len() > 1,
             Self::Deselect
@@ -749,6 +771,8 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::ToggleLayerVisibility,
     Command::SelectAllLayers,
     Command::SelectAll,
+    Command::UngroupLayers,
+    Command::GroupLayers,
     Command::Deselect,
     Command::ZoomIn,
     Command::ZoomOut,
@@ -1293,6 +1317,25 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                     state.doc.select_all_layers();
                 }
                 Command::DeselectLayers => state.doc.deselect_layers(),
+                Command::GroupLayers => {
+                    if layer_ops::group_selected(&mut state.doc).is_some() {
+                        state.record("Group Layers");
+                    }
+                }
+                Command::UngroupLayers => {
+                    if layer_ops::ungroup(&mut state.doc) {
+                        state.record("Ungroup Layers");
+                    }
+                }
+                Command::NewGroup | Command::NewGroupFromLayers => {
+                    let kind = if command == Command::NewGroup {
+                        crate::dialogs::NewLayerKind::Group
+                    } else {
+                        crate::dialogs::NewLayerKind::GroupFromLayers
+                    };
+                    let name = state.doc.next_group_name();
+                    app.new_layer_dialog = Some(crate::dialogs::NewLayerDialog::group(name, kind));
+                }
                 Command::Align(how) => {
                     if op_core::align::align(&mut state.doc, how) {
                         state.record(how.name());

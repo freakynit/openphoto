@@ -34,12 +34,12 @@ fn row_height(doc: &op_core::Document) -> f32 {
     thumb_size(doc).y + pt(8.0)
 }
 
-/// Rows are this far apart.
-pub fn row_pitch(doc: &op_core::Document) -> f32 {
-    row_height(doc) + pt(1.0)
-}
 /// Space between the layer and mask thumbnails (the link icon sits in it).
 const MASK_GAP: f32 = pt(10.0);
+/// Group rows, without their 1 pt bottom line (Photoshop 2026).
+const GROUP_ROW: f32 = pt(24.0);
+/// Each level of grouping moves a row's contents right by this much.
+const INDENT: f32 = pt(16.0);
 /// The eye column, and the 1 pt line right of it.
 const EYE_W: f32 = pt(29.5);
 const LINE: egui::Color32 = egui::Color32::from_gray(0x45);
@@ -90,9 +90,16 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
         return;
     }
 
-    if bottom_bar(ui, state, bar_rect) {
+    let (layer_dialog, group_dialog) = bottom_bar(ui, state, bar_rect);
+    if layer_dialog {
         let name = state.doc.next_layer_name();
         app.new_layer_dialog = Some(crate::dialogs::NewLayerDialog::new(name));
+    } else if group_dialog {
+        let name = state.doc.next_group_name();
+        app.new_layer_dialog = Some(crate::dialogs::NewLayerDialog::group(
+            name,
+            crate::dialogs::NewLayerKind::Group,
+        ));
     }
 }
 
@@ -317,7 +324,21 @@ fn blend_row(ui: &mut Ui, state: &mut DocState, full: Rect) {
     let mode = Rect::from_min_max(at(3.0, 36.5), at(134.5, 55.5));
     ui.scope_builder(egui::UiBuilder::new().max_rect(mode), |ui| {
         let label = layer.blend_mode.label();
+        let is_group = layer.is_group();
         widgets::dropdown_with(ui, "blend-mode", mode.width(), label, editable, |ui| {
+            // A group can also pass through
+            if is_group
+                && ui
+                    .selectable_value(
+                        &mut layer.blend_mode,
+                        BlendMode::PassThrough,
+                        "Pass Through",
+                    )
+                    .changed()
+            {
+                edits.changed = true;
+                edits.record = Some("Blending Change");
+            }
             for (gi, group) in BlendMode::GROUPS.iter().enumerate() {
                 if gi > 0 {
                     ui.separator();
@@ -428,19 +449,27 @@ fn lock_row(ui: &mut Ui, state: &mut DocState, full: Rect) {
 fn layer_list(ui: &mut Ui, state: &mut DocState) -> bool {
     let mut from_background = false;
     ui.spacing_mut().item_spacing.y = 0.0;
-    // Top to bottom, as listed
-    let ids: Vec<LayerId> = state.doc.layers.iter().rev().map(|l| l.id).collect();
-    let mut list_top = None;
+    // Top to bottom, as listed; layers in collapsed groups aren't
+    let rows = visible_rows(&state.doc);
+    // Each row's top and bottom, for dropping a dragged row
+    let mut spans: Vec<(f32, f32)> = Vec::new();
     // The row being dragged (its position in the list) and where it is
     let mut dragged: Option<(usize, Pos2, bool)> = None;
     let ts = thumb_size(&state.doc);
-    let row_h = row_height(&state.doc);
-    for (row, &id) in ids.iter().enumerate() {
+    for (row, &(id, depth)) in rows.iter().enumerate() {
+        let is_group = state.doc.layer(id).is_some_and(|l| l.is_group());
+        // Group rows are 24 pt (Photoshop 2026), layers fit their thumbnail
+        let row_h = if is_group {
+            GROUP_ROW
+        } else {
+            row_height(&state.doc)
+        };
+        let indent = INDENT * depth as f32;
         let (rect, response) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width(), row_pitch(&state.doc)),
+            Vec2::new(ui.available_width(), row_h + pt(1.0)),
             Sense::click_and_drag(),
         );
-        list_top.get_or_insert(rect.top());
+        spans.push((rect.top(), rect.bottom()));
         // The row proper, left of the scrollbar gutter
         let row_rect = Rect::from_min_max(
             rect.min,
@@ -455,15 +484,37 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) -> bool {
         // The layer thumbnail, then the mask's (with a link icon between)
         // The layer thumbnail as drawn, then the mask's (with a link icon
         // between); the name starts 8 pt right of the last one
-        let thumb_box =
-            Rect::from_min_size(Pos2::new(rect.left() + pt(34.0), rect.top() + pt(4.0)), ts);
+        let thumb_box = Rect::from_min_size(
+            Pos2::new(rect.left() + pt(34.0) + indent, rect.top() + pt(4.0)),
+            ts,
+        );
         let mask_box = has_mask.then(|| thumb_box.translate(Vec2::new(ts.x + MASK_GAP, 0.0)));
-        let name_x = mask_box.unwrap_or(thumb_box).right() + pt(8.0);
+        let name_x = if is_group {
+            rect.left() + pt(71.0) + indent
+        } else {
+            mask_box.unwrap_or(thumb_box).right() + pt(8.0)
+        };
+        // A group's expand/collapse arrow
+        let arrow_center = Pos2::new(rect.left() + pt(38.0) + indent, rect.top() + pt(11.75));
+        let arrow = is_group.then(|| {
+            ui.interact(
+                Rect::from_center_size(arrow_center, Vec2::splat(pt(16.0))),
+                ui.id().with(("arrow", id.0)),
+                Sense::click(),
+            )
+        });
         // Clicking the background's lock turns it into a regular layer
         let lock = is_background
             .then(|| ui.interact(lock_rect, ui.id().with(("lock", id.0)), Sense::click()));
 
-        if eye.clicked() {
+        if arrow.as_ref().is_some_and(|a| a.clicked()) {
+            // Not a history state, as in Photoshop
+            if let Some(op_core::LayerKind::Group { collapsed }) =
+                state.doc.layer_mut(id).map(|l| &mut l.kind)
+            {
+                *collapsed = !*collapsed;
+            }
+        } else if eye.clicked() {
             if let Some(l) = state.doc.layer_mut(id) {
                 l.visible = !l.visible;
             }
@@ -637,6 +688,27 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) -> bool {
             );
         }
 
+        if let op_core::LayerKind::Group { collapsed } = layer.kind {
+            let arrow_icon = if collapsed {
+                Icon::GroupCollapsed
+            } else {
+                Icon::GroupExpanded
+            };
+            crate::ps_icons::paint(
+                painter,
+                arrow_center,
+                arrow_icon,
+                egui::Color32::from_gray(0xe0),
+                color::PANEL,
+            );
+            icon(
+                painter,
+                Pos2::new(rect.left() + pt(53.0) + indent, rect.top() + pt(11.5)),
+                Icon::Folder,
+                true,
+                color::PANEL,
+            );
+        }
         let font = if layer.is_background {
             egui::FontId::new(theme::font::BODY, egui::FontFamily::Proportional)
         } else {
@@ -663,8 +735,8 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) -> bool {
             icon(painter, lock_center, Icon::LayerLock, true, bg);
         }
     }
-    if let (Some((from_row, pointer, released)), Some(top)) = (dragged, list_top) {
-        drop_layer(ui, state, &ids, from_row, pointer, released, top);
+    if let Some((from_row, pointer, released)) = dragged {
+        drop_layer(ui, state, &rows, &spans, from_row, pointer, released);
     }
     from_background
 }
@@ -708,49 +780,87 @@ fn rename_field(ui: &mut Ui, state: &mut DocState, id: LayerId, pos: Pos2, row: 
     }
 }
 
-/// While a row is dragged, shows where it would go; on release, moves it.
+/// While a row is dragged, shows where it would go; on release, moves it
+/// (with everything in it, for a group) and records "Layer Order".
 fn drop_layer(
     ui: &Ui,
     state: &mut DocState,
-    ids: &[LayerId],
+    rows: &[(LayerId, usize)],
+    spans: &[(f32, f32)],
     from_row: usize,
     pointer: Pos2,
     released: bool,
-    list_top: f32,
 ) {
-    let n = ids.len();
-    // The gap between rows the pointer is closest to (0 = above the top row)
-    let pitch = row_pitch(&state.doc);
-    let gap = (((pointer.y - list_top) / pitch).round().max(0.0) as usize).min(n);
-    // Its final position in the list once removed from its own row...
-    let row = if gap > from_row { gap - 1 } else { gap };
-    // ...and in the bottom-up layer order
-    let to = n - 1 - row;
-    let from = n - 1 - from_row;
-    let allowed = to != from
-        && !state.doc.layers[from].is_background
-        && !(to == 0 && state.doc.layers[0].is_background);
+    // The boundary between rows the pointer is closest to (0 = above the
+    // top row)
+    let edges: Vec<f32> = spans
+        .iter()
+        .map(|s| s.0)
+        .chain(spans.last().map(|s| s.1))
+        .collect();
+    let Some(gap) = (0..edges.len()).min_by(|&a, &b| {
+        (edges[a] - pointer.y)
+            .abs()
+            .total_cmp(&(edges[b] - pointer.y).abs())
+    }) else {
+        return;
+    };
+    // In layer order: above the row under the boundary (below the last
+    // row: under that row and everything in it)
+    let doc = &state.doc;
+    let index = |id| doc.layers.iter().position(|l| l.id == id);
+    let flat = match rows.get(gap) {
+        Some(&(id, _)) => index(id).map(|i| i + 1),
+        None => rows
+            .last()
+            .and_then(|&(id, _)| doc.block(id))
+            .map(|b| b.start),
+    };
+    let moving = rows[from_row].0;
+    let Some(flat) = flat.filter(|&f| op_core::layer_ops::can_move_block(doc, moving, f)) else {
+        return;
+    };
     if released {
-        if allowed && op_core::layer_ops::move_layer(&mut state.doc, from, to) {
+        if op_core::layer_ops::move_block(&mut state.doc, moving, flat) {
             state.record("Layer Order");
         }
         return;
     }
-    if allowed {
-        let y = list_top + gap as f32 * pitch;
-        let clip = ui.clip_rect();
-        ui.painter().line_segment(
-            [Pos2::new(clip.left(), y), Pos2::new(clip.right(), y)],
-            Stroke::new(2.0, color::ACCENT),
-        );
-    }
+    let y = edges[gap];
+    let clip = ui.clip_rect();
+    ui.painter().line_segment(
+        [Pos2::new(clip.left(), y), Pos2::new(clip.right(), y)],
+        Stroke::new(2.0, color::ACCENT),
+    );
+}
+
+/// The rows of the list, top to bottom, with their depth in groups:
+/// layers inside collapsed groups are left out.
+fn visible_rows(doc: &op_core::Document) -> Vec<(LayerId, usize)> {
+    doc.layers
+        .iter()
+        .rev()
+        .filter_map(|l| {
+            let mut depth = 0;
+            let mut parent = l.parent;
+            while let Some(p) = parent.and_then(|p| doc.layer(p)) {
+                if matches!(p.kind, op_core::LayerKind::Group { collapsed: true }) {
+                    return None;
+                }
+                depth += 1;
+                parent = p.parent;
+            }
+            Some((l.id, depth))
+        })
+        .collect()
 }
 
 /// The footer: eight buttons at Photoshop 2026's positions (centers
 /// measured from the panel's right edge). Returns true when Alt-clicking
 /// "Create a new layer" asks for the New Layer dialog, as in Photoshop.
-fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) -> bool {
+fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) -> (bool, bool) {
     let mut open_dialog = false;
+    let mut open_group_dialog = false;
     let painter = ui.painter().clone();
     painter.rect_filled(rect, 0, color::PANEL);
     painter.rect_filled(
@@ -798,6 +908,11 @@ fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) -> bool {
         match i {
             Icon::DeleteLayer => delete_active_layer(state),
             Icon::NewLayer if ui.input(|i| i.modifiers.alt) => open_dialog = true,
+            Icon::NewGroup if ui.input(|i| i.modifiers.alt) => open_group_dialog = true,
+            Icon::NewGroup => {
+                op_core::layer_ops::new_group(&mut state.doc);
+                state.record("New Group");
+            }
             Icon::NewLayer => new_layer(state),
             Icon::LayerMask => {
                 // From the selection when there is one, as in Photoshop
@@ -813,7 +928,7 @@ fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) -> bool {
             _ => {}
         }
     }
-    open_dialog
+    (open_dialog, open_group_dialog)
 }
 
 /// Layer > Hide Layers / Show Layers. Like Photoshop's default, visibility
@@ -875,6 +990,33 @@ pub fn layer_from_background_with(state: &mut DocState, new: crate::dialogs::New
         layer.opacity = new.opacity;
     }
     state.record("Layer From Background");
+}
+
+/// Layer > New > Group... (or Group from Layers...) confirmed: a group with
+/// the dialog's name, color label, blend mode and opacity, empty above the
+/// active layer or holding the selected layers. Recorded as "New Group"
+/// or "Group Layers".
+pub fn new_group_from(state: &mut DocState, new: crate::dialogs::NewLayer, from_layers: bool) {
+    let doc = &mut state.doc;
+    let id = if from_layers {
+        match op_core::layer_ops::group_selected(doc) {
+            Some(id) => id,
+            None => return,
+        }
+    } else {
+        op_core::layer_ops::new_group(doc)
+    };
+    if let Some(group) = doc.layer_mut(id) {
+        group.name = new.name;
+        group.color = new.color;
+        group.blend_mode = new.mode;
+        group.opacity = new.opacity;
+    }
+    state.record(if from_layers {
+        "Group Layers"
+    } else {
+        "New Group"
+    });
 }
 
 pub fn new_layer(state: &mut DocState) {
