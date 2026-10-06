@@ -16,12 +16,17 @@ pub enum Command {
     New,
     Open,
     Close,
+    CloseAll,
+    CloseOthers,
     ExportAs,
     Undo,
     Redo,
+    ToggleLastState,
     CanvasSize,
     NewLayer,
     DeleteLayer,
+    /// Layer > Hide Layers / Show Layers for the active layer.
+    ToggleLayerVisibility,
     ZoomIn,
     ZoomOut,
     FitOnScreen,
@@ -89,20 +94,25 @@ impl Shortcut {
 }
 
 impl Command {
-    /// Shortcuts follow Photoshop's defaults.
+    /// Shortcuts match Photoshop's defaults (read from Photoshop 2026's menus).
     pub fn shortcut(self) -> Option<Shortcut> {
         Some(match self {
             Self::New => cmd(Key::N),
             Self::Open => cmd(Key::O),
             Self::Close => cmd(Key::W),
+            Self::CloseAll => alt_cmd(Key::W),
+            Self::CloseOthers => alt_cmd(Key::P),
             Self::ExportAs => Shortcut {
                 shift: true,
                 ..alt_cmd(Key::W)
             },
             Self::Undo => cmd(Key::Z),
             Self::Redo => shift_cmd(Key::Z),
+            Self::ToggleLastState => alt_cmd(Key::Z),
             Self::CanvasSize => alt_cmd(Key::C),
             Self::NewLayer => shift_cmd(Key::N),
+            Self::ToggleLayerVisibility => cmd(Key::Comma),
+            // Photoshop shows Cmd++ and also accepts Cmd+=
             Self::ZoomIn => cmd(Key::Equals),
             Self::ZoomOut => cmd(Key::Minus),
             Self::FitOnScreen => cmd(Key::Num0),
@@ -121,10 +131,15 @@ impl Command {
         let doc = app.active_doc.and_then(|id| app.docs.get(&id));
         match self {
             Self::New | Self::Open | Self::ToggleHistory => true,
-            Self::Undo => doc.is_some_and(|d| d.history.can_undo()),
+            Self::Undo | Self::ToggleLastState => doc.is_some_and(|d| d.history.can_undo()),
             Self::Redo => doc.is_some_and(|d| d.history.can_redo()),
             Self::DeleteLayer => doc.is_some_and(|d| d.doc.layers.len() > 1),
+            Self::CloseOthers => app.docs.len() > 1,
+            Self::ToggleLayerVisibility => doc
+                .and_then(|d| d.doc.active_layer.and_then(|id| d.doc.layer(id)))
+                .is_some(),
             Self::Close
+            | Self::CloseAll
             | Self::ExportAs
             | Self::CanvasSize
             | Self::NewLayer
@@ -142,17 +157,34 @@ impl Command {
 const SHORTCUT_ORDER: &[Command] = &[
     Command::ExportAs,
     Command::Redo,
+    Command::ToggleLastState,
     Command::NewLayer,
     Command::CanvasSize,
+    Command::CloseAll,
+    Command::CloseOthers,
     Command::Undo,
     Command::New,
     Command::Open,
     Command::Close,
+    Command::ToggleLayerVisibility,
     Command::ZoomIn,
     Command::ZoomOut,
     Command::FitOnScreen,
     Command::ActualPixels,
 ];
+
+/// Shortcuts the macOS menu bar can't catch. Zoom In's menu item shows Cmd++
+/// like Photoshop, which macOS only matches with Shift held, so the plain
+/// Cmd+= key is handled here.
+#[cfg(target_os = "macos")]
+pub fn from_shortcuts(ctx: &egui::Context) -> Vec<Command> {
+    let hit = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::Equals));
+    if hit {
+        vec![Command::ZoomIn]
+    } else {
+        Vec::new()
+    }
+}
 
 #[cfg(not(target_os = "macos"))]
 /// Command shortcuts typed into egui. On macOS the native menu bar handles
@@ -184,6 +216,8 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState, dock: &mut
         Command::New => actions::new_document(app, dock),
         Command::Open => actions::open_dialog(app, dock),
         Command::Close => actions::close_active(app, dock),
+        Command::CloseAll => actions::close_all(app, dock),
+        Command::CloseOthers => actions::close_others(app, dock),
         Command::ExportAs => actions::export_dialog(app),
         Command::ToggleHistory => app.history_open = !app.history_open,
         Command::CanvasSize => {
@@ -203,6 +237,10 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState, dock: &mut
                 Command::Redo => {
                     state.redo();
                 }
+                Command::ToggleLastState => {
+                    state.toggle_last_state();
+                }
+                Command::ToggleLayerVisibility => crate::panels::toggle_active_visibility(state),
                 Command::NewLayer => crate::panels::new_layer(state),
                 Command::DeleteLayer => crate::panels::delete_active_layer(state),
                 Command::ZoomIn => document_view::zoom_step(state, true, ppp),

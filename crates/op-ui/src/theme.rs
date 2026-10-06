@@ -67,6 +67,13 @@ pub mod font {
 /// Affects the UI only; canvas zoom is always in physical pixels.
 pub const UI_SCALE: f32 = 0.675;
 
+/// Converts a size measured in points on Photoshop's screen into egui units
+/// (which [`UI_SCALE`] scales back down). Newer UI is measured directly in
+/// Photoshop at 1:1, so it uses this instead of reference-screenshot pixels.
+pub const fn pt(points: f32) -> f32 {
+    points / UI_SCALE
+}
+
 /// Name of the semibold font family (panel tabs, headings).
 pub const SEMIBOLD: &str = "semibold";
 

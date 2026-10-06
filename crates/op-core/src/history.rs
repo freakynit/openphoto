@@ -16,6 +16,8 @@ pub struct History {
     states: Vec<HistoryState>,
     current: usize,
     limit: usize,
+    /// Where Toggle Last State jumps back to, while a toggle is in effect.
+    toggle_origin: Option<usize>,
 }
 
 impl History {
@@ -29,12 +31,14 @@ impl History {
             }],
             current: 0,
             limit: DEFAULT_LIMIT,
+            toggle_origin: None,
         }
     }
 
     /// Records the document's current state after an edit. Any undone states
     /// are discarded, as in Photoshop.
     pub fn record(&mut self, doc: &Document, name: impl Into<String>) {
+        self.toggle_origin = None;
         self.states.truncate(self.current + 1);
         self.states.push(HistoryState {
             name: name.into(),
@@ -94,11 +98,32 @@ impl History {
         doc.restore(&self.states[index - 1].snapshot);
         self.states.truncate(index);
         self.current = index - 1;
+        self.toggle_origin = None;
         true
+    }
+
+    /// Edit > Toggle Last State: switches between the current state and the
+    /// one before it. Toggling again returns to where it started.
+    pub fn toggle_last_state(&mut self, doc: &mut Document) -> bool {
+        match self.toggle_origin.take() {
+            Some(origin) if origin < self.states.len() => self.go_to(origin, doc),
+            _ if self.current > 0 => {
+                let origin = self.current;
+                let moved = self.go_to(origin - 1, doc);
+                self.toggle_origin = Some(origin);
+                moved
+            }
+            _ => false,
+        }
     }
 
     /// Restores the document to state `index` (clicking a row in the History panel).
     pub fn jump(&mut self, index: usize, doc: &mut Document) -> bool {
+        self.toggle_origin = None;
+        self.go_to(index, doc)
+    }
+
+    fn go_to(&mut self, index: usize, doc: &mut Document) -> bool {
         if index >= self.states.len() || index == self.current {
             return false;
         }
@@ -149,6 +174,27 @@ mod tests {
         assert_eq!(h.current(), 1);
         assert_eq!(doc.width, 2);
         assert!(!h.delete_from(0, &mut doc));
+    }
+
+    #[test]
+    fn toggle_last_state_round_trips() {
+        let mut doc = Document::new_with_background("t", 1, 1, Color::WHITE);
+        let mut h = History::new(&doc, "Open");
+        doc.resize_canvas(2, 1, Anchor::CENTER, Color::BLACK);
+        h.record(&doc, "Canvas Size");
+        doc.resize_canvas(3, 1, Anchor::CENTER, Color::BLACK);
+        h.record(&doc, "Canvas Size");
+
+        assert!(h.toggle_last_state(&mut doc));
+        assert_eq!((h.current(), doc.width), (1, 2));
+        assert!(h.toggle_last_state(&mut doc));
+        assert_eq!((h.current(), doc.width), (2, 3));
+
+        // A regular undo ends the toggle
+        h.toggle_last_state(&mut doc);
+        h.undo(&mut doc);
+        assert_eq!(h.current(), 0);
+        assert!(!h.toggle_last_state(&mut doc));
     }
 
     #[test]

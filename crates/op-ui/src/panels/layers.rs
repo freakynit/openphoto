@@ -355,6 +355,16 @@ fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) {
     }
 }
 
+/// Layer > Hide Layers / Show Layers. Like Photoshop's default, visibility
+/// changes are not recorded in the history.
+pub fn toggle_active_visibility(state: &mut DocState) {
+    let doc = &mut state.doc;
+    if let Some(layer) = doc.active_layer.and_then(|id| doc.layer_mut(id)) {
+        layer.visible = !layer.visible;
+        doc.mark_dirty();
+    }
+}
+
 pub fn new_layer(state: &mut DocState) {
     let doc = &mut state.doc;
     let n = doc.layers.iter().filter(|l| !l.is_background).count() + 1;

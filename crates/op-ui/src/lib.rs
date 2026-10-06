@@ -115,7 +115,11 @@ impl OpenPhotoApp {
     /// (other platforms, where there is no native menu).
     fn run_commands(&mut self, ctx: &egui::Context) {
         #[cfg(target_os = "macos")]
-        let commands = self.menu.poll();
+        let commands = {
+            let mut c = self.menu.poll();
+            c.extend(commands::from_shortcuts(ctx));
+            c
+        };
         #[cfg(not(target_os = "macos"))]
         let commands = commands::from_shortcuts(ctx);
         for command in commands {
@@ -147,23 +151,26 @@ impl OpenPhotoApp {
         }
     }
 
-    /// Shows the History panel to the left of its icon-strip button. Clicking
-    /// anywhere else closes it, like Photoshop's collapsed panels.
-    fn history_popout(&mut self, ctx: &egui::Context, button: egui::Rect) {
-        let size = panels::history::SIZE;
-        let pos = egui::pos2(button.left() - size.x - 6.0, button.top());
+    /// Shows the History panel to the left of the icon strip, the way
+    /// Photoshop pops out a collapsed panel: its right edge touches the strip
+    /// and its top sits 13 pt above the History button. Clicking anywhere else
+    /// closes it (Photoshop's default "Auto-Collapse Iconic Panels").
+    fn history_popout(&mut self, ctx: &egui::Context, strip: egui::Rect, button: egui::Rect) {
+        let size = self.state.history_panel.size();
+        let pos = egui::pos2(strip.left() - size.x, button.top() - theme::pt(13.0));
+        let mut collapse = false;
         let area = egui::Area::new(egui::Id::new("history-popout"))
             .fixed_pos(pos)
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 egui::Frame::NONE
-                    .stroke(Stroke::new(1.0, color::SEPARATOR))
                     .shadow(ui.visuals().popup_shadow)
                     .show(ui, |ui| {
                         let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
                         let mut panel = ui.new_child(egui::UiBuilder::new().max_rect(rect));
-                        panel.set_clip_rect(rect);
-                        panels::history::show(&mut panel, &mut self.state);
+                        panel.set_clip_rect(rect.expand(1.0));
+                        let action = panels::history::show(&mut panel, &mut self.state);
+                        collapse = matches!(action, panels::history::Action::Collapse);
                     });
             });
 
@@ -173,7 +180,7 @@ impl OpenPhotoApp {
                     .interact_pos()
                     .is_some_and(|p| !area.response.rect.contains(p) && !button.contains(p))
         });
-        if clicked_outside {
+        if clicked_outside || collapse {
             self.state.history_open = false;
         }
     }
@@ -270,12 +277,12 @@ impl eframe::App for OpenPhotoApp {
             .resizable(false)
             .frame(bar_frame)
             .show(ui, |ui| self.panels.show(ui, &mut self.state));
-        let history_button = egui::Panel::right("icon-strip")
+        let strip = egui::Panel::right("icon-strip")
             .exact_size(size::ICON_STRIP)
             .resizable(false)
             .frame(bar_frame)
-            .show(ui, |ui| panels::icon_strip(ui, &mut self.state))
-            .inner;
+            .show(ui, |ui| panels::icon_strip(ui, &mut self.state));
+        let (strip_rect, history_button) = (strip.response.rect, strip.inner);
 
         egui::CentralPanel::no_frame()
             .frame(Frame::NONE.fill(color::PASTEBOARD))
@@ -308,7 +315,7 @@ impl eframe::App for OpenPhotoApp {
         }
 
         if self.state.history_open {
-            self.history_popout(&ctx, history_button);
+            self.history_popout(&ctx, strip_rect, history_button);
         }
 
         self.canvas_size_dialog(&ctx);

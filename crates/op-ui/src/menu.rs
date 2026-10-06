@@ -4,7 +4,7 @@
 use std::str::FromStr;
 use std::sync::mpsc::{Receiver, channel};
 
-use muda::accelerator::Accelerator;
+use muda::accelerator::{Accelerator, KeyAccelerator};
 use muda::{AboutMetadata, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 
 use crate::commands::Command;
@@ -14,12 +14,16 @@ const ALL_COMMANDS: &[Command] = &[
     Command::New,
     Command::Open,
     Command::Close,
+    Command::CloseAll,
+    Command::CloseOthers,
     Command::ExportAs,
     Command::Undo,
     Command::Redo,
+    Command::ToggleLastState,
     Command::CanvasSize,
     Command::NewLayer,
     Command::DeleteLayer,
+    Command::ToggleLayerVisibility,
     Command::ZoomIn,
     Command::ZoomOut,
     Command::FitOnScreen,
@@ -53,6 +57,11 @@ impl NativeMenu {
                 .shortcut()
                 .and_then(|s| accelerator(&s.accelerator()));
             let item = MenuItem::with_id(id(command), label, false, accel);
+            if command == Command::ZoomIn {
+                // Shown as Cmd++ like Photoshop; Cmd+= is handled in egui
+                let plus = KeyAccelerator::from_str("CmdOrCtrl++").ok();
+                let _ = item.set_key_accelerator(plus);
+            }
             items.push((command, item.clone()));
             item
         };
@@ -90,15 +99,18 @@ impl NativeMenu {
             "File",
             true,
             &[
-                &item("New...", Command::New),
+                &item("New...", Command::New) as &dyn IsMenuItem,
                 &item("Open...", Command::Open),
                 &sep(),
                 &item("Close", Command::Close),
+                &item("Close All", Command::CloseAll),
+                &item("Close Others", Command::CloseOthers),
                 &sep(),
                 &todo("Save", Some("CmdOrCtrl+S")),
                 &todo("Save As...", Some("CmdOrCtrl+Shift+S")),
                 &sep(),
-                &item("Export As...", Command::ExportAs),
+                &Submenu::with_items("Export", true, &[&item("Export As...", Command::ExportAs)])
+                    .expect("static menu definition is valid"),
             ],
         );
 
@@ -144,8 +156,15 @@ impl NativeMenu {
             "Layer",
             true,
             &[
-                &item("New Layer", Command::NewLayer),
-                &item("Delete Layer", Command::DeleteLayer),
+                // Photoshop's "Layer..." opens a dialog; ours creates the layer
+                // directly, so the label has no ellipsis.
+                &Submenu::with_items("New", true, &[&item("Layer", Command::NewLayer)])
+                    .expect("static menu definition is valid") as &dyn IsMenuItem,
+                &sep(),
+                &Submenu::with_items("Delete", true, &[&item("Layer", Command::DeleteLayer)])
+                    .expect("static menu definition is valid"),
+                &sep(),
+                &item("Hide Layers", Command::ToggleLayerVisibility),
             ],
         );
 
@@ -215,6 +234,17 @@ impl NativeMenu {
                     Some(name) => format!("Redo {name}"),
                     None => "Redo".into(),
                 }),
+                Command::ToggleLayerVisibility => {
+                    let layer = doc.and_then(|d| d.doc.active_layer.and_then(|id| d.doc.layer(id)));
+                    Some(
+                        if layer.is_some_and(|l| !l.visible) {
+                            "Show Layers"
+                        } else {
+                            "Hide Layers"
+                        }
+                        .into(),
+                    )
+                }
                 _ => None,
             };
             let applied = &mut self.applied[i];

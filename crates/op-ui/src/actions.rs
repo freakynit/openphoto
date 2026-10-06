@@ -82,6 +82,36 @@ pub fn close_active(app: &mut AppState, dock: &mut DockState<DocId>) {
     app.active_doc = None;
 }
 
+/// File > Close All.
+pub fn close_all(app: &mut AppState, dock: &mut DockState<DocId>) {
+    let ids: Vec<DocId> = app.docs.keys().copied().collect();
+    close_docs(app, dock, &ids);
+}
+
+/// File > Close Others: closes every document except the active one.
+pub fn close_others(app: &mut AppState, dock: &mut DockState<DocId>) {
+    let active = app.active_doc;
+    let ids: Vec<DocId> = app
+        .docs
+        .keys()
+        .copied()
+        .filter(|id| Some(*id) != active)
+        .collect();
+    close_docs(app, dock, &ids);
+}
+
+fn close_docs(app: &mut AppState, dock: &mut DockState<DocId>, ids: &[DocId]) {
+    for id in ids {
+        if let Some(path) = dock.find_tab(id) {
+            dock.remove_tab(path);
+        }
+        app.docs.remove(id);
+        if app.active_doc == Some(*id) {
+            app.active_doc = None;
+        }
+    }
+}
+
 /// Single-key tool and color shortcuts. Modifier shortcuts are commands; see
 /// [`crate::commands`].
 pub fn handle_tool_keys(ctx: &egui::Context, app: &mut AppState) {

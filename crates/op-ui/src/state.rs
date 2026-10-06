@@ -40,13 +40,20 @@ pub struct DocState {
     pending_edit: bool,
     canvas: Option<Arc<CanvasImage>>,
     thumbs: HashMap<LayerId, (u64, egui::TextureHandle)>,
+    /// Thumbnail of the document as opened, for the History panel's snapshot
+    /// row. Kept as pixels until a texture can be created.
+    snapshot_thumb: Option<egui::ColorImage>,
+    snapshot_texture: Option<egui::TextureHandle>,
 }
 
 impl DocState {
     /// `initial` names the first history state, e.g. "Open" or "New".
     pub fn new(doc: Document, initial: &str) -> Self {
+        let snapshot_thumb = Some(composite_thumbnail(&doc, SNAPSHOT_THUMB_PX));
         Self {
             history: History::new(&doc, initial),
+            snapshot_thumb,
+            snapshot_texture: None,
             doc,
             view: View::default(),
             pending_edit: false,
@@ -81,6 +88,11 @@ impl DocState {
     pub fn redo(&mut self) -> bool {
         self.pending_edit = false;
         self.history.redo(&mut self.doc)
+    }
+
+    pub fn toggle_last_state(&mut self) -> bool {
+        self.pending_edit = false;
+        self.history.toggle_last_state(&mut self.doc)
     }
 
     pub fn jump_to_state(&mut self, index: usize) -> bool {
@@ -122,6 +134,16 @@ impl DocState {
         Some(Color::from_rgba8(img.pixels[i..i + 4].try_into().ok()?))
     }
 
+    /// Thumbnail of the document as it was opened (History panel snapshot).
+    pub fn snapshot_thumbnail(&mut self, ctx: &egui::Context) -> Option<egui::TextureHandle> {
+        if let Some(image) = self.snapshot_thumb.take() {
+            let name = format!("snapshot-{}", self.doc.id.0);
+            self.snapshot_texture =
+                Some(ctx.load_texture(name, image, egui::TextureOptions::LINEAR));
+        }
+        self.snapshot_texture.clone()
+    }
+
     /// Layer thumbnail, cached per document revision.
     pub fn layer_thumbnail(
         &mut self,
@@ -158,6 +180,31 @@ impl DocState {
         self.thumbs.insert(layer, (rev, tex.clone()));
         Some(tex)
     }
+}
+
+const SNAPSHOT_THUMB_PX: u32 = 96;
+
+/// Downscaled composite of the whole document (nearest-neighbor).
+fn composite_thumbnail(doc: &Document, max_px: u32) -> egui::ColorImage {
+    let pixels = doc.composite_rgba8();
+    let scale = (max_px as f32 / doc.width.max(doc.height) as f32).min(1.0);
+    let tw = ((doc.width as f32 * scale).round() as u32).max(1);
+    let th = ((doc.height as f32 * scale).round() as u32).max(1);
+    let mut out = Vec::with_capacity((tw * th) as usize);
+    for y in 0..th {
+        for x in 0..tw {
+            let sx = (((x as f32 + 0.5) / scale) as u32).min(doc.width - 1);
+            let sy = (((y as f32 + 0.5) / scale) as u32).min(doc.height - 1);
+            let i = ((sy * doc.width + sx) * 4) as usize;
+            out.push(egui::Color32::from_rgba_unmultiplied(
+                pixels[i],
+                pixels[i + 1],
+                pixels[i + 2],
+                pixels[i + 3],
+            ));
+        }
+    }
+    egui::ColorImage::new([tw as usize, th as usize], out)
 }
 
 /// Selection combine mode (the four buttons in the options bar).
@@ -214,6 +261,7 @@ pub struct AppState {
     pub alert: Option<String>,
     /// Whether the History panel is popped out from the icon strip.
     pub history_open: bool,
+    pub history_panel: crate::panels::history::PanelState,
     /// Image > Canvas Size, while open.
     pub canvas_size_dialog: Option<crate::dialogs::CanvasSizeDialog>,
 }
@@ -233,6 +281,7 @@ impl Default for AppState {
             untitled_counter: 0,
             alert: None,
             history_open: false,
+            history_panel: Default::default(),
             canvas_size_dialog: None,
         }
     }
