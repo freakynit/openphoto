@@ -57,6 +57,8 @@ pub struct DocState {
     pub last_paint_point: Option<(f32, f32)>,
     /// A lasso outline being drawn.
     pub lasso: Option<LassoPath>,
+    /// A guide being dragged.
+    pub guide_drag: Option<GuideDrag>,
     /// The Crop tool's box, while the Crop tool is in use.
     pub crop: Option<CropBox>,
     /// Edit > Free Transform, while in progress.
@@ -98,6 +100,7 @@ impl DocState {
             lasso: None,
             free_transform: None,
             crop: None,
+            guide_drag: None,
             gradient_drag: None,
             outline: None,
             canvas: None,
@@ -334,6 +337,38 @@ pub struct MarqueeDrag {
     /// so they chose the combine mode and don't constrain the shape.
     pub shift_for_op: bool,
     pub alt_for_op: bool,
+}
+
+/// View menu switches. Photoshop's defaults: rulers and grid off, Extras
+/// and guides on, guides unlocked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewOptions {
+    pub rulers: bool,
+    /// View > Extras: selection edges, guides and the grid together.
+    pub extras: bool,
+    pub guides: bool,
+    pub grid: bool,
+    pub lock_guides: bool,
+}
+
+impl Default for ViewOptions {
+    fn default() -> Self {
+        Self {
+            rulers: false,
+            extras: true,
+            guides: true,
+            grid: false,
+            lock_guides: false,
+        }
+    }
+}
+
+/// A guide being dragged: out of a ruler (`index` is `None`) or an
+/// existing one, and where it is now.
+#[derive(Clone, Copy, Debug)]
+pub struct GuideDrag {
+    pub index: Option<usize>,
+    pub guide: op_core::Guide,
 }
 
 /// The Crop tool's box, in document pixels.
@@ -597,6 +632,7 @@ pub struct AppState {
     pub foreground: Color,
     pub background: Color,
     pub marquee: MarqueeOptions,
+    pub view: ViewOptions,
     pub eyedropper: EyedropperOptions,
     pub gradient: op_core::gradient::GradientOptions,
     pub wand: WandOptions,
@@ -623,6 +659,8 @@ pub struct AppState {
     pub last_filter: Option<op_core::filter::Filter>,
     /// An adjustment or filter dialog, while open.
     pub adjust_dialog: Option<crate::dialogs::AdjustDialog>,
+    /// View > Guides > New Guide..., while open.
+    pub new_guide_dialog: Option<crate::dialogs::NewGuideDialog>,
     /// Image > Image Size, while open.
     pub image_size_dialog: Option<crate::dialogs::ImageSizeDialog>,
     /// Image > Trim, while open.
@@ -662,6 +700,7 @@ impl Default for AppState {
             foreground,
             background: Color::WHITE,
             marquee: MarqueeOptions::default(),
+            view: ViewOptions::default(),
             eyedropper: EyedropperOptions::default(),
             gradient: Default::default(),
             wand: WandOptions::default(),
@@ -678,6 +717,7 @@ impl Default for AppState {
             fill_dialog: None,
             trim_dialog: None,
             image_size_dialog: None,
+            new_guide_dialog: None,
             adjust_dialog: None,
             last_filter: None,
             last_transform: None,
@@ -746,6 +786,7 @@ impl AppState {
             || self.fill_dialog.is_some()
             || self.trim_dialog.is_some()
             || self.image_size_dialog.is_some()
+            || self.new_guide_dialog.is_some()
             || self.adjust_dialog.is_some()
             || self.color_picker.is_some()
             || self.save_prompt.is_some()

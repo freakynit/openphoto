@@ -5,7 +5,10 @@ use std::str::FromStr;
 use std::sync::mpsc::{Receiver, channel};
 
 use muda::accelerator::{Accelerator, KeyAccelerator};
-use muda::{AboutMetadata, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+use muda::{
+    AboutMetadata, CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem,
+    Submenu,
+};
 
 use crate::commands::Command;
 use crate::state::AppState;
@@ -91,7 +94,18 @@ const ALL_COMMANDS: &[Command] = &[
     Command::ZoomIn,
     Command::ZoomOut,
     Command::FitOnScreen,
+    Command::FitLayers,
     Command::ActualPixels,
+    Command::Zoom200,
+    Command::PrintSize,
+    Command::ToggleRulers,
+    Command::ToggleExtras,
+    Command::ToggleGuides,
+    Command::ToggleGrid,
+    Command::LockGuides,
+    Command::ClearGuides,
+    Command::NewGuide,
+    Command::HideApp,
     Command::ToggleHistory,
 ];
 
@@ -107,6 +121,8 @@ pub struct NativeMenu {
     /// Keeps the native menu alive.
     _menu: Menu,
     items: Vec<(Command, MenuItem)>,
+    /// View menu switches, shown with a check mark.
+    checks: Vec<(Command, CheckMenuItem)>,
     events: Receiver<Command>,
     /// Last applied (enabled, dynamic label) per item, to avoid redundant
     /// native calls.
@@ -127,6 +143,16 @@ impl NativeMenu {
                 let _ = item.set_key_accelerator(plus);
             }
             items.borrow_mut().push((command, item.clone()));
+            item
+        };
+        let checks = std::cell::RefCell::new(Vec::new());
+        // A switch with a check mark
+        let check_item = |label: &str, command: Command| {
+            let accel = command
+                .shortcut()
+                .and_then(|s| accelerator(&s.accelerator()));
+            let item = CheckMenuItem::with_id(id(command), label, false, false, accel);
+            checks.borrow_mut().push((command, item.clone()));
             item
         };
         // A command item without a key equivalent (its key is handled in egui)
@@ -157,7 +183,8 @@ impl NativeMenu {
                 &sep(),
                 &PredefinedMenuItem::services(None),
                 &sep(),
-                &PredefinedMenuItem::hide(Some("Hide OpenPhoto")),
+                // Photoshop uses Ctrl+Cmd+H here and Cmd+H for View > Extras
+                &item("Hide OpenPhoto", Command::HideApp),
                 &PredefinedMenuItem::hide_others(None),
                 &PredefinedMenuItem::show_all(None),
                 &sep(),
@@ -672,10 +699,82 @@ impl NativeMenu {
             "View",
             true,
             &[
+                &todo_sub("Proof Setup") as &dyn IsMenuItem,
+                &todo("Proof Colors", Some("CmdOrCtrl+Y")),
+                &todo("Gamut Warning", Some("CmdOrCtrl+Shift+Y")),
+                &todo_sub("Pixel Aspect Ratio"),
+                &todo("Pixel Aspect Ratio Correction", None),
+                &todo("32-bit Preview Options...", None),
+                &sep(),
                 &item("Zoom In", Command::ZoomIn),
                 &item("Zoom Out", Command::ZoomOut),
                 &item("Fit on Screen", Command::FitOnScreen),
+                &item("Fit Layer(s) on Screen", Command::FitLayers),
+                &todo("Fit Artboard on Screen", None),
                 &item("100%", Command::ActualPixels),
+                &item("200%", Command::Zoom200),
+                &item("Print Size", Command::PrintSize),
+                &todo("Actual Size", None),
+                &todo("Flip Horizontal", None),
+                &todo("Pattern Preview", None),
+                &sep(),
+                &todo_sub("Screen Mode"),
+                &sep(),
+                &check_item("Extras", Command::ToggleExtras),
+                &Submenu::with_items(
+                    "Show",
+                    true,
+                    &[
+                        &todo("Layer Edges", None) as &dyn IsMenuItem,
+                        &todo("Selection Edges", None),
+                        &todo("Target Path", Some("CmdOrCtrl+Shift+H")),
+                        &check_item("Grid", Command::ToggleGrid),
+                        &check_item("Guides", Command::ToggleGuides),
+                        &todo("Canvas Guides", None),
+                        &todo("Artboard Guides", None),
+                        &todo("Artboard Names", None),
+                        &todo("Count", None),
+                        &todo("Smart Guides", None),
+                        &todo("Slices", None),
+                        &todo("Notes", None),
+                        &todo("Pixel Grid", None),
+                        &todo("Pattern Preview Tile Bounds", None),
+                        &sep(),
+                        &todo("Mesh", None),
+                        &todo("Edit Pins", None),
+                        &sep(),
+                        &todo("All", None),
+                        &todo("None", None),
+                        &sep(),
+                        &todo("Show Extras Options...", None),
+                    ],
+                )
+                .expect("static menu definition is valid"),
+                &sep(),
+                &check_item("Rulers", Command::ToggleRulers),
+                &sep(),
+                &todo("Snap", Some("CmdOrCtrl+Shift+;")),
+                &todo_sub("Snap To"),
+                &sep(),
+                &Submenu::with_items(
+                    "Guides",
+                    true,
+                    &[
+                        &todo("Edit Selected Guides", None) as &dyn IsMenuItem,
+                        &check_item("Lock Guides", Command::LockGuides),
+                        &item("Clear Guides", Command::ClearGuides),
+                        &todo("Clear Selected Guides", None),
+                        &todo("Clear Selected Artboard Guides", None),
+                        &todo("Clear Canvas Guides", None),
+                        &item("New Guide...", Command::NewGuide),
+                        &todo("New Guide Layout...", None),
+                        &todo("New Guides From Shape", None),
+                    ],
+                )
+                .expect("static menu definition is valid"),
+                &sep(),
+                &todo("Lock Slices", None),
+                &todo("Clear Slices", None),
             ],
         );
 
@@ -714,6 +813,7 @@ impl NativeMenu {
         Self {
             _menu: menu,
             items,
+            checks: checks.into_inner(),
             events,
             applied,
         }
@@ -726,6 +826,16 @@ impl NativeMenu {
 
     /// Syncs enabled states and dynamic labels ("Undo Canvas Size") with the app.
     pub fn update(&mut self, app: &AppState) {
+        for (command, item) in &self.checks {
+            let enabled = command.enabled(app);
+            if item.is_enabled() != enabled {
+                item.set_enabled(enabled);
+            }
+            let checked = command.checked(app).unwrap_or(false);
+            if item.is_checked() != checked {
+                item.set_checked(checked);
+            }
+        }
         let doc = app.active_doc.and_then(|id| app.docs.get(&id));
         for (i, (command, item)) in self.items.iter().enumerate() {
             let enabled = command.enabled(app);

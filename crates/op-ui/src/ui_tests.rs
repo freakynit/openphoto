@@ -1097,3 +1097,57 @@ fn image_size_resamples_proportionally() {
     assert_eq!(last_history(&h), "Image Size");
     assert_eq!(composite_pixel(&mut h, 100, 100), [0x14, 0x14, 0x14, 255]);
 }
+
+#[test]
+fn rulers_and_guides() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::R);
+    h.run_steps(3);
+    assert!(h.state().state.view.rulers);
+    // The top ruler runs along the top of the document window (y ≈ 100 pt)
+    drag(
+        &mut h,
+        at_pt(500.0, 100.0),
+        at_pt(500.0, 300.0),
+        Modifiers::NONE,
+    );
+    let guides = active(&h).doc.guides.clone();
+    assert_eq!(guides.len(), 1);
+    assert!(!guides[0].vertical);
+    assert_eq!(last_history(&h), "New Guide");
+    let y = guides[0].position;
+    // Grid on, for the screenshot
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Quote);
+    h.run_steps(2);
+    shot(&mut h, "rulers");
+
+    // The Move tool drags it down by 50 points
+    h.key_press(egui::Key::V);
+    h.run_steps(2);
+    drag(
+        &mut h,
+        at_pt(500.0, 300.0),
+        at_pt(500.0, 350.0),
+        Modifiers::NONE,
+    );
+    assert_eq!(last_history(&h), "Move Guide");
+    let moved = active(&h).doc.guides[0].position;
+    assert!(moved > y + 10.0, "{y} -> {moved}");
+    // Dropped on the ruler it is deleted; undo brings it back
+    drag(
+        &mut h,
+        at_pt(500.0, 350.0),
+        at_pt(500.0, 100.0),
+        Modifiers::NONE,
+    );
+    assert!(active(&h).doc.guides.is_empty());
+    assert_eq!(last_history(&h), "Delete Guide");
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Z);
+    h.run_steps(2);
+    assert_eq!(active(&h).doc.guides.len(), 1);
+    // Locked guides stay put
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, egui::Key::Semicolon);
+    h.run_steps(2);
+    assert!(h.state().state.view.lock_guides);
+}

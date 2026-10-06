@@ -1,7 +1,7 @@
 //! Image menu operations that reshape the canvas: Image Rotation, the
 //! canvas flips, Crop and Trim.
 
-use crate::document::Document;
+use crate::document::{Document, Guide};
 
 /// Image > Image Rotation (fixed angles and flips).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,6 +47,43 @@ pub fn reorient(doc: &mut Document, orientation: Orientation) {
         |image| image.remapped(nw, nh, source),
         |selection| selection.remapped(nw, nh, source),
     );
+    let (w, h) = (w as f32, h as f32);
+    doc.map_guides(|g| {
+        let p = g.position;
+        match (orientation, g.vertical) {
+            (Orientation::Rotate180, v) => Guide {
+                vertical: v,
+                position: if v { w - p } else { h - p },
+            },
+            // Clockwise: a vertical guide at x becomes horizontal at x;
+            // a horizontal guide at y becomes vertical at h - y
+            (Orientation::Rotate90Clockwise, true) => Guide {
+                vertical: false,
+                position: p,
+            },
+            (Orientation::Rotate90Clockwise, false) => Guide {
+                vertical: true,
+                position: h - p,
+            },
+            (Orientation::Rotate90CounterClockwise, true) => Guide {
+                vertical: false,
+                position: w - p,
+            },
+            (Orientation::Rotate90CounterClockwise, false) => Guide {
+                vertical: true,
+                position: p,
+            },
+            (Orientation::FlipHorizontal, true) => Guide {
+                vertical: true,
+                position: w - p,
+            },
+            (Orientation::FlipVertical, false) => Guide {
+                vertical: false,
+                position: h - p,
+            },
+            _ => g,
+        }
+    });
 }
 
 /// Cuts the canvas down to x0..x1 × y0..y1 (exclusive ends, inside the
@@ -61,6 +98,10 @@ pub fn crop(doc: &mut Document, x0: u32, y0: u32, x1: u32, y1: u32) {
         |image| image.with_canvas(w, h, dx, dy, [0; 4]),
         |selection| selection.with_canvas(w, h, dx, dy),
     );
+    doc.map_guides(|g| Guide {
+        position: g.position - if g.vertical { x0 } else { y0 } as f32,
+        ..g
+    });
 }
 
 /// Image > Crop: crops to the selection's bounding box. Returns false
@@ -188,6 +229,11 @@ fn resample_buffer(
 pub fn resize(doc: &mut Document, width: u32, height: u32, method: Resample) {
     assert!(width > 0 && height > 0);
     let (sw, sh) = (doc.width as usize, doc.height as usize);
+    let (kx, ky) = (width as f32 / sw as f32, height as f32 / sh as f32);
+    doc.map_guides(|g| Guide {
+        position: g.position * if g.vertical { kx } else { ky },
+        ..g
+    });
     let (dw, dh) = (width as usize, height as usize);
     doc.transform_canvas(
         width,
@@ -375,6 +421,40 @@ mod tests {
         assert_eq!(pixel(&d, 2, 0), RED);
         reorient(&mut d, Orientation::FlipVertical);
         assert_eq!(pixel(&d, 2, 1), RED);
+    }
+
+    #[test]
+    fn guides_follow_the_canvas() {
+        let mut d = doc();
+        d.guides = vec![
+            Guide {
+                vertical: true,
+                position: 1.0,
+            },
+            Guide {
+                vertical: false,
+                position: 0.5,
+            },
+        ];
+        // 3×2 turned clockwise: x = 1 stays 1 as a row; y = 0.5 becomes column 1.5
+        reorient(&mut d, Orientation::Rotate90Clockwise);
+        assert_eq!(
+            d.guides,
+            [
+                Guide {
+                    vertical: false,
+                    position: 1.0
+                },
+                Guide {
+                    vertical: true,
+                    position: 1.5
+                }
+            ]
+        );
+        crop(&mut d, 1, 0, 2, 3);
+        assert_eq!(d.guides[1].position, 0.5);
+        resize(&mut d, 2, 6, Resample::NearestNeighbor);
+        assert_eq!((d.guides[0].position, d.guides[1].position), (2.0, 1.0));
     }
 
     #[test]

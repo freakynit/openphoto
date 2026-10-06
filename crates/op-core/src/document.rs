@@ -41,9 +41,18 @@ impl Anchor {
     }
 }
 
+/// A ruler guide: a horizontal or vertical line at `position` document
+/// pixels (it may lie outside the canvas).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Guide {
+    pub vertical: bool,
+    pub position: f32,
+}
+
 /// The undoable part of a document. Cheap to clone because tiles are shared.
 #[derive(Clone)]
 pub struct Snapshot {
+    guides: Vec<Guide>,
     width: u32,
     height: u32,
     resolution: f32,
@@ -75,6 +84,8 @@ pub struct Document {
     last_selection: Option<Selection>,
     /// Bumped when the selection changes, so its outline can be cached.
     selection_revision: u64,
+    /// Ruler guides; undoable like edits, as in Photoshop.
+    pub guides: Vec<Guide>,
 }
 
 impl Document {
@@ -93,6 +104,7 @@ impl Document {
             selection: None,
             last_selection: None,
             selection_revision: 0,
+            guides: Vec::new(),
         }
     }
 
@@ -165,6 +177,7 @@ impl Document {
 
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
+            guides: self.guides.clone(),
             width: self.width,
             height: self.height,
             resolution: self.resolution,
@@ -184,8 +197,17 @@ impl Document {
         self.active_layer = s.active_layer;
         self.selection = s.selection;
         self.last_selection = s.last_selection;
+        self.guides = s.guides;
         self.selection_revision += 1;
         self.mark_dirty();
+    }
+
+    /// Moves each guide through `f` (document pixels, for the given
+    /// orientation); used when the canvas is cropped, extended, resized,
+    /// rotated or flipped. A rotation by 90° turns guides around, so `f`
+    /// also returns the new orientation.
+    pub fn map_guides(&mut self, f: impl Fn(Guide) -> Guide) {
+        self.guides = self.guides.iter().map(|&g| f(g)).collect();
     }
 
     /// Image > Canvas Size. The background layer is extended with `fill`;
@@ -209,6 +231,10 @@ impl Document {
         {
             *sel = sel.with_canvas(width, height, dx, dy);
         }
+        self.map_guides(|g| Guide {
+            position: g.position + if g.vertical { dx } else { dy } as f32,
+            ..g
+        });
         self.selection_revision += 1;
         self.width = width;
         self.height = height;

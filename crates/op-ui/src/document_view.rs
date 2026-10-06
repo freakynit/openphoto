@@ -74,11 +74,56 @@ pub fn actual_pixels(state: &mut DocState, _ppp: f32) {
     state.view.offset = Vec2::ZERO;
 }
 
+/// View > 200% and View > Print Size: a fixed zoom around the window's
+/// center.
+pub fn zoom_to(state: &mut DocState, zoom: f32, ppp: f32) {
+    zoom_at(state, zoom, state.view.viewport.center(), ppp);
+}
+
+/// View > Print Size: one inch of the document (its resolution in pixels)
+/// as 72 points on screen.
+pub fn print_size(state: &mut DocState, ppp: f32) {
+    let zoom = 72.0 / state.doc.resolution * ppp;
+    zoom_to(state, zoom, ppp);
+}
+
+/// View > Fit Layer(s) on Screen: the active layer's pixels fill the window
+/// and are centered in it. Nothing happens for an empty layer.
+pub fn fit_layers(state: &mut DocState, ppp: f32) {
+    let Some(layer) = state.doc.active_layer.and_then(|id| state.doc.layer(id)) else {
+        return;
+    };
+    let op_core::LayerKind::Raster(image) = &layer.kind;
+    let (w, h) = (state.doc.width, state.doc.height);
+    let mut b: Option<(u32, u32, u32, u32)> = None;
+    for y in 0..h {
+        for x in 0..w {
+            if image.pixel(x, y)[3] > 0 {
+                b = Some(match b {
+                    None => (x, y, x + 1, y + 1),
+                    Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1)),
+                });
+            }
+        }
+    }
+    let Some((x0, y0, x1, y1)) = b else {
+        return;
+    };
+    let avail = state.view.viewport.size() * ppp;
+    let z = (avail.x / (x1 - x0) as f32).min(avail.y / (y1 - y0) as f32);
+    state.view.zoom = z.clamp(MIN_ZOOM, MAX_ZOOM);
+    // Put the layer's center at the window's center
+    let center = Vec2::new((x0 + x1) as f32, (y0 + y1) as f32) / 2.0;
+    state.view.offset =
+        doc_size_pt(state, state.view.zoom, ppp) / 2.0 - center * state.view.zoom / ppp;
+}
+
 pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
     let tool = app.tool;
     let paint = app.paint_options(tool).copied();
     let (foreground, background) = (app.foreground, app.background);
     let bucket = app.bucket;
+    let view_options = app.view;
     let mut paint_error = None;
     let Some(state) = app.docs.get_mut(&id) else {
         return;
@@ -97,8 +142,15 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
         Pos2::new(full.right() - VSCROLL_W, full.top()),
         Pos2::new(full.right(), status_rect.top()),
     );
-    let canvas_rect =
+    let window_rect =
         Rect::from_min_max(full.min, Pos2::new(vscroll_rect.left(), status_rect.top()));
+    // Rulers take a strip along the top and left of the window
+    let (canvas_rect, rulers) = if view_options.rulers {
+        let (top, left, canvas) = crate::rulers::layout(window_rect);
+        (canvas, Some((top, left)))
+    } else {
+        (window_rect, None)
+    };
 
     // Layout may not be settled in the first frames; pick the initial zoom only
     // once the viewport size is the same for two consecutive frames
@@ -119,6 +171,40 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
     }
 
     let response = ui.allocate_rect(canvas_rect, Sense::click_and_drag());
+    // Dragging out of a ruler makes a guide
+    if let Some((top, left)) = rulers {
+        for (rect, vertical) in [(top, false), (left, true)] {
+            let r = ui.interact(rect, ui.id().with(("ruler", vertical)), Sense::drag());
+            if r.drag_started()
+                && let Some(p) = r.interact_pointer_pos()
+            {
+                crate::rulers::start_new(state, vertical, p, ppp);
+            }
+            if r.hovered() {
+                ui.ctx().set_cursor_icon(if vertical {
+                    CursorIcon::ResizeColumn
+                } else {
+                    CursorIcon::ResizeRow
+                });
+            }
+        }
+    }
+    // With the Move tool (or Cmd held), guides can be grabbed
+    let guides_live = view_options.guides_visible() && !view_options.lock_guides;
+    let cmd = ui.input(|i| i.modifiers.command);
+    let guide_hover = (guides_live && (tool == Tool::Move || cmd))
+        .then(|| response.hover_pos())
+        .flatten()
+        .and_then(|p| crate::rulers::guide_at(state, p, ppp));
+    if guides_live
+        && (tool == Tool::Move || cmd)
+        && response.drag_started_by(PointerButton::Primary)
+        && let Some(i) = ui
+            .input(|i| i.pointer.press_origin())
+            .and_then(|p| crate::rulers::guide_at(state, p, ppp))
+    {
+        crate::rulers::start_move(state, i);
+    }
     let (space, alt, zoom_delta, scroll) = ui.input(|i| {
         (
             i.key_down(Key::Space),
@@ -142,7 +228,9 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
 
     let panning = space || tool == Tool::Hand;
     let middle_drag = response.dragged_by(PointerButton::Middle);
-    if (panning && response.dragged_by(PointerButton::Primary)) || middle_drag {
+    if state.guide_drag.is_some() {
+        crate::rulers::drag(ui, state, canvas_rect, ppp);
+    } else if (panning && response.dragged_by(PointerButton::Primary)) || middle_drag {
         state.view.offset += response.drag_delta();
     } else if !space && state.free_transform.is_some() {
         let [r, g, b, _] = background.to_rgba8();
@@ -278,6 +366,8 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
             } else {
                 CursorIcon::Grab
             }
+        } else if let Some(i) = guide_hover {
+            crate::rulers::guide_cursor(state, i)
         } else if state.free_transform.is_some() {
             let p = response.hover_pos().unwrap_or_default();
             crate::free_transform::cursor(state, p, ppp)
@@ -331,7 +421,20 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
         .with_clip_rect(canvas_rect)
         .add(op_render::paint_callback(canvas_rect, image, view));
 
-    draw_selection(ui, state, canvas_rect, ppp, tool);
+    if view_options.grid_visible() {
+        crate::rulers::draw_grid(ui, state, canvas_rect, ppp);
+    }
+    // Extras off hides the selection edges (the selection stays)
+    if view_options.extras {
+        draw_selection(ui, state, canvas_rect, ppp, tool);
+    }
+    if view_options.guides_visible() || state.guide_drag.is_some() {
+        crate::rulers::draw_guides(ui, state, canvas_rect, ppp);
+    }
+    if rulers.is_some() {
+        let pointer = ui.input(|i| i.pointer.hover_pos());
+        crate::rulers::draw_rulers(ui, state, window_rect, pointer, ppp);
+    }
     crate::free_transform::draw(ui, state, canvas_rect, ppp);
     // The crop box belongs to the Crop tool; picking another tool drops it
     if tool != Tool::Crop {

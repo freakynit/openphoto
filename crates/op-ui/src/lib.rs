@@ -4,6 +4,8 @@
 //! the resulting state.
 
 mod actions;
+#[cfg(target_os = "macos")]
+mod app_kit;
 mod clipboard;
 #[cfg(target_os = "macos")]
 mod color_management;
@@ -18,6 +20,7 @@ mod icons;
 mod menu;
 mod options_bar;
 mod panels;
+mod rulers;
 mod state;
 mod theme;
 mod titlebar;
@@ -273,6 +276,22 @@ impl OpenPhotoApp {
         }
     }
 
+    fn new_guide_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.state.new_guide_dialog.take() else {
+            return;
+        };
+        match dialog.show(ctx) {
+            dialogs::NewGuideOutcome::Open => self.state.new_guide_dialog = Some(dialog),
+            dialogs::NewGuideOutcome::Cancel => {}
+            dialogs::NewGuideOutcome::Apply(guide) => {
+                if let Some(state) = self.state.active() {
+                    state.doc.guides.push(guide);
+                    state.record("New Guide");
+                }
+            }
+        }
+    }
+
     fn trim_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.state.trim_dialog.take() else {
             return;
@@ -455,6 +474,7 @@ impl eframe::App for OpenPhotoApp {
         self.fill_dialog(&ctx);
         self.trim_dialog(&ctx);
         self.image_size_dialog(&ctx);
+        self.new_guide_dialog(&ctx);
         self.adjust_dialog(&ctx);
         self.save_prompt(&ctx);
         self.color_picker(&ctx);

@@ -23,7 +23,7 @@ pub mod tile;
 pub mod transform;
 
 pub use color::Color;
-pub use document::{Anchor, DocId, Document, Snapshot};
+pub use document::{Anchor, DocId, Document, Guide, Snapshot};
 pub use history::History;
 pub use layer::{BlendMode, Layer, LayerId, LayerKind};
 pub use pixel::{BitDepth, ColorMode};

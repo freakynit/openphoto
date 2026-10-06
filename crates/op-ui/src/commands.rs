@@ -112,7 +112,25 @@ pub enum Command {
     ZoomIn,
     ZoomOut,
     FitOnScreen,
+    FitLayers,
     ActualPixels,
+    Zoom200,
+    PrintSize,
+    /// View > Rulers.
+    ToggleRulers,
+    /// View > Extras.
+    ToggleExtras,
+    /// View > Show > Guides.
+    ToggleGuides,
+    /// View > Show > Grid.
+    ToggleGrid,
+    /// View > Guides > Lock Guides.
+    LockGuides,
+    ClearGuides,
+    /// View > Guides > New Guide... (opens the dialog).
+    NewGuide,
+    /// Hide OpenPhoto (Ctrl+Cmd+H, as Photoshop: Cmd+H is Extras).
+    HideApp,
     ToggleHistory,
 }
 
@@ -263,6 +281,15 @@ impl Command {
             Self::ZoomOut => cmd(Key::Minus),
             Self::FitOnScreen => cmd(Key::Num0),
             Self::ActualPixels => cmd(Key::Num1),
+            Self::ToggleRulers => cmd(Key::R),
+            Self::ToggleExtras => cmd(Key::H),
+            Self::ToggleGuides => cmd(Key::Semicolon),
+            Self::ToggleGrid => cmd(Key::Quote),
+            Self::LockGuides => alt_cmd(Key::Semicolon),
+            Self::HideApp => Shortcut {
+                ctrl: true,
+                ..cmd(Key::H)
+            },
             Self::TransformRotate180
             | Self::TransformRotate90Clockwise
             | Self::TransformRotate90CounterClockwise
@@ -302,6 +329,13 @@ impl Command {
                 key: Key::F,
             },
             Self::Desaturate => shift_cmd(Key::U),
+            Self::FitLayers
+            | Self::Zoom200
+            | Self::PrintSize
+            | Self::ClearGuides
+            | Self::NewGuide => {
+                return None;
+            }
             Self::DeleteLayer
             | Self::ToggleHistory
             | Self::DuplicateLayer
@@ -332,6 +366,19 @@ impl Command {
         })
     }
 
+    /// The check mark of View menu switches.
+    pub fn checked(self, app: &AppState) -> Option<bool> {
+        let v = &app.view;
+        Some(match self {
+            Self::ToggleRulers => v.rulers,
+            Self::ToggleExtras => v.extras,
+            Self::ToggleGuides => v.guides,
+            Self::ToggleGrid => v.grid,
+            Self::LockGuides => v.lock_guides,
+            _ => return None,
+        })
+    }
+
     fn is_clipboard(self) -> bool {
         matches!(
             self,
@@ -353,7 +400,17 @@ impl Command {
         }
         let doc = app.active_doc.and_then(|id| app.docs.get(&id));
         match self {
-            Self::New | Self::Open | Self::ToggleHistory | Self::Quit => true,
+            Self::New
+            | Self::Open
+            | Self::ToggleHistory
+            | Self::Quit
+            | Self::HideApp
+            | Self::ToggleRulers
+            | Self::ToggleExtras
+            | Self::ToggleGuides
+            | Self::ToggleGrid
+            | Self::LockGuides => true,
+            Self::ClearGuides => doc.is_some_and(|d| !d.doc.guides.is_empty()),
             Self::Revert => doc.is_some_and(|d| d.path.is_some() && d.is_dirty()),
             Self::Undo | Self::ToggleLastState => doc.is_some_and(|d| d.history.can_undo()),
             Self::Redo => doc.is_some_and(|d| d.history.can_redo()),
@@ -442,7 +499,11 @@ impl Command {
             | Self::ZoomIn
             | Self::ZoomOut
             | Self::FitOnScreen
-            | Self::ActualPixels => doc.is_some(),
+            | Self::FitLayers
+            | Self::ActualPixels
+            | Self::Zoom200
+            | Self::PrintSize
+            | Self::NewGuide => doc.is_some(),
         }
     }
 }
@@ -451,6 +512,8 @@ impl Command {
 /// extra Shift/Alt when matching, so Shift+Cmd+Z must be checked before Cmd+Z.
 const SHORTCUT_ORDER: &[Command] = &[
     Command::ExportAs,
+    Command::HideApp,
+    Command::LockGuides,
     Command::SaveAs,
     Command::SaveACopy,
     Command::Revert,
@@ -499,6 +562,10 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::ZoomOut,
     Command::FitOnScreen,
     Command::ActualPixels,
+    Command::ToggleRulers,
+    Command::ToggleExtras,
+    Command::ToggleGuides,
+    Command::ToggleGrid,
 ];
 
 /// Shortcuts the macOS menu bar can't catch. Zoom In's menu item shows Cmd++
@@ -781,6 +848,16 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 app.image_size_dialog = Some(dialog);
             }
         }
+        Command::ToggleRulers => app.view.rulers = !app.view.rulers,
+        Command::ToggleExtras => app.view.extras = !app.view.extras,
+        Command::ToggleGuides => app.view.guides = !app.view.guides,
+        Command::ToggleGrid => app.view.grid = !app.view.grid,
+        Command::LockGuides => app.view.lock_guides = !app.view.lock_guides,
+        Command::NewGuide => app.new_guide_dialog = Some(Default::default()),
+        Command::HideApp => {
+            #[cfg(target_os = "macos")]
+            crate::app_kit::hide_app();
+        }
         Command::Trim => {
             if let Some(state) = app.active() {
                 let dialog = crate::dialogs::TrimDialog::new(state.doc.has_background());
@@ -884,6 +961,13 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 Command::ZoomOut => document_view::zoom_step(state, false, ppp),
                 Command::FitOnScreen => document_view::fit_on_screen(state, ppp),
                 Command::ActualPixels => document_view::actual_pixels(state, ppp),
+                Command::Zoom200 => document_view::zoom_to(state, 2.0, ppp),
+                Command::PrintSize => document_view::print_size(state, ppp),
+                Command::FitLayers => document_view::fit_layers(state, ppp),
+                Command::ClearGuides => {
+                    state.doc.guides.clear();
+                    state.record("Clear Guides");
+                }
                 _ => unreachable!("handled above"),
             }
         }
