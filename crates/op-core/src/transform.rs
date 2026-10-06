@@ -148,8 +148,8 @@ fn targets(doc: &Document) -> Vec<LayerId> {
                 || doc.layer(id).is_some_and(|l| {
                     doc.is_shown(id)
                         && !l.is_background
-                        && !l.pixels_locked()
-                        && !l.position_locked()
+                        && !doc.pixels_locked(id)
+                        && !doc.position_locked(id)
                 })
         })
         .collect()
@@ -168,8 +168,8 @@ pub fn bounds(doc: &Document) -> Result<(f32, f32, f32, f32), TransformError> {
         return Err(TransformError::Hidden);
     }
     let selection = doc.selection();
-    if layer.pixels_locked()
-        || layer.position_locked()
+    if doc.pixels_locked(layer.id)
+        || doc.position_locked(layer.id)
         || (layer.is_background && selection.is_none())
     {
         return Err(TransformError::Locked);

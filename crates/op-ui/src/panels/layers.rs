@@ -18,6 +18,8 @@ const FOOTER: f32 = pt(25.0);
 /// always there, with a 10 pt `#696969` pill thumb 3 pt from its sides and
 /// 2 pt from its ends when the rows overflow (Photoshop 2026).
 const GUTTER: f32 = pt(16.0);
+/// A lock a layer gets from its group (Photoshop 2026).
+const INHERITED_LOCK: egui::Color32 = egui::Color32::from_gray(0xa6);
 const SCROLL_TRACK: egui::Color32 = egui::Color32::from_gray(0x4a);
 const SCROLL_THUMB: egui::Color32 = egui::Color32::from_gray(0x69);
 /// The largest thumbnail side drawn, for the texture's resolution.
@@ -269,6 +271,33 @@ impl Edits {
     }
 }
 
+/// The locks `id` gets from the groups it is in: none, some, or all (a
+/// group with Lock all), as in Photoshop.
+fn inherited_lock(doc: &op_core::Document, id: LayerId) -> Option<bool> {
+    let mut found = None;
+    let mut parent = doc.layer(id).and_then(|l| l.parent);
+    while let Some(g) = parent.and_then(|p| doc.layer(p)) {
+        if g.lock_all {
+            return Some(true);
+        }
+        let locks = g.locks();
+        if locks.transparency || locks.pixels || locks.position || locks.nesting {
+            found = Some(false);
+        }
+        parent = g.parent;
+    }
+    found
+}
+
+/// Whether the active layer's blend mode, opacity and locks can be
+/// changed: not on the background, nor inside a fully locked group.
+fn active_editable(state: &DocState) -> bool {
+    state.doc.active_layer.is_some_and(|id| {
+        state.doc.layer(id).is_some_and(|l| !l.is_background)
+            && inherited_lock(&state.doc, id) != Some(true)
+    })
+}
+
 fn active_layer(state: &mut DocState) -> Option<&mut Layer> {
     let id = state.doc.active_layer?;
     state.doc.layer_mut(id)
@@ -345,11 +374,12 @@ fn percent_field(
 fn blend_row(ui: &mut Ui, state: &mut DocState, full: Rect) {
     let at = |x: f32, y: f32| full.min + Vec2::new(pt(x), pt(y));
     let mut edits = Edits::default();
+    // Not the background's blend mode and opacity, nor a locked group's
+    // layers'
+    let editable = active_editable(state);
     let Some(layer) = active_layer(state) else {
         return;
     };
-    // The background layer's blend mode and opacity can't be changed
-    let editable = !layer.is_background;
     let mode = Rect::from_min_max(at(3.0, 36.5), at(134.5, 55.5));
     ui.scope_builder(egui::UiBuilder::new().max_rect(mode), |ui| {
         let label = layer.blend_mode.label();
@@ -399,10 +429,10 @@ fn blend_row(ui: &mut Ui, state: &mut DocState, full: Rect) {
 fn lock_row(ui: &mut Ui, state: &mut DocState, full: Rect) {
     let at = |x: f32, y: f32| full.min + Vec2::new(pt(x), pt(y));
     let mut edits = Edits::default();
+    let editable = active_editable(state);
     let Some(layer) = active_layer(state) else {
         return;
     };
-    let editable = !layer.is_background;
     ui.painter().text(
         at(6.0, 73.5),
         Align2::LEFT_CENTER,
@@ -518,6 +548,12 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) -> (bool, Option<FooterDrop>) {
     let mut dragged: Option<(usize, Pos2, bool)> = None;
     let ts = thumb_size(&state.doc);
     let single = state.doc.selected_layers().len() == 1;
+    // When the active layer changes (or layers come and go), its row is
+    // scrolled into view, as in Photoshop
+    let seen_id = ui.id().with("layers-seen");
+    let seen = (state.doc.active_layer, state.doc.layers.len());
+    let reveal = ui.data(|d| d.get_temp::<(Option<LayerId>, usize)>(seen_id)) != Some(seen);
+    ui.data_mut(|d| d.insert_temp(seen_id, seen));
     let linked: Vec<LayerId> = op_core::link::with_linked(&state.doc)
         .into_iter()
         .filter(|&id| op_core::link::is_linked(&state.doc, id))
@@ -540,6 +576,9 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) -> (bool, Option<FooterDrop>) {
             Sense::click_and_drag(),
         );
         spans.push((alloc.top(), alloc.bottom()));
+        if reveal && state.doc.active_layer == Some(id) {
+            ui.scroll_to_rect(alloc, None);
+        }
         // Contents are laid out in a row as tall as a layer row is when
         // first (its extra half point on top) or a group row is otherwise,
         // so they sit the same in every row
@@ -591,11 +630,23 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) -> (bool, Option<FooterDrop>) {
             .then(|| ui.interact(lock_rect, ui.id().with(("lock", id.0)), Sense::click()));
 
         if arrow.as_ref().is_some_and(|a| a.clicked()) {
-            // Not a history state, as in Photoshop
-            if let Some(op_core::LayerKind::Group { collapsed }) =
-                state.doc.layer_mut(id).map(|l| &mut l.kind)
-            {
-                *collapsed = !*collapsed;
+            // Not a history state, as in Photoshop; with Alt the groups
+            // inside open or close too
+            let all = ui.input(|i| i.modifiers.alt);
+            let open = matches!(
+                state.doc.layer(id).map(|l| &l.kind),
+                Some(op_core::LayerKind::Group { collapsed: true })
+            );
+            let mut groups = vec![id];
+            if all {
+                groups.extend(state.doc.descendants(id));
+            }
+            for g in groups {
+                if let Some(op_core::LayerKind::Group { collapsed }) =
+                    state.doc.layer_mut(g).map(|l| &mut l.kind)
+                {
+                    *collapsed = !open;
+                }
             }
         } else if eye.clicked() {
             if let Some(l) = state.doc.layer_mut(id) {
@@ -821,8 +872,27 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) -> (bool, Option<FooterDrop>) {
         } else {
             color::PANEL
         };
-        if layer.is_background {
-            icon(painter, lock_center, Icon::LayerLock, true, bg);
+        // Locks: solid when all is locked, hollow when some (and on the
+        // background), dimmed when they come from a locked group
+        let own = layer.locks();
+        let lock_icon = if layer.is_background {
+            Some((Icon::LayerLock, color::OPTIONS_ICON))
+        } else if own.all {
+            Some((Icon::LayerLockFull, color::OPTIONS_ICON))
+        } else if own.transparency || own.pixels || own.position || own.nesting {
+            Some((Icon::LayerLock, color::OPTIONS_ICON))
+        } else {
+            inherited_lock(&state.doc, layer.id).map(|all| {
+                let i = if all {
+                    Icon::LayerLockFull
+                } else {
+                    Icon::LayerLock
+                };
+                (i, INHERITED_LOCK)
+            })
+        };
+        if let Some((i, tint)) = lock_icon {
+            crate::ps_icons::paint(painter, lock_center, i, tint, bg);
         } else if linked.contains(&layer.id) {
             // The layers linked to a selected one show the link icon
             icon(painter, lock_center, Icon::LinkLayers, true, bg);
@@ -913,12 +983,18 @@ fn drop_layer(
             .and_then(|&(id, _)| doc.block(id))
             .map(|b| b.start),
     };
-    let moving = rows[from_row].0;
-    let Some(flat) = flat.filter(|&f| op_core::layer_ops::can_move_block(doc, moving, f)) else {
+    // A selected row brings the other selected layers along
+    let dragged = rows[from_row].0;
+    let moving = if doc.is_layer_selected(dragged) {
+        doc.selected_layers()
+    } else {
+        vec![dragged]
+    };
+    let Some(flat) = flat.filter(|&f| op_core::layer_ops::can_move_blocks(doc, &moving, f)) else {
         return;
     };
     if released {
-        if op_core::layer_ops::move_block(&mut state.doc, moving, flat) {
+        if op_core::layer_ops::move_blocks(&mut state.doc, &moving, flat) {
             state.record("Layer Order");
         }
         return;
@@ -1055,7 +1131,13 @@ fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) -> (bool, bool, boo
         .and_then(|id| state.doc.layer(id))
         .is_some_and(|l| l.is_background);
     let selected = state.doc.selected_layers().len();
-    let can_delete = selected > 0 && selected < state.doc.layers.len();
+    // Layers in a fully locked group can't be deleted or styled
+    let in_locked_group = state
+        .doc
+        .selected_layers()
+        .into_iter()
+        .any(|id| state.doc.in_locked_group(id));
+    let can_delete = selected > 0 && selected < state.doc.layers.len() && !in_locked_group;
     let can_mask = op_core::layer_ops::can_add_mask(&state.doc);
     let can_link = op_core::link::can_link(&state.doc) || op_core::link::can_unlink(&state.doc);
     let buttons = [
@@ -1066,7 +1148,7 @@ fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) -> (bool, bool, boo
             169.5,
             Icon::LayerStyle,
             "Add a layer style",
-            !is_background && selected == 1,
+            !is_background && selected == 1 && !in_locked_group,
         ),
         (
             139.75,

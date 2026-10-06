@@ -570,8 +570,11 @@ impl Command {
             Self::Undo | Self::ToggleLastState => doc.is_some_and(|d| d.history.can_undo()),
             Self::Redo => doc.is_some_and(|d| d.history.can_redo()),
             Self::DeleteLayer => doc.is_some_and(|d| {
-                let n = d.doc.selected_layers().len();
-                n > 0 && n < d.doc.layers.len()
+                let selected = d.doc.selected_layers();
+                let n = selected.len();
+                n > 0
+                    && n < d.doc.layers.len()
+                    && !selected.iter().any(|&id| d.doc.in_locked_group(id))
             }),
             Self::SelectAllLayers => {
                 doc.is_some_and(|d| d.doc.layers.iter().any(|l| !l.is_background))

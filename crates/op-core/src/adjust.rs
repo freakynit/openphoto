@@ -598,7 +598,7 @@ pub fn check(doc: &Document) -> Result<(), FillError> {
     if !layer.visible {
         return Err(FillError::Hidden);
     }
-    if layer.pixels_locked() {
+    if doc.pixels_locked(layer.id) {
         return Err(FillError::Locked);
     }
     if layer.is_group() {

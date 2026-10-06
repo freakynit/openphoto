@@ -447,15 +447,8 @@ pub fn new_group(doc: &mut Document) -> LayerId {
     id
 }
 
-/// Whether [`move_block`] would move anything.
 pub fn can_move_block(doc: &Document, id: LayerId, gap: usize) -> bool {
-    let Some(range) = doc.block(id) else {
-        return false;
-    };
-    !(doc.layers[range.end - 1].is_background
-        || gap > doc.layers.len()
-        || (range.start..=range.end).contains(&gap)
-        || (gap == 0 && doc.layers.first().is_some_and(|l| l.is_background)))
+    can_move_blocks(doc, &[id], gap)
 }
 
 /// Moves a layer, with everything in it, so it sits at `gap` (an index into
@@ -464,30 +457,96 @@ pub fn can_move_block(doc: &Document, id: LayerId, gap: usize) -> bool {
 /// the background, the background doesn't move, and a group can't go into
 /// itself. Returns whether anything moved.
 pub fn move_block(doc: &mut Document, id: LayerId, gap: usize) -> bool {
-    if !can_move_block(doc, id, gap) {
+    move_blocks(doc, &[id], gap)
+}
+
+/// The layers of `ids` that aren't inside another one of them, bottom to
+/// top.
+fn block_roots(doc: &Document, ids: &[LayerId]) -> Vec<LayerId> {
+    let mut roots: Vec<LayerId> = ids
+        .iter()
+        .copied()
+        .filter(|&id| {
+            let mut parent = doc.layer(id).and_then(|l| l.parent);
+            while let Some(p) = parent {
+                if ids.contains(&p) {
+                    return false;
+                }
+                parent = doc.layer(p).and_then(|l| l.parent);
+            }
+            doc.layer(id).is_some()
+        })
+        .collect();
+    roots.sort_by_key(|&id| doc.layers.iter().position(|l| l.id == id));
+    roots.dedup();
+    roots
+}
+
+/// Whether `move_blocks` would do something.
+pub fn can_move_blocks(doc: &Document, ids: &[LayerId], gap: usize) -> bool {
+    let roots = block_roots(doc, ids);
+    if roots.is_empty()
+        || gap > doc.layers.len()
+        || (gap == 0 && doc.layers.first().is_some_and(|l| l.is_background))
+    {
         return false;
     }
-    let range = doc.block(id).expect("checked");
+    let mut ranges = Vec::new();
+    for &id in &roots {
+        let Some(range) = doc.block(id) else {
+            return false;
+        };
+        // The background stays, and a group can't go inside itself
+        if doc.layers[range.end - 1].is_background || (range.start < gap && gap < range.end) {
+            return false;
+        }
+        ranges.push(range);
+    }
+    // Moving already-adjacent blocks to their own edge changes nothing
+    let together = ranges.windows(2).all(|w| w[0].end == w[1].start);
+    let (start, end) = (ranges[0].start, ranges[ranges.len() - 1].end);
+    !(together && (start..=end).contains(&gap))
+}
+
+/// Dragging several selected rows: moves the layers of `ids` (each with
+/// everything in it) together, in their order, to `gap` as `move_block`
+/// does with one.
+pub fn move_blocks(doc: &mut Document, ids: &[LayerId], gap: usize) -> bool {
+    if !can_move_blocks(doc, ids, gap) {
+        return false;
+    }
+    let roots = block_roots(doc, ids);
     // The gap's group: the innermost group whose layers lie on both sides
     // of it (its block holds the layer below, and the layer above or the
     // group itself)
     let parent = doc
         .layers
         .iter()
-        .filter(|g| g.is_group() && g.id != id)
+        .filter(|g| g.is_group() && !roots.contains(&g.id))
         .filter_map(|g| doc.block(g.id).map(|b| (g.id, b)))
         .filter(|(_, b)| b.start < gap && gap < b.end)
         .min_by_key(|(_, b)| b.len())
         .map(|(g, _)| g);
-    let block: Vec<Layer> = doc.layers.drain(range.clone()).collect();
-    let at = if gap > range.end {
-        gap - block.len()
-    } else {
-        gap
-    };
-    doc.layers.splice(at..at, block);
-    if let Some(layer) = doc.layer_mut(id) {
-        layer.parent = parent;
+    let mut moving: Vec<Layer> = Vec::new();
+    let mut before_gap = 0;
+    // Take the blocks out from the top down so earlier ranges stay valid
+    let mut blocks: Vec<Vec<Layer>> = Vec::new();
+    for &id in roots.iter().rev() {
+        let range = doc.block(id).expect("checked");
+        if range.end <= gap {
+            before_gap += range.len();
+        }
+        blocks.push(doc.layers.drain(range).collect());
+    }
+    for block in blocks.into_iter().rev() {
+        moving.extend(block);
+    }
+    let at = gap - before_gap;
+    doc.layers.splice(at..at, moving);
+    for id in roots {
+        if let Some(layer) = doc.layer_mut(id) {
+            layer.parent = parent;
+        }
     }
     doc.mark_dirty();
     true
@@ -662,7 +721,10 @@ pub fn merge_selected(doc: &mut Document) -> bool {
 /// below the lowest deleted one (else the lowest left) becomes active.
 pub fn delete_selected(doc: &mut Document) -> bool {
     let selected = doc.selected_layers();
-    if selected.is_empty() || selected.len() >= doc.layers.len() {
+    if selected.is_empty()
+        || selected.len() >= doc.layers.len()
+        || selected.iter().any(|&id| doc.in_locked_group(id))
+    {
         return false;
     }
     // A group goes with everything in it
@@ -1127,6 +1189,66 @@ mod tests {
         // The next free number from there
         named(&mut doc, "B copy 2");
         assert_eq!(copy_name(&doc, "B copy"), "B copy 3");
+    }
+
+    #[test]
+    fn moving_several_blocks_together() {
+        let mut doc = doc();
+        let ids: Vec<LayerId> = (0..3)
+            .map(|k| {
+                let id = doc.new_layer_id();
+                doc.layers
+                    .push(Layer::raster(id, format!("L{k}"), TiledImage::new(4, 4)));
+                id
+            })
+            .collect();
+        // Background, Layer 1, L0, L1, L2: L0 and L2 to the top
+        assert!(move_blocks(&mut doc, &[ids[2], ids[0]], 5));
+        assert_eq!(names(&doc), ["Background", "Layer 1", "L1", "L0", "L2"]);
+        // ...and just above the background
+        assert!(move_blocks(&mut doc, &[ids[0], ids[2]], 1));
+        assert_eq!(names(&doc), ["Background", "L0", "L2", "Layer 1", "L1"]);
+        // Where they already are: nothing
+        assert!(!can_move_blocks(&doc, &[ids[0], ids[2]], 1));
+        assert!(!can_move_blocks(&doc, &[ids[0], ids[2]], 3));
+        // Never below the background, nor the background itself
+        assert!(!can_move_blocks(&doc, &[ids[0]], 0));
+        let bg = doc.layers[0].id;
+        assert!(!can_move_blocks(&doc, &[bg, ids[1]], 5));
+    }
+
+    #[test]
+    fn a_locked_group_locks_its_layers() {
+        let mut doc = doc();
+        let child = doc.layers[1].id;
+        let group = doc.new_layer_id();
+        let mut g = Layer::group(group, "G");
+        g.lock_position = true;
+        doc.layer_mut(child).unwrap().parent = Some(group);
+        doc.layers.push(g);
+        // Lock position on the group: the child can't move but can be
+        // painted and deleted
+        assert!(doc.position_locked(child) && !doc.pixels_locked(child));
+        assert!(!doc.in_locked_group(child));
+        // Lock all: nothing, not even deleting it
+        doc.layer_mut(group).unwrap().lock_all = true;
+        assert!(doc.pixels_locked(child) && doc.transparency_locked(child));
+        assert!(doc.in_locked_group(child));
+        doc.select_layer(child);
+        assert!(!delete_selected(&mut doc));
+        assert!(crate::move_tool::Move::begin(&doc, [0; 3]).is_err());
+        let stroke = crate::paint::Stroke::begin(
+            &doc,
+            crate::paint::BrushTip {
+                diameter: 2.0,
+                hardness: 1.0,
+                aliased: false,
+            },
+            crate::paint::StrokeKind::Paint([0, 0, 0]),
+            1.0,
+            1.0,
+        );
+        assert!(stroke.is_err());
     }
 
     #[test]

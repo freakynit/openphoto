@@ -57,7 +57,10 @@ pub enum Icon {
     LockArtboards,
     LockAll,
     Eye,
+    /// A partly locked layer's lock (and the background's): hollow.
     LayerLock,
+    /// A fully locked layer's lock: solid, with a keyhole.
+    LayerLockFull,
     FooterBrush,
     LinkLayers,
     LayerStyle,
@@ -502,23 +505,39 @@ pub fn paint_scaled(
             pen.line(&arc(-1.0), 4.0);
             pen.dot(1.5, -1.5, 1.5);
         }
-        Icon::LayerLock => {
+        Icon::LayerLock | Icon::LayerLockFull => {
+            // Traced from Photoshop 2026 at 2x (one unit is a device pixel)
             let arc: Vec<(f32, f32)> = (0..=12)
                 .map(|k| {
                     let a = (180.0 + 180.0 * k as f32 / 12.0f32).to_radians();
-                    (5.0 * a.cos(), -6.5 + 5.0 * a.sin())
+                    (-1.0 + 5.0 * a.cos(), -5.5 + 5.0 * a.sin())
                 })
                 .collect();
             pen.line(&arc, 2.5);
-            pen.rect(-6.25, -6.5, -3.75, -4.0);
-            pen.rect(3.75, -6.5, 6.25, -4.0);
-            pen.painter.rect_stroke(
-                Rect::from_min_max(pen.p(-10.0, -4.0), pen.p(10.0, 12.0)),
-                0,
-                Stroke::new(pen.w(2.0), color),
-                egui::StrokeKind::Inside,
-            );
-            pen.rect(-3.0, 2.0, 3.0, 7.0);
+            pen.rect(-7.25, -5.5, -4.75, -4.0);
+            pen.rect(2.75, -5.5, 5.25, -4.0);
+            if icon == Icon::LayerLockFull {
+                pen.rect(-11.0, -4.0, 9.0, 12.0);
+                // The keyhole, 1 px above the hollow lock's dot
+                pen.painter.rect_filled(
+                    Rect::from_min_max(pen.p(-3.25, 1.0), pen.p(1.25, 6.0)),
+                    pen.w(2.25),
+                    background,
+                );
+            } else {
+                pen.painter.rect_stroke(
+                    Rect::from_min_max(pen.p(-11.0, -4.0), pen.p(9.0, 12.0)),
+                    0,
+                    Stroke::new(pen.w(2.0), color),
+                    egui::StrokeKind::Inside,
+                );
+                // A round dot
+                pen.painter.rect_filled(
+                    Rect::from_min_max(pen.p(-4.0, 2.0), pen.p(2.0, 7.0)),
+                    pen.w(2.5),
+                    color,
+                );
+            }
         }
         Icon::LinkLayers => {
             for (cx, from) in [(-7.0f32, 40.0f32), (7.0, -140.0)] {

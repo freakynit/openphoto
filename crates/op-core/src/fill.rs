@@ -64,7 +64,7 @@ fn target(doc: &Document) -> Result<crate::layer::LayerId, FillError> {
     if !layer.visible {
         return Err(FillError::Hidden);
     }
-    if layer.pixels_locked() {
+    if doc.pixels_locked(layer.id) {
         return Err(FillError::Locked);
     }
     if layer.is_group() {
@@ -152,7 +152,7 @@ pub fn clear(doc: &mut Document, background: [u8; 3]) -> Result<(), FillError> {
     let layer = doc.layer(id).expect("target layer exists");
     // A mask is cleared to the background color's gray
     if layer.is_background
-        || layer.transparency_locked()
+        || doc.transparency_locked(id)
         || doc.editing_mask()
         || doc.quick_mask.is_some()
     {

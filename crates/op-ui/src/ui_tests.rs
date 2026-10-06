@@ -611,15 +611,46 @@ fn layer_shortcuts_copy_arrange_and_merge() {
 }
 
 #[test]
+fn dragging_several_selected_rows() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    for _ in 0..3 {
+        h.key_press_modifiers(Modifiers::COMMAND, egui::Key::J);
+    }
+    h.run_steps(3);
+    assert_eq!(
+        layer_names(&h),
+        ["Background", "Layer 1", "Layer 1 copy", "Layer 1 copy 2"]
+    );
+    // Select the top row and "Layer 1" (third), then drag the top row to
+    // just above the background (the line at 632 + 42.5 + 42 + 42)
+    let doc = &mut h.state_mut().state.active().unwrap().doc;
+    let (l1, top) = (doc.layers[1].id, doc.layers[3].id);
+    doc.set_selected_layers(vec![l1, top]);
+    h.run_steps(2);
+    drag(
+        &mut h,
+        at_pt(1130.0, 654.0),
+        at_pt(1130.0, 758.5),
+        Modifiers::NONE,
+    );
+    assert_eq!(
+        layer_names(&h),
+        ["Background", "Layer 1", "Layer 1 copy 2", "Layer 1 copy"]
+    );
+    assert_eq!(last_history(&h), "Layer Order");
+}
+
+#[test]
 fn layers_panel_drag_and_rename() {
     let mut h = harness(Vec::new());
     reference_document(&mut h);
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::J);
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::J);
     h.run_steps(3);
-    // Rows (top to bottom): "Layer 1 copy", "Layer 1", "Background", 42.5
-    // pt apart (a 33.5 pt thumbnail + 8 pt + a 1 pt line) starting at 632 pt.
-    // Drag the top row below "Layer 1".
+    // Rows (top to bottom): "Layer 1 copy", "Layer 1", "Background" from
+    // 632 pt: the first 42.5 pt (a 33.5 pt thumbnail + 8 pt + a 1 pt line),
+    // the others 42. Drag the top row below "Layer 1".
     drag(
         &mut h,
         at_pt(1130.0, 654.0),
@@ -2220,6 +2251,56 @@ fn layers_rows_and_scrollbar_match_photoshop() {
 }
 
 #[test]
+fn alt_click_opens_nested_groups_and_the_list_follows_the_active_layer() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    // Group 2 inside Group 1, both closed
+    let doc = &mut h.state_mut().state.active().unwrap().doc;
+    let (outer, inner) = (doc.new_layer_id(), doc.new_layer_id());
+    let mut g2 = op_core::Layer::group(inner, "Group 2");
+    g2.parent = Some(outer);
+    g2.kind = op_core::LayerKind::Group { collapsed: true };
+    let mut g1 = op_core::Layer::group(outer, "Group 1");
+    g1.kind = op_core::LayerKind::Group { collapsed: true };
+    doc.layers.extend([g2, g1]);
+    doc.select_layer(outer);
+    h.run_steps(2);
+    let collapsed = |h: &Harness<'_, OpenPhotoApp>, id| {
+        matches!(
+            active(h).doc.layer(id).unwrap().kind,
+            op_core::LayerKind::Group { collapsed: true }
+        )
+    };
+    // Alt-click Group 1's arrow (x 38, its row on top): both open
+    let arrow = at_pt(1028.0 + 38.0, 632.0 + 12.25);
+    click_with(&mut h, arrow, Modifiers::ALT);
+    assert!(!collapsed(&h, outer) && !collapsed(&h, inner));
+    click_with(&mut h, arrow, Modifiers::ALT);
+    assert!(collapsed(&h, outer) && collapsed(&h, inner));
+    // A plain click opens Group 1 only
+    click(&mut h, arrow);
+    assert!(!collapsed(&h, outer) && collapsed(&h, inner));
+
+    // Enough layers to scroll; choosing the background brings it into view
+    for _ in 0..12 {
+        crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    }
+    h.run_steps(2);
+    let bg = active(&h).doc.layers[0].id;
+    h.state_mut().state.active().unwrap().doc.select_layer(bg);
+    h.run_steps(4);
+    let top = active(&h).doc.layers.last().unwrap().id;
+    // The list's last row is the background: clicking just above the
+    // footer selects it, not some other layer
+    h.state_mut().state.active().unwrap().doc.select_layer(top);
+    h.run_steps(4);
+    h.state_mut().state.active().unwrap().doc.select_layer(bg);
+    h.run_steps(4);
+    click(&mut h, at_pt(1100.0, 770.0));
+    assert_eq!(active(&h).doc.active_layer, Some(bg));
+}
+
+#[test]
 fn dragging_layers_onto_the_footer_buttons() {
     let mut h = harness(Vec::new());
     reference_document(&mut h);
@@ -2251,6 +2332,79 @@ fn dragging_layers_onto_the_footer_buttons() {
     drag(&mut h, top_row, button(139.75), Modifiers::NONE);
     assert!(active(&h).doc.layers[1].mask.is_some());
     assert_eq!(last_history(&h), "Add Layer Mask");
+}
+
+/// none, full (Lock all), partial (Lock position), G (Lock all) with
+/// "child", and the background: the document Photoshop 2026 was captured
+/// with. Returns the child's id.
+fn locked_rows_document(h: &mut Harness<'_, OpenPhotoApp>) -> op_core::LayerId {
+    let app = &mut h.state_mut().state;
+    crate::actions::close_all(app);
+    let mut doc = op_core::Document::new_with_background("lock-rows", 200, 200, Color::WHITE);
+    let layer = |doc: &op_core::Document, name: &str| {
+        op_core::Layer::raster(doc.new_layer_id(), name, op_core::TiledImage::new(200, 200))
+    };
+    let mut child = layer(&doc, "child");
+    let mut group = op_core::Layer::group(doc.new_layer_id(), "G");
+    group.lock_all = true;
+    child.parent = Some(group.id);
+    let child_id = child.id;
+    let mut partial = layer(&doc, "partial");
+    partial.lock_position = true;
+    let mut full = layer(&doc, "full");
+    full.lock_all = true;
+    let none = layer(&doc, "none");
+    let none_id = none.id;
+    doc.layers.extend([child, group, partial, full, none]);
+    doc.select_layer(none_id);
+    app.add_document(doc, "New");
+    h.run_steps(6);
+    child_id
+}
+
+/// The lock icons on the rows, at the device pixels of Photoshop 2026's
+/// captures: solid for Lock all, hollow for some locks, dimmed for a
+/// locked group's layer; and that layer can't be deleted.
+#[test]
+fn lock_icons_on_the_rows_match_photoshop() {
+    let mut h = harness(Vec::new());
+    let child = locked_rows_document(&mut h);
+    let image = h.render().expect("render frame");
+    let gray = |x, y| image.get_pixel(x, y).0[0];
+    // "full": the body is solid around the keyhole
+    assert!(gray(2617, 1385).abs_diff(221) <= 4, "{}", gray(2617, 1385));
+    assert!(gray(2623, 1388) < 120, "keyhole {}", gray(2623, 1388));
+    // "partial": a frame with the panel inside
+    assert!(gray(2614, 1468).abs_diff(221) <= 30, "{}", gray(2614, 1468));
+    assert!(gray(2618, 1468) < 110, "{}", gray(2618, 1468));
+    // The child, scrolled into view when chosen: a dimmed solid lock
+    h.state_mut()
+        .state
+        .active()
+        .unwrap()
+        .doc
+        .select_layer(child);
+    h.run_steps(6);
+    let image = h.render().expect("render frame");
+    let g = image.get_pixel(2617, 1507).0[0];
+    assert!(g.abs_diff(166) <= 4, "{g}");
+    assert!(!crate::commands::Command::DeleteLayer.enabled(&h.state().state));
+}
+
+#[test]
+#[ignore]
+fn screenshot_locked_rows() {
+    let mut h = harness(Vec::new());
+    let child = locked_rows_document(&mut h);
+    shot(&mut h, "locked_rows");
+    h.state_mut()
+        .state
+        .active()
+        .unwrap()
+        .doc
+        .select_layer(child);
+    h.run_steps(6);
+    shot(&mut h, "locked_rows_child");
 }
 
 #[test]

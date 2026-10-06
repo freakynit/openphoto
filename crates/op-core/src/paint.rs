@@ -180,7 +180,7 @@ impl Stroke {
             if !layer.visible {
                 return Err(StrokeError::Hidden);
             }
-            if layer.pixels_locked() {
+            if doc.pixels_locked(id) {
                 return Err(StrokeError::Locked);
             }
             if target == Target::Pixels && layer.is_group() {
@@ -215,7 +215,7 @@ impl Stroke {
             kind,
             opacity: opacity.clamp(0.0, 1.0),
             flow: flow.clamp(0.0, 1.0),
-            preserve_alpha: on_mask || layer.is_background || layer.transparency_locked(),
+            preserve_alpha: on_mask || layer.is_background || doc.transparency_locked(id),
             last: None,
             since_dab: 0.0,
         })

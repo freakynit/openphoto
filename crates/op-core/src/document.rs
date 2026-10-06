@@ -302,6 +302,49 @@ impl Document {
         b
     }
 
+    /// Whether `id` or a group it is in has `lock` set: a locked group locks
+    /// everything in it, as in Photoshop.
+    fn locked_by(&self, id: LayerId, lock: fn(&Layer) -> bool) -> bool {
+        let mut at = self.layer(id);
+        while let Some(layer) = at {
+            if lock(layer) {
+                return true;
+            }
+            at = layer.parent.and_then(|p| self.layer(p));
+        }
+        false
+    }
+
+    /// Whether `id` is inside a group with Lock all: Photoshop then won't
+    /// delete it, change its blend mode or opacity, or give it a style.
+    pub fn in_locked_group(&self, id: LayerId) -> bool {
+        let mut parent = self.layer(id).and_then(|l| l.parent);
+        while let Some(g) = parent.and_then(|p| self.layer(p)) {
+            if g.lock_all {
+                return true;
+            }
+            parent = g.parent;
+        }
+        false
+    }
+
+    /// Whether `id`'s transparent pixels are protected, by its own lock or
+    /// one of its groups'.
+    pub fn transparency_locked(&self, id: LayerId) -> bool {
+        self.locked_by(id, Layer::transparency_locked)
+    }
+
+    /// Whether `id`'s pixels can't be edited, by its own lock or one of its
+    /// groups'.
+    pub fn pixels_locked(&self, id: LayerId) -> bool {
+        self.locked_by(id, Layer::pixels_locked)
+    }
+
+    /// Whether `id` can't move, by its own lock or one of its groups'.
+    pub fn position_locked(&self, id: LayerId) -> bool {
+        self.locked_by(id, Layer::position_locked)
+    }
+
     /// A `width`×`height` canvas with the old one at (`dx`, `dy`): the
     /// common part of Canvas Size and Reveal All.
     pub fn place_canvas(&mut self, width: u32, height: u32, dx: i64, dy: i64, fill: Color) {
@@ -443,6 +486,7 @@ impl Document {
     fn layer_target(&mut self) -> Option<EditTarget<'_>> {
         let editing_mask = self.editing_mask();
         let id = self.active_layer?;
+        let transparency_locked = self.transparency_locked(id);
         let layer = self.layers.iter_mut().find(|l| l.id == id)?;
         if editing_mask {
             let mask = layer.mask.as_mut()?;
@@ -452,7 +496,7 @@ impl Document {
                 keep_alpha: true,
             });
         }
-        let keep_alpha = layer.is_background || layer.transparency_locked();
+        let keep_alpha = layer.is_background || transparency_locked;
         // A group has no pixels to edit
         let image = layer.image_mut()?;
         Some(EditTarget {
