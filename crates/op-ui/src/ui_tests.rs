@@ -1587,3 +1587,82 @@ fn screenshot_move_tool() {
     h.run_steps(3);
     shot(&mut h, "move_tool");
 }
+
+/// Gray levels Photoshop 2026 shows at these points (in points from the
+/// window's top-left corner, sampled from a 2x capture of its default
+/// workspace with the Move tool). Each one pins a measured edge: the 1 pt
+/// lines of dividers and collapse bars, separators, frames and icons. A
+/// layout change that moves any of them by a point fails here.
+const PHOTOSHOP_PIXELS: &[(&str, f32, f32, u8)] = &[
+    ("collapse bar top line", 1305.0, 62.5, 56),
+    ("collapse bar", 1305.0, 68.0, 66),
+    ("panel tab bar", 1305.0, 90.0, 67),
+    ("tab bar line", 1305.0, 102.5, 56),
+    ("color body", 1300.0, 150.0, 83),
+    ("group gap dark", 1300.0, 222.5, 56),
+    ("group gap light", 1300.0, 223.5, 71),
+    ("group gap dark2", 1300.0, 224.5, 56),
+    ("props tab line", 1300.0, 252.5, 56),
+    ("layers gap light", 1300.0, 512.5, 71),
+    ("layers tab bar", 1300.0, 530.0, 66),
+    ("strip left dark", 985.5, 300.0, 56),
+    ("strip left light", 986.5, 300.0, 71),
+    ("strip left dark2", 987.5, 300.0, 56),
+    ("strip right dark", 1025.5, 300.0, 56),
+    ("strip right light", 1026.5, 300.0, 71),
+    ("panel body left", 1028.5, 300.0, 83),
+    ("toolbar divider dark", 39.5, 300.0, 56),
+    ("toolbar divider light", 40.5, 300.0, 71),
+    ("toolbar bar line", 20.0, 62.5, 56),
+    ("toolbar collapse", 30.0, 68.0, 66),
+    ("options sep1", 53.5, 45.0, 62),
+    ("options sep2", 102.5, 45.0, 62),
+    ("home leg", 24.0, 50.0, 221),
+    ("home door", 28.0, 50.0, 83),
+    ("fg swatch", 13.0, 720.0, 255),
+    ("fg frame", 4.5, 720.0, 54),
+    ("bg frame", 33.5, 735.0, 54),
+    ("bg white", 32.5, 735.0, 255),
+    ("panel fg frame light", 1036.5, 120.0, 140),
+    ("sv field left", 1072.5, 150.0, 83),
+    ("hue left", 1313.5, 150.0, 83),
+    ("doc box border", 1038.5, 270.0, 99),
+    ("doc box fill", 1040.5, 262.0, 56),
+    ("W field border", 1092.5, 325.0, 102),
+    ("W field fill", 1093.5, 320.0, 69),
+    ("X field fill", 1172.0, 320.0, 77),
+    ("strip line", 1000.0, 143.5, 56),
+    ("strip grip", 997.5, 80.0, 69),
+    ("menu line", 1340.0, 85.5, 168),
+    ("menu gap", 1340.0, 86.5, 66),
+];
+
+#[test]
+fn layout_matches_photoshop_2026() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.state_mut().state.foreground = Color::WHITE;
+    h.state_mut().state.background = Color::from_rgba8([0x14, 0xa5, 0xdc, 255]);
+    h.key_press(egui::Key::V);
+    h.run_steps(3);
+    let image = h.render().expect("render frame");
+    let mut wrong = Vec::new();
+    for &(name, x, y, expected) in PHOTOSHOP_PIXELS {
+        let [r, g, b, _] = image.get_pixel((x * 2.0) as u32, (y * 2.0) as u32).0;
+        let gray = (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32).round() as i32;
+        if (gray - expected as i32).abs() > 6 {
+            wrong.push(format!(
+                "{name} at ({x}, {y}): {gray}, Photoshop {expected}"
+            ));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "differs from Photoshop:
+{}",
+        wrong.join(
+            "
+"
+        )
+    );
+}

@@ -161,8 +161,8 @@ fn bottom(ui: &mut Ui, app: &mut AppState, full: Rect, button: Vec2) {
 
     // The swatches: background (dark and white frame) under foreground
     // (dark frame)
-    let bg_rect = r(26.0, 1316.0, 66.0, 1356.0);
-    let fg_rect = r(6.0, 1296.0, 46.0, 1336.0);
+    let bg_rect = r(28.0, 1316.0, 68.0, 1356.0);
+    let fg_rect = r(8.0, 1296.0, 48.0, 1336.0);
     let bg = ui.interact(bg_rect, ui.id().with("bg"), Sense::click());
     let fg = ui.interact(fg_rect, ui.id().with("fg"), Sense::click());
     swatch(&painter, bg_rect, app.background, true);

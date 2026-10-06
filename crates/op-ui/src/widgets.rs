@@ -256,12 +256,6 @@ pub fn ps_icon_button(
     response
 }
 
-/// Full-width horizontal separator.
-pub fn hseparator(ui: &mut Ui) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 1.0), Sense::hover());
-    ui.painter().rect_filled(rect, 0, color::SEPARATOR_LIGHT);
-}
-
 /// Checkerboard (transparency background).
 pub fn checkerboard(painter: &egui::Painter, rect: Rect, cell: f32) {
     painter.rect_filled(rect, 0, Color32::WHITE);
