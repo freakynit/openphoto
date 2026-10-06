@@ -185,45 +185,84 @@ pub fn layer_from_background(doc: &mut Document) -> bool {
     true
 }
 
-/// Where Layer > Arrange would move the active layer, if anywhere. Nothing
-/// moves the background, and no layer goes below it.
+/// Where Layer > Arrange would move the active layer: the gap (as in
+/// [`move_block`]) among the layers of its own group, if it would move.
+/// Nothing moves the background, and no layer goes below it.
 pub fn arrange_target(doc: &Document, arrange: Arrange) -> Option<usize> {
-    let index = active_index(doc)?;
-    if doc.layers[index].is_background {
+    let id = doc.active_layer?;
+    let layer = doc.layer(id)?;
+    if layer.is_background {
         return None;
     }
-    let lowest = usize::from(doc.layers.first().is_some_and(|l| l.is_background));
-    let top = doc.layers.len() - 1;
-    let to = match arrange {
-        Arrange::BringToFront => top,
-        Arrange::BringForward => (index + 1).min(top),
-        Arrange::SendBackward => index.saturating_sub(1).max(lowest),
-        Arrange::SendToBack => lowest,
+    // The layers of the same group, bottom to top (the background can't be
+    // passed)
+    let siblings: Vec<LayerId> = doc
+        .layers
+        .iter()
+        .filter(|l| l.parent == layer.parent && !l.is_background)
+        .map(|l| l.id)
+        .collect();
+    let k = siblings.iter().position(|&s| s == id)?;
+    let gap = match arrange {
+        Arrange::BringToFront if k + 1 < siblings.len() => doc.block(*siblings.last()?)?.end,
+        Arrange::BringForward if k + 1 < siblings.len() => doc.block(siblings[k + 1])?.end,
+        Arrange::SendBackward if k > 0 => doc.block(siblings[k - 1])?.start,
+        Arrange::SendToBack if k > 0 => doc.block(siblings[0])?.start,
+        _ => return None,
     };
-    (to != index).then_some(to)
+    can_move_block(doc, id, gap).then_some(gap)
 }
 
 /// Layer > Arrange. Returns whether the layer moved.
 pub fn arrange(doc: &mut Document, arrange: Arrange) -> bool {
-    let (Some(from), Some(to)) = (active_index(doc), arrange_target(doc, arrange)) else {
+    let (Some(id), Some(gap)) = (doc.active_layer, arrange_target(doc, arrange)) else {
         return false;
     };
-    move_layer(doc, from, to)
+    move_block(doc, id, gap)
 }
 
-/// Moves the layer at index `from` so it ends up at index `to` (both
-/// bottom-up), as when dragging it in the Layers panel. The background
-/// can't move and no layer goes below it. Returns whether anything moved.
-pub fn move_layer(doc: &mut Document, from: usize, to: usize) -> bool {
-    let len = doc.layers.len();
-    if from == to || from >= len || to >= len || doc.layers[from].is_background {
+/// Whether Layer > Arrange > Reverse can run: two or more selected layers
+/// (with what's in them) in one group, none the background.
+pub fn can_reverse(doc: &Document) -> bool {
+    let roots = selected_roots(doc);
+    let parent = roots
+        .first()
+        .and_then(|&id| doc.layer(id))
+        .and_then(|l| l.parent);
+    roots.len() >= 2
+        && roots.iter().all(|&id| {
+            doc.layer(id)
+                .is_some_and(|l| l.parent == parent && !l.is_background)
+        })
+}
+
+/// Layer > Arrange > Reverse: the selected layers swap places so their
+/// order is reversed. Returns whether anything moved.
+pub fn reverse_selected(doc: &mut Document) -> bool {
+    if !can_reverse(doc) {
         return false;
     }
-    if to == 0 && doc.layers[0].is_background {
-        return false;
+    let roots = selected_roots(doc);
+    // Lift the blocks out and drop them back into the same slots, reversed
+    let blocks: Vec<std::ops::Range<usize>> =
+        roots.iter().filter_map(|&id| doc.block(id)).collect();
+    let lifted: Vec<Vec<Layer>> = blocks
+        .iter()
+        .map(|r| doc.layers[r.clone()].to_vec())
+        .collect();
+    let mut out: Vec<Layer> = Vec::with_capacity(doc.layers.len());
+    let (mut i, mut slot) = (0, 0);
+    while i < doc.layers.len() {
+        if let Some(b) = blocks.iter().find(|b| b.start == i) {
+            out.extend(lifted[lifted.len() - 1 - slot].iter().cloned());
+            slot += 1;
+            i = b.end;
+        } else {
+            out.push(doc.layers[i].clone());
+            i += 1;
+        }
     }
-    let layer = doc.layers.remove(from);
-    doc.layers.insert(to, layer);
+    doc.layers = out;
     doc.mark_dirty();
     true
 }
@@ -348,8 +387,7 @@ pub fn can_move_block(doc: &Document, id: LayerId, gap: usize) -> bool {
 
 /// Moves a layer, with everything in it, so it sits at `gap` (an index into
 /// `layers` before the move: between `gap - 1` and `gap`). It joins the
-/// group the gap is in: the group right above when the gap is at the top
-/// of its layers, else the group of the layer above. Nothing goes below
+/// innermost group the gap lies inside. Nothing goes below
 /// the background, the background doesn't move, and a group can't go into
 /// itself. Returns whether anything moved.
 pub fn move_block(doc: &mut Document, id: LayerId, gap: usize) -> bool {
@@ -357,19 +395,17 @@ pub fn move_block(doc: &mut Document, id: LayerId, gap: usize) -> bool {
         return false;
     }
     let range = doc.block(id).expect("checked");
-    let above = doc.layers.get(gap);
-    let below = gap.checked_sub(1).and_then(|i| doc.layers.get(i));
-    let parent = match (above, below) {
-        (Some(a), Some(b))
-            if a.is_group()
-                && b.parent
-                    .is_some_and(|p| p == a.id || doc.descendants(a.id).contains(&p)) =>
-        {
-            Some(a.id)
-        }
-        (Some(a), _) => a.parent,
-        (None, _) => None,
-    };
+    // The gap's group: the innermost group whose layers lie on both sides
+    // of it (its block holds the layer below, and the layer above or the
+    // group itself)
+    let parent = doc
+        .layers
+        .iter()
+        .filter(|g| g.is_group() && g.id != id)
+        .filter_map(|g| doc.block(g.id).map(|b| (g.id, b)))
+        .filter(|(_, b)| b.start < gap && gap < b.end)
+        .min_by_key(|(_, b)| b.len())
+        .map(|(g, _)| g);
     let block: Vec<Layer> = doc.layers.drain(range.clone()).collect();
     let at = if gap > range.end {
         gap - block.len()
@@ -429,6 +465,43 @@ pub fn merge_down(doc: &mut Document) -> bool {
     // Both layers' masks are in the merged pixels
     target.mask = None;
     doc.active_layer = Some(target.id);
+    doc.mark_dirty();
+    true
+}
+
+/// Whether Layer > Merge Group (Cmd+E on a group) can run: the active
+/// layer is a group with layers in it.
+pub fn can_merge_group(doc: &Document) -> bool {
+    doc.active_layer
+        .and_then(|id| doc.layer(id))
+        .is_some_and(|l| l.is_group() && !doc.descendants(l.id).is_empty())
+}
+
+/// Layer > Merge Group: the group's layers merged into one pixel layer that
+/// takes the group's place, name, opacity, mask and blend mode (Pass
+/// Through becoming Normal).
+pub fn merge_group(doc: &mut Document) -> bool {
+    if !can_merge_group(doc) {
+        return false;
+    }
+    let id = doc.active_layer.expect("checked");
+    let range = doc.block(id).expect("exists");
+    let inside: Vec<Layer> = doc.layers[range.start..range.end - 1].to_vec();
+    let image = merged(doc, &inside);
+    let group = doc.layers[range.end - 1].clone();
+    let mut layer = Layer::raster(group.id, group.name, image);
+    layer.parent = group.parent;
+    layer.visible = group.visible;
+    layer.opacity = group.opacity;
+    layer.fill = group.fill;
+    layer.mask = group.mask;
+    layer.color = group.color;
+    layer.blend_mode = match group.blend_mode {
+        BlendMode::PassThrough => BlendMode::Normal,
+        m => m,
+    };
+    doc.layers.splice(range, [layer]);
+    doc.select_layer(id);
     doc.mark_dirty();
     true
 }
@@ -821,10 +894,12 @@ mod tests {
     fn dragging_and_renaming() {
         let mut doc = doc();
         duplicate(&mut doc);
-        assert!(move_layer(&mut doc, 2, 1));
+        let copy = doc.layers[2].id;
+        assert!(move_block(&mut doc, copy, 1));
         assert_eq!(names(&doc), ["Background", "Layer 1 copy", "Layer 1"]);
-        assert!(!move_layer(&mut doc, 1, 0));
-        assert!(!move_layer(&mut doc, 0, 2));
+        assert!(!move_block(&mut doc, copy, 0));
+        let background = doc.layers[0].id;
+        assert!(!move_block(&mut doc, background, 3));
         let id = doc.layers[2].id;
         assert!(rename(&mut doc, id, "  Sky "));
         assert_eq!(doc.layers[2].name, "Sky");
@@ -1074,5 +1149,92 @@ mod tests {
         let into = duplicate_into(&doc, &mut other, "Copied").unwrap();
         assert_eq!(other.layers.len(), 3);
         assert_eq!(other.descendants(into).len(), 1);
+    }
+
+    #[test]
+    fn arranging_stays_within_the_group_and_reverse() {
+        let mut doc = Document::new_with_background("t", 2, 2, crate::Color::WHITE);
+        let ids: Vec<LayerId> = (0..4)
+            .map(|i| {
+                let id = doc.new_layer_id();
+                doc.layers
+                    .push(Layer::raster(id, format!("L{i}"), TiledImage::new(2, 2)));
+                id
+            })
+            .collect();
+        // L1 and L2 in a group; L0 below it, L3 above it
+        doc.select_layer(ids[1]);
+        doc.toggle_layer_selection(ids[2]);
+        let g = group_selected(&mut doc).unwrap();
+        let names = |doc: &Document| {
+            doc.layers
+                .iter()
+                .map(|l| l.name.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(&doc),
+            ["Background", "L0", "L1", "L2", "Group 1", "L3"]
+        );
+        // Bring L1 to front: the top of its group, not of the document
+        doc.select_layer(ids[1]);
+        assert!(arrange(&mut doc, Arrange::BringToFront));
+        assert_eq!(
+            names(&doc),
+            ["Background", "L0", "L2", "L1", "Group 1", "L3"]
+        );
+        assert_eq!(doc.layer(ids[1]).unwrap().parent, Some(g));
+        assert!(arrange_target(&doc, Arrange::BringForward).is_none());
+        // Send the group backward: past L0, with its layers
+        doc.select_layer(g);
+        assert!(arrange(&mut doc, Arrange::SendBackward));
+        assert_eq!(
+            names(&doc),
+            ["Background", "L2", "L1", "Group 1", "L0", "L3"]
+        );
+        assert!(arrange_target(&doc, Arrange::SendBackward).is_none());
+        // Bring L0 forward past L3 (top level)
+        doc.select_layer(ids[0]);
+        assert!(arrange(&mut doc, Arrange::BringForward));
+        assert_eq!(
+            names(&doc),
+            ["Background", "L2", "L1", "Group 1", "L3", "L0"]
+        );
+        assert_eq!(doc.layer(ids[0]).unwrap().parent, None);
+        // Reverse the group, L3 and L0
+        doc.select_layer(g);
+        doc.toggle_layer_selection(ids[3]);
+        doc.toggle_layer_selection(ids[0]);
+        assert!(reverse_selected(&mut doc));
+        assert_eq!(
+            names(&doc),
+            ["Background", "L0", "L3", "L2", "L1", "Group 1"]
+        );
+        assert_eq!(doc.layer(ids[1]).unwrap().parent, Some(g));
+    }
+
+    #[test]
+    fn merging_a_group() {
+        let mut doc = Document::new_with_background("t", 1, 1, crate::Color::WHITE);
+        let (a, b) = (doc.new_layer_id(), doc.new_layer_id());
+        doc.layers.push(Layer::raster(
+            a,
+            "A",
+            TiledImage::filled(1, 1, [255, 0, 0, 255]),
+        ));
+        let mut half = Layer::raster(b, "B", TiledImage::filled(1, 1, [0, 0, 255, 255]));
+        half.opacity = 0.5;
+        doc.layers.push(half);
+        doc.select_layer(a);
+        doc.toggle_layer_selection(b);
+        let g = group_selected(&mut doc).unwrap();
+        let before = doc.composite_rgba8();
+        assert!(can_merge_group(&doc));
+        assert!(merge_group(&mut doc));
+        let names: Vec<&str> = doc.layers.iter().map(|l| l.name.as_str()).collect();
+        assert_eq!(names, ["Background", "Group 1"]);
+        assert_eq!(doc.layers[1].id, g);
+        assert!(!doc.layers[1].is_group());
+        assert_eq!(doc.composite_rgba8(), before);
     }
 }

@@ -2191,3 +2191,29 @@ fn deleting_a_group_asks_what_to_delete() {
         ]
     );
 }
+
+#[test]
+fn merge_group_and_reverse() {
+    use crate::commands::Command;
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    for _ in 0..3 {
+        crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    }
+    // Reverse Layer 1..3
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::ALT, egui::Key::A);
+    h.run_steps(2);
+    run_command(&mut h, Command::ArrangeReverse);
+    assert_eq!(
+        layer_names(&h),
+        ["Background", "Layer 3", "Layer 2", "Layer 1"]
+    );
+    assert_eq!(last_history(&h), "Reverse");
+    // Group them, then Cmd+E merges the group into one layer
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::G);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::E);
+    h.run_steps(2);
+    assert_eq!(layer_names(&h), ["Background", "Group 1"]);
+    assert!(!active(&h).doc.layers[1].is_group());
+    assert_eq!(last_history(&h), "Merge Group");
+}

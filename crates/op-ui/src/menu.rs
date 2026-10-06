@@ -160,6 +160,7 @@ const ALL_COMMANDS: &[Command] = &[
     Command::UngroupLayers,
     Command::NewGroup,
     Command::NewGroupFromLayers,
+    Command::ArrangeReverse,
 ];
 
 fn id(command: Command) -> String {
@@ -550,7 +551,7 @@ impl NativeMenu {
                         &item("Bring Forward", Command::BringForward),
                         &item("Send Backward", Command::SendBackward),
                         &item("Send to Back", Command::SendToBack),
-                        &todo("Reverse", None),
+                        &item("Reverse", Command::ArrangeReverse),
                     ],
                 )
                 .expect("static menu definition is valid"),
@@ -1038,6 +1039,13 @@ impl NativeMenu {
                 Command::MergeDown => Some(
                     if doc.is_some_and(|d| d.doc.selected_layers().len() > 1) {
                         "Merge Layers"
+                    } else if doc.is_some_and(|d| {
+                        d.doc
+                            .active_layer
+                            .and_then(|id| d.doc.layer(id))
+                            .is_some_and(|l| l.is_group())
+                    }) {
+                        "Merge Group"
                     } else {
                         "Merge Down"
                     }

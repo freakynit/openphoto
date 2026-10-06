@@ -87,6 +87,8 @@ pub enum Command {
     SelectAllLayers,
     /// Layer > Group Layers (Cmd+G).
     GroupLayers,
+    /// Layer > Arrange > Reverse.
+    ArrangeReverse,
     /// Layer > Ungroup Layers (Shift+Cmd+G).
     UngroupLayers,
     /// Layer > New > Group... (opens the New Group dialog).
@@ -399,7 +401,8 @@ impl Command {
             | Self::Align(_)
             | Self::Distribute(_)
             | Self::NewGroup
-            | Self::NewGroupFromLayers => return None,
+            | Self::NewGroupFromLayers
+            | Self::ArrangeReverse => return None,
             Self::GroupLayers => cmd(Key::G),
             Self::UngroupLayers => shift_cmd(Key::G),
             Self::SelectAllLayers => Shortcut {
@@ -627,10 +630,18 @@ impl Command {
             Self::MergeDown => doc.is_some_and(|d| {
                 if d.doc.selected_layers().len() > 1 {
                     layer_ops::can_merge_selected(&d.doc)
+                } else if d
+                    .doc
+                    .active_layer
+                    .and_then(|id| d.doc.layer(id))
+                    .is_some_and(|l| l.is_group())
+                {
+                    layer_ops::can_merge_group(&d.doc)
                 } else {
                     layer_ops::can_merge_down(&d.doc)
                 }
             }),
+            Self::ArrangeReverse => doc.is_some_and(|d| layer_ops::can_reverse(&d.doc)),
             Self::MergeVisible => doc.is_some_and(|d| layer_ops::can_merge_visible(&d.doc)),
             Self::FlattenImage => doc.is_some_and(|d| {
                 let layers = &d.doc.layers;
@@ -1309,8 +1320,17 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                         if layer_ops::merge_selected(&mut state.doc) {
                             state.record("Merge Layers");
                         }
+                    } else if layer_ops::can_merge_group(&state.doc) {
+                        if layer_ops::merge_group(&mut state.doc) {
+                            state.record("Merge Group");
+                        }
                     } else if layer_ops::merge_down(&mut state.doc) {
                         state.record("Merge Down");
+                    }
+                }
+                Command::ArrangeReverse => {
+                    if layer_ops::reverse_selected(&mut state.doc) {
+                        state.record("Reverse");
                     }
                 }
                 Command::SelectAllLayers => {
