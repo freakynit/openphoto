@@ -233,11 +233,18 @@ pub fn write(doc: &Document) -> Vec<u8> {
             out.i32(x0 as i32);
             out.i32(y1 as i32);
             out.i32(x1 as i32);
-            out.u16(if layer.mask.is_some() { 5 } else { 4 });
+            // Photoshop stores the background without an alpha channel
+            let ids: &[i16] = if layer.is_background {
+                &[0, 1, 2]
+            } else {
+                &[-1, 0, 1, 2]
+            };
+            out.u16(ids.len() as u16 + u16::from(layer.mask.is_some()));
             let (rows, cols) = ((y1 - y0) as usize, (x1 - x0) as usize);
             let mut channels = Vec::new();
             let plane_data = bounds.map(|b| planes(image, b));
-            for (k, id) in [-1i16, 0, 1, 2].into_iter().enumerate() {
+            for &id in ids {
+                let k = (id + 1) as usize;
                 let mut data = Writer(Vec::new());
                 data.u16(1); // RLE
                 if let Some(p) = &plane_data {
@@ -274,7 +281,8 @@ pub fn write(doc: &Document) -> Vec<u8> {
             out.bytes(key);
             out.u8((layer.opacity * 255.0).round() as u8);
             out.u8(0); // clipping: base
-            let mut flags = 0u8;
+            // Bit 3: bit 4 is meaningful (Photoshop 5 and later)
+            let mut flags = 0b1000u8;
             if layer.is_background || layer.lock_transparency {
                 flags |= 1; // transparency protected
             }
@@ -320,6 +328,12 @@ pub fn write(doc: &Document) -> Vec<u8> {
             out.u32(utf16.len() as u32);
             utf16.iter().for_each(|&c| out.u16(c));
             out.close(luni, 4);
+            // The background's name comes from Photoshop ("bgnd")
+            if layer.is_background {
+                out.bytes(b"8BIMlnsr");
+                out.u32(4);
+                out.bytes(b"bgnd");
+            }
             // Fill opacity
             out.bytes(b"8BIMiOpa");
             out.u32(4);
@@ -641,7 +655,10 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                     .map_or(BlendMode::Normal, |(m, _)| *m);
                 // Photoshop's background: the bottom layer, transparency
                 // protected and named "Background"
-                if i == 0 && rec.flags & 1 != 0 && rec.name == "Background" {
+                // (no alpha channel, as Photoshop writes it, or named
+                // "Background" with transparency protected)
+                let no_alpha = !rec.channels.iter().any(|&(id, _)| id == -1);
+                if i == 0 && rec.flags & 1 != 0 && (no_alpha || rec.name == "Background") {
                     layer.is_background = true;
                 } else {
                     layer.lock_transparency = rec.flags & 1 != 0;
@@ -796,5 +813,20 @@ mod photoshop_check {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/psd-check");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("ours.psd"), write(&doc)).unwrap();
+    }
+
+    /// Reads a file Photoshop saved, given as OPENPHOTO_PSD.
+    #[test]
+    #[ignore]
+    fn read_photoshop_file() {
+        let path = std::env::var("OPENPHOTO_PSD").expect("OPENPHOTO_PSD");
+        let doc = read(&std::fs::read(&path).unwrap(), "t".into()).unwrap();
+        for l in &doc.layers {
+            eprintln!(
+                "{} bg={} visible={} opacity={}",
+                l.name, l.is_background, l.visible, l.opacity
+            );
+        }
+        assert!(doc.layers[0].is_background);
     }
 }
