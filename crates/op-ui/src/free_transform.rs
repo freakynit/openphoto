@@ -183,10 +183,12 @@ pub fn input(
     background: [u8; 3],
     ppp: f32,
 ) -> Option<Outcome> {
+    // Keys typed into a text field are not for the canvas
+    let typing = ui.ctx().egui_wants_keyboard_input();
     let (enter, escape) = ui.input_mut(|i| {
         (
-            i.consume_key(Modifiers::NONE, Key::Enter),
-            i.consume_key(Modifiers::NONE, Key::Escape),
+            !typing && i.consume_key(Modifiers::NONE, Key::Enter),
+            !typing && i.consume_key(Modifiers::NONE, Key::Escape),
         )
     });
     if escape {

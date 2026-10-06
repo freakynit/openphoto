@@ -1044,3 +1044,36 @@ fn free_transform_moves_scales_and_cancels() {
     assert_eq!(layer_pixel(&h, 1, 310, 210), [255, 0, 0, 255]);
     assert_eq!(last_history(&h), "Transform Again");
 }
+
+#[test]
+fn crop_tool_crops_to_the_box() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.key_press(egui::Key::C);
+    h.run_steps(2);
+    assert_eq!(h.state().state.tool, op_tools::Tool::Crop);
+    // The box starts on the whole canvas
+    let full = active(&h).crop.unwrap().rect;
+    assert_eq!(full.size(), egui::vec2(734.0, 811.0));
+    // Pull the bottom-right handle in by (234, 311)
+    let (a, b) = (doc_point(&h, 734.0, 811.0), doc_point(&h, 500.0, 500.0));
+    drag(&mut h, a, b, Modifiers::NONE);
+    shot(&mut h, "crop");
+    let r = active(&h).crop.unwrap().rect;
+    assert!(
+        (r.width() - 500.0).abs() < 2.0 && (r.height() - 500.0).abs() < 2.0,
+        "{r:?}"
+    );
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    let d = &active(&h).doc;
+    assert!((d.width as i32 - 500).abs() <= 2 && (d.height as i32 - 500).abs() <= 2);
+    assert_eq!(last_history(&h), "Crop");
+    // The box covers the new canvas again
+    let r = active(&h).crop.unwrap().rect;
+    assert_eq!(r.size(), egui::vec2(d.width as f32, d.height as f32));
+    // Another tool drops the box
+    h.key_press(egui::Key::M);
+    h.run_steps(2);
+    assert!(active(&h).crop.is_none());
+}

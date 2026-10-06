@@ -57,6 +57,8 @@ pub struct DocState {
     pub last_paint_point: Option<(f32, f32)>,
     /// A lasso outline being drawn.
     pub lasso: Option<LassoPath>,
+    /// The Crop tool's box, while the Crop tool is in use.
+    pub crop: Option<CropBox>,
     /// Edit > Free Transform, while in progress.
     pub free_transform: Option<FreeTransform>,
     /// A Gradient tool drag: start and current point, in document pixels.
@@ -95,6 +97,7 @@ impl DocState {
             renaming: None,
             lasso: None,
             free_transform: None,
+            crop: None,
             gradient_drag: None,
             outline: None,
             canvas: None,
@@ -331,6 +334,22 @@ pub struct MarqueeDrag {
     /// so they chose the combine mode and don't constrain the shape.
     pub shift_for_op: bool,
     pub alt_for_op: bool,
+}
+
+/// The Crop tool's box, in document pixels.
+#[derive(Clone, Copy, Debug)]
+pub struct CropBox {
+    pub rect: egui::Rect,
+    pub drag: Option<CropDrag>,
+}
+
+/// A crop box drag: the handle (−1, 0 or 1 per axis; `None` moves the
+/// box), where it started and the box at that time.
+#[derive(Clone, Copy, Debug)]
+pub struct CropDrag {
+    pub handle: Option<(i8, i8)>,
+    pub pointer: egui::Pos2,
+    pub rect: egui::Rect,
 }
 
 /// What a Free Transform drag grabbed.

@@ -8,6 +8,7 @@ mod clipboard;
 #[cfg(target_os = "macos")]
 mod color_management;
 mod commands;
+mod crop_tool;
 mod dialogs;
 mod doc_tabs;
 mod document_view;

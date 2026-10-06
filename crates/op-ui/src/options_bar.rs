@@ -37,6 +37,10 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
                     transform_buttons(ui, app);
                     return;
                 }
+                if app.tool == Tool::Crop {
+                    crop_buttons(ui, app);
+                    return;
+                }
                 // Avatar placeholder
                 let (r, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
                 ui.painter().circle_filled(
@@ -110,9 +114,56 @@ fn tool_options(ui: &mut Ui, app: &mut AppState) {
         Tool::PaintBucket => bucket_options(ui, app),
         Tool::Eyedropper => eyedropper_options(ui, app),
         Tool::Gradient => gradient_options(ui, app),
+        Tool::Crop => crop_options(ui, app),
         Tool::MagicWand => wand_options(ui, app),
         Tool::Hand | Tool::Zoom => view_options(ui, app),
         _ => {}
+    }
+}
+
+/// Crop: the box's size and Clear (back to the whole canvas); Delete
+/// Cropped Pixels is always on.
+fn crop_options(ui: &mut Ui, app: &mut AppState) {
+    let Some(state) = app.active() else {
+        return;
+    };
+    let size = state.crop.map(|c| c.rect.size());
+    ui.label("W:");
+    let w = size.map_or(String::new(), |s| format!("{} px", s.x.round()));
+    widgets::field(ui, &w, 76.0, true);
+    widgets::icon(ui, icons::ARROWS_LEFT_RIGHT, 16.0, color::TEXT_DISABLED);
+    ui.label("H:");
+    let h = size.map_or(String::new(), |s| format!("{} px", s.y.round()));
+    widgets::field(ui, &h, 76.0, true);
+    ui.add_space(6.0);
+    if ui.button("Clear").clicked() {
+        state.crop = Some(crate::crop_tool::full(state));
+    }
+    widgets::vseparator(ui, 34.0);
+    let mut delete = true;
+    ui.add_enabled(
+        false,
+        egui::Checkbox::new(&mut delete, "Delete Cropped Pixels"),
+    );
+}
+
+/// Crop's Cancel (reset the box) and Commit buttons.
+fn crop_buttons(ui: &mut Ui, app: &mut AppState) {
+    let Some(state) = app.active() else {
+        return;
+    };
+    if widgets::icon_button(ui, icons::CHECK, 34.0, false)
+        .on_hover_text("Commit current crop operation (Return)")
+        .clicked()
+    {
+        crate::crop_tool::commit(state);
+        return;
+    }
+    if widgets::icon_button(ui, icons::PROHIBIT, 34.0, false)
+        .on_hover_text("Cancel current crop operation (Esc)")
+        .clicked()
+    {
+        state.crop = Some(crate::crop_tool::full(state));
     }
 }
 

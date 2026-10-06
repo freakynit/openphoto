@@ -198,6 +198,9 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
                     }
                 }
             }
+            Tool::Crop => {
+                crate::crop_tool::input(ui, &response, state, ppp);
+            }
             Tool::Gradient => {
                 let [r0, g0, b0, _] = foreground.to_rgba8();
                 let [r1, g1, b1, _] = background.to_rgba8();
@@ -278,6 +281,9 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
         } else if state.free_transform.is_some() {
             let p = response.hover_pos().unwrap_or_default();
             crate::free_transform::cursor(state, p, ppp)
+        } else if tool == Tool::Crop {
+            let p = response.hover_pos().unwrap_or_default();
+            crate::crop_tool::cursor(state, p, ppp)
         } else {
             match tool {
                 Tool::Zoom if alt => CursorIcon::ZoomOut,
@@ -327,6 +333,11 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
 
     draw_selection(ui, state, canvas_rect, ppp, tool);
     crate::free_transform::draw(ui, state, canvas_rect, ppp);
+    // The crop box belongs to the Crop tool; picking another tool drops it
+    if tool != Tool::Crop {
+        state.crop = None;
+    }
+    crate::crop_tool::draw(ui, state, canvas_rect, ppp);
     let transforming = state.free_transform.is_some();
     if let (Some(opts), Some(p), false) = (paint, response.hover_pos(), transforming) {
         brush_cursor(ui, canvas_rect, p, opts.size * state.view.zoom / ppp);
@@ -502,7 +513,11 @@ fn lasso_input(
             state.record("Deselect");
         }
     } else {
+        let typing = ui.ctx().egui_wants_keyboard_input();
         let (enter, escape, backspace) = ui.input_mut(|i| {
+            if typing {
+                return (false, false, false);
+            }
             (
                 i.consume_key(egui::Modifiers::NONE, Key::Enter),
                 i.consume_key(egui::Modifiers::NONE, Key::Escape),
