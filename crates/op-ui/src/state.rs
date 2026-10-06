@@ -71,6 +71,8 @@ pub struct DocState {
     pub free_transform: Option<FreeTransform>,
     /// A Gradient tool drag: start and current point, in document pixels.
     pub gradient_drag: Option<(egui::Pos2, egui::Pos2)>,
+    /// Text being typed, while the Type tool edits.
+    pub text_edit: Option<TextEdit>,
     /// A shape tool drag: start and current point, in document pixels.
     pub shape_drag: Option<(egui::Pos2, egui::Pos2)>,
     /// A layer name being edited in the Layers panel, and the text so far.
@@ -115,6 +117,7 @@ impl DocState {
             picking_clone_source: false,
             gradient_drag: None,
             shape_drag: None,
+            text_edit: None,
             outline: None,
             canvas: None,
             thumbs: HashMap::new(),
@@ -395,6 +398,44 @@ pub struct MarqueeDrag {
     /// so they chose the combine mode and don't constrain the shape.
     pub shift_for_op: bool,
     pub alt_for_op: bool,
+}
+
+/// Type tool options: the font style and size in points (Photoshop's
+/// default 12 pt; at 72 ppi a point is a pixel).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TypeOptions {
+    pub semibold: bool,
+    pub size_pt: f32,
+}
+
+impl Default for TypeOptions {
+    fn default() -> Self {
+        Self {
+            semibold: false,
+            size_pt: 12.0,
+        }
+    }
+}
+
+impl TypeOptions {
+    pub fn font(&self) -> &'static [u8] {
+        if self.semibold {
+            crate::theme::SOURCE_SANS_SEMIBOLD
+        } else {
+            crate::theme::SOURCE_SANS_REGULAR
+        }
+    }
+}
+
+/// Text being typed with the Type tool: where its first baseline starts,
+/// what has been typed, and the document before it (the text shows live as
+/// a layer, rebuilt from `before` on every change).
+pub struct TextEdit {
+    pub origin: egui::Pos2,
+    pub text: String,
+    pub before: op_core::Snapshot,
+    /// The text as last shown on the document.
+    pub shown: String,
 }
 
 /// Shape tool options: the Polygon's sides (5) and the Line's weight
@@ -760,6 +801,7 @@ pub struct AppState {
     pub history_brush: PaintOptions,
     pub retouch: RetouchOptions,
     pub shape: ShapeOptions,
+    pub type_options: TypeOptions,
     /// Whether the Color panel edits the background or the foreground color.
     pub editing_background: bool,
     /// Cached HSB so the hue doesn't snap back to 0 for grays.
@@ -839,6 +881,7 @@ impl Default for AppState {
             history_brush: PaintOptions::brush(),
             retouch: RetouchOptions::default(),
             shape: ShapeOptions::default(),
+            type_options: TypeOptions::default(),
             editing_background: false,
             picker_hsb: Hsb::from_color(foreground),
             untitled_counter: 0,
@@ -933,6 +976,15 @@ impl AppState {
             || self.save_prompt.is_some()
             || self.alert.is_some()
             || self.transforming()
+            || self.typing_text()
+    }
+
+    /// Whether the active document has text being typed (menus and tool
+    /// keys are off meanwhile; the keys go into the text).
+    pub fn typing_text(&self) -> bool {
+        self.active_doc
+            .and_then(|id| self.docs.get(&id))
+            .is_some_and(|d| d.text_edit.is_some())
     }
 
     /// Whether the active document is in Free Transform (menus and tool

@@ -103,16 +103,20 @@ pub fn icon(size: f32) -> FontId {
     FontId::proportional(size)
 }
 
+/// The bundled interface fonts, also the Type tool's fonts.
+pub const SOURCE_SANS_REGULAR: &[u8] = include_bytes!("../assets/fonts/SourceSans3-Regular.ttf");
+pub const SOURCE_SANS_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/SourceSans3-Semibold.ttf");
+
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
 
     fonts.font_data.insert(
         "source-sans".into(),
-        FontData::from_static(include_bytes!("../assets/fonts/SourceSans3-Regular.ttf")).into(),
+        FontData::from_static(SOURCE_SANS_REGULAR).into(),
     );
     fonts.font_data.insert(
         "source-sans-semibold".into(),
-        FontData::from_static(include_bytes!("../assets/fonts/SourceSans3-Semibold.ttf")).into(),
+        FontData::from_static(SOURCE_SANS_SEMIBOLD).into(),
     );
 
     let proportional = fonts.families.entry(FontFamily::Proportional).or_default();

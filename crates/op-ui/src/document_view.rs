@@ -126,6 +126,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
     let view_options = app.view;
     let retouch = app.retouch;
     let shape_options = app.shape;
+    let type_options = app.type_options;
     let mut paint_error = None;
     let Some(state) = app.docs.get_mut(&id) else {
         return;
@@ -290,6 +291,10 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
             }
             Tool::Crop => {
                 crate::crop_tool::input(ui, &response, state, ppp);
+            }
+            Tool::HorizontalType => {
+                let [r, g, b, _] = foreground.to_rgba8();
+                crate::type_tool::input(ui, &response, state, type_options, [r, g, b], ppp);
             }
             Tool::Rectangle | Tool::Ellipse | Tool::Triangle | Tool::Polygon | Tool::Line => {
                 let [r, g, b, _] = foreground.to_rgba8();
@@ -481,6 +486,11 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
     if tool != Tool::Crop {
         state.crop = None;
     }
+    // Picking another tool keeps the text being typed
+    if tool != Tool::HorizontalType && state.text_edit.is_some() {
+        crate::type_tool::commit(state);
+    }
+    crate::type_tool::draw_caret(ui, state, type_options, canvas_rect, ppp);
     crate::crop_tool::draw(ui, state, canvas_rect, ppp);
     let transforming = state.free_transform.is_some();
     if let (Some(opts), Some(p), false) = (paint, response.hover_pos(), transforming) {

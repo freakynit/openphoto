@@ -25,6 +25,7 @@ mod state;
 mod theme;
 mod titlebar;
 mod toolbar;
+mod type_tool;
 mod widgets;
 
 #[cfg(test)]

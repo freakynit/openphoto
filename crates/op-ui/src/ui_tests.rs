@@ -1364,3 +1364,44 @@ fn shape_tools_make_layers() {
     assert_eq!(composite_pixel(&mut h, 445, 445), [0x14, 0x14, 0x14, 255]);
     shot(&mut h, "shapes");
 }
+
+#[test]
+fn type_tool_sets_text() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.state_mut().state.foreground = Color::WHITE;
+    h.state_mut().state.type_options.size_pt = 48.0;
+    h.key_press(egui::Key::T);
+    h.run_steps(2);
+    assert_eq!(h.state().state.tool, op_tools::Tool::HorizontalType);
+    let p = doc_point(&h, 100.0, 200.0);
+    click(&mut h, p);
+    assert!(active(&h).text_edit.is_some());
+    // Single-key tool shortcuts are off while typing: "M" is text
+    h.event(egui::Event::Text("Hello".into()));
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.event(egui::Event::Text("World".into()));
+    h.run_steps(2);
+    assert_eq!(h.state().state.tool, op_tools::Tool::HorizontalType);
+    // Previewed live as a layer
+    assert_eq!(layer_names(&h), ["Background", "Hello"]);
+    shot(&mut h, "type_tool");
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Enter);
+    h.run_steps(2);
+    assert!(active(&h).text_edit.is_none());
+    assert_eq!(last_history(&h), "Type Tool");
+    // White pixels where the "H" stands, above the baseline at y = 200
+    let lit = (100..130).any(|x| composite_pixel(&mut h, x, 180)[0] == 255);
+    assert!(lit);
+    assert_eq!(composite_pixel(&mut h, 100, 230)[0], 0x14);
+
+    // Escape throws the text away
+    let q = doc_point(&h, 100.0, 500.0);
+    click(&mut h, q);
+    h.event(egui::Event::Text("Gone".into()));
+    h.run_steps(2);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert_eq!(layer_names(&h), ["Background", "Hello"]);
+}

@@ -2316,6 +2316,9 @@ dependencies = [
 [[package]]
 name = "op-core"
 version = "0.1.0"
+dependencies = [
+ "skrifa",
+]
 
 [[package]]
 name = "op-io"

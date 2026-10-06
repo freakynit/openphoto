@@ -41,6 +41,10 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
                     crop_buttons(ui, app);
                     return;
                 }
+                if app.typing_text() {
+                    type_buttons(ui, app);
+                    return;
+                }
                 // Avatar placeholder
                 let (r, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
                 ui.painter().circle_filled(
@@ -124,12 +128,84 @@ fn tool_options(ui: &mut Ui, app: &mut AppState) {
         Tool::Eyedropper => eyedropper_options(ui, app),
         Tool::Gradient => gradient_options(ui, app),
         Tool::Crop => crop_options(ui, app),
+        Tool::HorizontalType => type_options(ui, app),
         Tool::Rectangle | Tool::Ellipse | Tool::Triangle | Tool::Polygon | Tool::Line => {
             shape_options(ui, app)
         }
         Tool::MagicWand => wand_options(ui, app),
         Tool::Hand | Tool::Zoom => view_options(ui, app),
         _ => {}
+    }
+}
+
+/// Type tool: font family, style, size, anti-aliasing, alignment and
+/// color (the foreground color).
+fn type_options(ui: &mut Ui, app: &mut AppState) {
+    let opts = &mut app.type_options;
+    egui::ComboBox::from_id_salt("type-family")
+        .width(150.0)
+        .selected_text("Source Sans 3")
+        .show_ui(ui, |ui| {
+            let _ = ui.selectable_label(true, "Source Sans 3");
+        });
+    egui::ComboBox::from_id_salt("type-style")
+        .width(96.0)
+        .selected_text(if opts.semibold { "Semibold" } else { "Regular" })
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut opts.semibold, false, "Regular");
+            ui.selectable_value(&mut opts.semibold, true, "Semibold");
+        });
+    widgets::icon(ui, icons::TEXT_AA, 16.0, color::ICON);
+    ui.add_sized(
+        [70.0, size::FIELD_HEIGHT],
+        egui::DragValue::new(&mut opts.size_pt)
+            .range(0.5..=1296.0)
+            .max_decimals(1)
+            .suffix(" pt"),
+    );
+    ui.add_enabled_ui(false, |ui| {
+        egui::ComboBox::from_id_salt("type-aa")
+            .width(70.0)
+            .selected_text("Sharp")
+            .show_ui(ui, |_| {});
+    });
+    widgets::vseparator(ui, 34.0);
+    widgets::icon_button(ui, icons::TEXT_ALIGN_LEFT, 30.0, true).on_hover_text("Left align text");
+    ui.add_enabled_ui(false, |ui| {
+        widgets::icon_button(ui, icons::TEXT_ALIGN_CENTER, 30.0, false)
+            .on_hover_text("Center text");
+        widgets::icon_button(ui, icons::TEXT_ALIGN_RIGHT, 30.0, false)
+            .on_hover_text("Right align text");
+    });
+    widgets::vseparator(ui, 34.0);
+    let [r, g, b, _] = app.foreground.to_rgba8();
+    let (swatch, _) = ui.allocate_exact_size(Vec2::new(26.0, 26.0), Sense::hover());
+    ui.painter().rect(
+        swatch,
+        2,
+        egui::Color32::from_rgb(r, g, b),
+        egui::Stroke::new(1.0, color::SEPARATOR),
+        egui::StrokeKind::Outside,
+    );
+}
+
+/// While typing: Cancel (Esc) and Commit (Cmd+Enter).
+fn type_buttons(ui: &mut Ui, app: &mut AppState) {
+    let Some(state) = app.active() else {
+        return;
+    };
+    if widgets::icon_button(ui, icons::CHECK, 34.0, false)
+        .on_hover_text("Commit any current edits")
+        .clicked()
+    {
+        crate::type_tool::commit(state);
+        return;
+    }
+    if widgets::icon_button(ui, icons::PROHIBIT, 34.0, false)
+        .on_hover_text("Cancel any current edits")
+        .clicked()
+    {
+        crate::type_tool::cancel(state);
     }
 }
 
