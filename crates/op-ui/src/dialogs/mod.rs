@@ -9,6 +9,7 @@ mod image_size;
 mod modify_selection;
 mod new_document;
 mod new_guide;
+mod new_layer;
 pub mod save_changes;
 mod trim;
 
@@ -20,5 +21,6 @@ pub use image_size::{ImageSizeDialog, Outcome as ImageSizeOutcome};
 pub use modify_selection::{ModifyDialog, ModifyKind, Outcome as ModifyOutcome};
 pub use new_document::{Contents as NewContents, NewDocumentDialog, Outcome as NewDocumentOutcome};
 pub use new_guide::{NewGuideDialog, Outcome as NewGuideOutcome};
+pub use new_layer::{NewLayer, NewLayerDialog, Outcome as NewLayerOutcome};
 pub use save_changes::SaveChoice;
 pub use trim::{Outcome as TrimOutcome, TrimDialog};

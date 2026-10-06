@@ -16,11 +16,28 @@ const LIST_TOP: f32 = pt(90.0);
 const FOOTER: f32 = pt(25.0);
 /// The list keeps a scrollbar gutter on its right.
 const GUTTER: f32 = pt(16.0);
-/// A row's own height; under it come 1 pt of the list's color and a 1 pt
-/// `#454545` line, so rows are `size::LAYER_ROW` (43.5 pt) apart.
-const ROW_H: f32 = pt(41.5);
-/// Thumbnails fit in this height, 4 pt below the row's top.
-const THUMB: f32 = pt(33.5);
+/// Thumbnails fit in a box this wide and tall (Photoshop 2026), 4 pt below
+/// the row's top; a row is the thumbnail's height plus 8 pt, and a 1 pt
+/// `#454545` line under it.
+const THUMB_W: f32 = pt(32.5);
+const THUMB_H: f32 = pt(33.5);
+
+/// The size of the document's thumbnails as drawn.
+fn thumb_size(doc: &op_core::Document) -> Vec2 {
+    let (w, h) = (doc.width.max(1) as f32, doc.height.max(1) as f32);
+    let scale = (THUMB_W / w).min(THUMB_H / h);
+    Vec2::new(w * scale, h * scale)
+}
+
+/// A row's height without its bottom line.
+fn row_height(doc: &op_core::Document) -> f32 {
+    thumb_size(doc).y + pt(8.0)
+}
+
+/// Rows are this far apart.
+pub fn row_pitch(doc: &op_core::Document) -> f32 {
+    row_height(doc) + pt(1.0)
+}
 /// Space between the layer and mask thumbnails (the link icon sits in it).
 const MASK_GAP: f32 = pt(10.0);
 /// The eye column, and the 1 pt line right of it.
@@ -68,7 +85,10 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
         .auto_shrink(false)
         .show(&mut list_ui, |ui| layer_list(ui, state));
 
-    bottom_bar(ui, state, bar_rect);
+    if bottom_bar(ui, state, bar_rect) {
+        let name = state.doc.next_layer_name();
+        app.new_layer_dialog = Some(crate::dialogs::NewLayerDialog::new(name));
+    }
 }
 
 /// Paints one of the traced icons centered at `center`.
@@ -405,30 +425,32 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
     let mut list_top = None;
     // The row being dragged (its position in the list) and where it is
     let mut dragged: Option<(usize, Pos2, bool)> = None;
+    let ts = thumb_size(&state.doc);
+    let row_h = row_height(&state.doc);
     for (row, &id) in ids.iter().enumerate() {
         let (rect, response) = ui.allocate_exact_size(
-            Vec2::new(ui.available_width(), size::LAYER_ROW),
+            Vec2::new(ui.available_width(), row_pitch(&state.doc)),
             Sense::click_and_drag(),
         );
         list_top.get_or_insert(rect.top());
         // The row proper, left of the scrollbar gutter
         let row_rect = Rect::from_min_max(
             rect.min,
-            Pos2::new(rect.right() - GUTTER, rect.top() + ROW_H),
+            Pos2::new(rect.right() - GUTTER, rect.top() + row_h),
         );
-        let eye_rect = Rect::from_min_size(rect.min, Vec2::new(EYE_W, ROW_H));
+        let eye_rect = Rect::from_min_size(rect.min, Vec2::new(EYE_W, row_h));
         let eye = ui.interact(eye_rect, ui.id().with(("eye", id.0)), Sense::click());
-        let lock_center = Pos2::new(row_rect.right() - pt(21.5), rect.top() + pt(20.5));
+        let lock_center = Pos2::new(row_rect.right() - pt(21.5), rect.top() + row_h / 2.0);
         let lock_rect = Rect::from_center_size(lock_center, Vec2::splat(pt(16.0)));
         let is_background = state.doc.layer(id).is_some_and(|l| l.is_background);
         let has_mask = state.doc.layer(id).is_some_and(|l| l.mask.is_some());
         // The layer thumbnail, then the mask's (with a link icon between)
-        let thumb_box = Rect::from_min_size(
-            Pos2::new(rect.left() + pt(34.0), rect.top() + pt(4.0)),
-            Vec2::splat(THUMB),
-        );
-        let mask_box = has_mask.then(|| thumb_box.translate(Vec2::new(THUMB + MASK_GAP, 0.0)));
-        let name_x = mask_box.unwrap_or(thumb_box).right() + pt(4.5);
+        // The layer thumbnail as drawn, then the mask's (with a link icon
+        // between); the name starts 8 pt right of the last one
+        let thumb_box =
+            Rect::from_min_size(Pos2::new(rect.left() + pt(34.0), rect.top() + pt(4.0)), ts);
+        let mask_box = has_mask.then(|| thumb_box.translate(Vec2::new(ts.x + MASK_GAP, 0.0)));
+        let name_x = mask_box.unwrap_or(thumb_box).right() + pt(8.0);
         // Clicking the background's lock turns it into a regular layer
         let lock = is_background
             .then(|| ui.interact(lock_rect, ui.id().with(("lock", id.0)), Sense::click()));
@@ -482,7 +504,7 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
             dragged = Some((row, p, response.drag_stopped()));
         }
 
-        let thumb = state.layer_thumbnail(ui.ctx(), id, (THUMB * 3.0) as u32);
+        let thumb = state.layer_thumbnail(ui.ctx(), id, (THUMB_H * 3.0) as u32);
         let selected = state.doc.active_layer == Some(id);
         let Some(layer) = state.doc.layer(id) else {
             continue;
@@ -490,7 +512,12 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
         let painter = ui.painter();
         // The eye column keeps the panel's color; the rest of the row is
         // highlighted when selected (Photoshop 2026)
-        painter.rect_filled(eye_rect, 0, color::PANEL);
+        let label = state
+            .doc
+            .layer(id)
+            .and_then(|l| layer_color(l.color))
+            .unwrap_or(color::PANEL);
+        painter.rect_filled(eye_rect, 0, label);
         let body = Rect::from_min_max(
             Pos2::new(eye_rect.right() + pt(1.0), rect.top()),
             row_rect.max,
@@ -505,14 +532,14 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
         painter.rect_filled(
             Rect::from_min_size(
                 Pos2::new(eye_rect.right(), rect.top()),
-                Vec2::new(pt(1.0), ROW_H),
+                Vec2::new(pt(1.0), row_h),
             ),
             0,
             LINE,
         );
         painter.rect_filled(
             Rect::from_min_size(
-                Pos2::new(rect.left(), rect.top() + ROW_H + pt(1.0)),
+                Pos2::new(rect.left(), rect.top() + row_h),
                 Vec2::new(rect.width(), pt(1.0)),
             ),
             0,
@@ -521,7 +548,7 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
         if layer.visible {
             icon(
                 painter,
-                Pos2::new(rect.left() + pt(15.0), rect.top() + pt(21.0)),
+                Pos2::new(rect.left() + pt(15.0), rect.top() + row_h / 2.0 + pt(0.25)),
                 Icon::Eye,
                 true,
                 color::PANEL,
@@ -529,22 +556,14 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
         }
 
         let mask_thumb =
-            mask_box.and_then(|_| state.mask_thumbnail(ui.ctx(), id, (THUMB * 2.0) as u32));
+            mask_box.and_then(|_| state.mask_thumbnail(ui.ctx(), id, (THUMB_H * 2.0) as u32));
         let Some(layer) = state.doc.layer(id) else {
             continue;
         };
         if let Some(tex) = thumb {
-            let size = tex.size_vec2();
-            let scale = (THUMB / size.x).min(THUMB / size.y);
-            // Left-aligned in its box, with a 1 pt dark frame inside
-            let r = Rect::from_min_size(
-                Pos2::new(
-                    thumb_box.left(),
-                    thumb_box.center().y - size.y * scale / 2.0,
-                ),
-                size * scale,
-            );
-            widgets::checkerboard(painter, r, pt(3.0));
+            // With a 1 pt dark frame inside
+            let r = thumb_box;
+            widgets::checkerboard(painter, r, pt(2.0));
             painter.image(
                 tex.id(),
                 r,
@@ -559,9 +578,7 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
             );
         }
         if let (Some(mbox), Some(tex)) = (mask_box, mask_thumb) {
-            let size = tex.size_vec2();
-            let scale = (THUMB / size.x).min(THUMB / size.y);
-            let r = Rect::from_center_size(mbox.center(), size * scale);
+            let r = mbox;
             painter.image(
                 tex.id(),
                 r,
@@ -589,17 +606,17 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
             }
         }
         // The edit target (pixels or mask) of the selected layer gets a
-        // white frame
-        if selected && let Some(mbox) = mask_box {
-            let target = if state.doc.mask_target {
-                mbox
-            } else {
-                thumb_box
+        // 1.5 pt white frame 0.5 pt outside its thumbnail (Photoshop 2026
+        // leaves it off the background layer)
+        if selected && !layer.is_background {
+            let target = match mask_box {
+                Some(mbox) if state.doc.mask_target => mbox,
+                _ => thumb_box,
             };
             painter.rect_stroke(
-                target.expand(2.0),
+                target.expand(pt(0.5)),
                 0,
-                Stroke::new(1.5, egui::Color32::WHITE),
+                Stroke::new(pt(1.5), egui::Color32::WHITE),
                 StrokeKind::Outside,
             );
         }
@@ -609,7 +626,7 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) {
         } else {
             theme::body()
         };
-        let name_pos = Pos2::new(name_x, rect.top() + pt(21.75));
+        let name_pos = Pos2::new(name_x, rect.top() + row_h / 2.0);
         if state.renaming.as_ref().is_some_and(|(r, _)| *r == id) {
             rename_field(ui, state, id, name_pos, rect);
             continue;
@@ -686,7 +703,8 @@ fn drop_layer(
 ) {
     let n = ids.len();
     // The gap between rows the pointer is closest to (0 = above the top row)
-    let gap = (((pointer.y - list_top) / size::LAYER_ROW).round().max(0.0) as usize).min(n);
+    let pitch = row_pitch(&state.doc);
+    let gap = (((pointer.y - list_top) / pitch).round().max(0.0) as usize).min(n);
     // Its final position in the list once removed from its own row...
     let row = if gap > from_row { gap - 1 } else { gap };
     // ...and in the bottom-up layer order
@@ -702,7 +720,7 @@ fn drop_layer(
         return;
     }
     if allowed {
-        let y = list_top + gap as f32 * size::LAYER_ROW;
+        let y = list_top + gap as f32 * pitch;
         let clip = ui.clip_rect();
         ui.painter().line_segment(
             [Pos2::new(clip.left(), y), Pos2::new(clip.right(), y)],
@@ -712,8 +730,10 @@ fn drop_layer(
 }
 
 /// The footer: eight buttons at Photoshop 2026's positions (centers
-/// measured from the panel's right edge).
-fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) {
+/// measured from the panel's right edge). Returns true when Alt-clicking
+/// "Create a new layer" asks for the New Layer dialog, as in Photoshop.
+fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) -> bool {
+    let mut open_dialog = false;
     let painter = ui.painter().clone();
     painter.rect_filled(rect, 0, color::PANEL);
     painter.rect_filled(
@@ -759,6 +779,7 @@ fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) {
         }
         match i {
             Icon::DeleteLayer => delete_active_layer(state),
+            Icon::NewLayer if ui.input(|i| i.modifiers.alt) => open_dialog = true,
             Icon::NewLayer => new_layer(state),
             Icon::LayerMask => {
                 // From the selection when there is one, as in Photoshop
@@ -774,6 +795,7 @@ fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) {
             _ => {}
         }
     }
+    open_dialog
 }
 
 /// Layer > Hide Layers / Show Layers. Like Photoshop's default, visibility
@@ -784,6 +806,45 @@ pub fn toggle_active_visibility(state: &mut DocState) {
         layer.visible = !layer.visible;
         doc.mark_dirty();
     }
+}
+
+/// The color a layer's color label shows in the Layers panel (behind the
+/// eye); `None` for no label.
+pub fn layer_color(c: op_core::LayerColor) -> Option<egui::Color32> {
+    use op_core::LayerColor::*;
+    let rgb = |r, g, b| Some(egui::Color32::from_rgb(r, g, b));
+    // Measured on Photoshop 2026
+    match c {
+        None => Option::None,
+        Red => rgb(0xa3, 0x49, 0x43),
+        Orange => rgb(0x9c, 0x65, 0x24),
+        Yellow => rgb(0xa5, 0x8a, 0x2e),
+        Green => rgb(0x66, 0x81, 0x45),
+        Blue => rgb(0x58, 0x6e, 0x96),
+        Violet => rgb(0x6d, 0x56, 0x9b),
+        Gray => rgb(0x6a, 0x6a, 0x6a),
+    }
+}
+
+/// Layer > New > Layer... confirmed: a layer with the dialog's name, color
+/// label, blend mode and opacity above the active one, filled with the
+/// mode's neutral color when asked. Recorded as "New Layer".
+pub fn new_layer_from(state: &mut DocState, new: crate::dialogs::NewLayer) {
+    let doc = &mut state.doc;
+    let image = match new
+        .fill_neutral
+        .then(|| op_core::neutral_color(new.mode))
+        .flatten()
+    {
+        Some([r, g, b]) => TiledImage::filled(doc.width, doc.height, [r, g, b, 255]),
+        None => TiledImage::new(doc.width, doc.height),
+    };
+    let mut layer = Layer::raster(doc.new_layer_id(), new.name, image);
+    layer.color = new.color;
+    layer.blend_mode = new.mode;
+    layer.opacity = new.opacity;
+    doc.insert_above_active(layer);
+    state.record("New Layer");
 }
 
 pub fn new_layer(state: &mut DocState) {

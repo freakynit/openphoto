@@ -155,6 +155,71 @@ impl LayerMask {
     }
 }
 
+/// A layer's color label (Photoshop's "Color" in the New Layer dialog and
+/// the Layers panel's context menu), shown behind the eye in the panel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LayerColor {
+    #[default]
+    None,
+    Red,
+    Orange,
+    Yellow,
+    Green,
+    Blue,
+    Violet,
+    Gray,
+}
+
+impl LayerColor {
+    pub const ALL: [Self; 8] = [
+        Self::None,
+        Self::Red,
+        Self::Orange,
+        Self::Yellow,
+        Self::Green,
+        Self::Blue,
+        Self::Violet,
+        Self::Gray,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Red => "Red",
+            Self::Orange => "Orange",
+            Self::Yellow => "Yellow",
+            Self::Green => "Green",
+            Self::Blue => "Blue",
+            Self::Violet => "Violet",
+            Self::Gray => "Gray",
+        }
+    }
+
+    /// The index Photoshop stores in a PSD's `lclr` block.
+    pub fn psd_index(self) -> u16 {
+        Self::ALL.iter().position(|&c| c == self).unwrap_or(0) as u16
+    }
+
+    pub fn from_psd_index(i: u16) -> Self {
+        Self::ALL.get(i as usize).copied().unwrap_or_default()
+    }
+}
+
+/// The color Photoshop fills a new layer with for "Fill with
+/// \<mode\>-neutral color": the color that leaves the image unchanged in
+/// that blend mode. `None` for modes without one (the option is greyed).
+pub fn neutral_color(mode: BlendMode) -> Option<[u8; 3]> {
+    use BlendMode::*;
+    match mode {
+        Overlay | SoftLight | HardLight | VividLight | LinearLight | PinLight => Some([128; 3]),
+        Multiply | ColorBurn | LinearBurn | Darken | Divide => Some([255; 3]),
+        Screen | ColorDodge | LinearDodge | Lighten | Difference | Exclusion | Subtract => {
+            Some([0; 3])
+        }
+        _ => None,
+    }
+}
+
 #[derive(Clone)]
 pub struct Layer {
     pub id: LayerId,
@@ -172,6 +237,7 @@ pub struct Layer {
     pub lock_position: bool,
     pub kind: LayerKind,
     pub mask: Option<LayerMask>,
+    pub color: LayerColor,
 }
 
 impl Layer {
@@ -189,6 +255,7 @@ impl Layer {
             lock_position: false,
             kind: LayerKind::Raster(image),
             mask: None,
+            color: LayerColor::None,
         }
     }
 

@@ -925,6 +925,8 @@ pub struct AppState {
     pub new_document_dialog: Option<crate::dialogs::NewDocumentDialog>,
     /// View > Guides > New Guide..., while open.
     pub new_guide_dialog: Option<crate::dialogs::NewGuideDialog>,
+    /// Layer > New > Layer... while open.
+    pub new_layer_dialog: Option<crate::dialogs::NewLayerDialog>,
     /// Image > Image Size, while open.
     pub image_size_dialog: Option<crate::dialogs::ImageSizeDialog>,
     /// Image > Trim, while open.
@@ -994,6 +996,7 @@ impl Default for AppState {
             trim_dialog: None,
             image_size_dialog: None,
             new_guide_dialog: None,
+            new_layer_dialog: None,
             new_document_dialog: None,
             modify_dialog: None,
             adjust_dialog: None,
@@ -1072,6 +1075,7 @@ impl AppState {
             || self.trim_dialog.is_some()
             || self.image_size_dialog.is_some()
             || self.new_guide_dialog.is_some()
+            || self.new_layer_dialog.is_some()
             || self.new_document_dialog.is_some()
             || self.modify_dialog.is_some()
             || self.adjust_dialog.is_some()

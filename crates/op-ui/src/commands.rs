@@ -79,7 +79,10 @@ pub enum Command {
     HighPass,
     Offset,
     Mosaic,
+    /// Layer > New > Layer... (Shift+Cmd+N): opens the New Layer dialog.
     NewLayer,
+    /// Alt+Shift+Cmd+N: a new layer without the dialog.
+    NewLayerNoDialog,
     DeleteLayer,
     /// Layer > Hide Layers / Show Layers for the active layer.
     ToggleLayerVisibility,
@@ -273,6 +276,10 @@ impl Command {
             Self::CanvasSize => alt_cmd(Key::C),
             Self::ImageSize => alt_cmd(Key::I),
             Self::NewLayer => shift_cmd(Key::N),
+            Self::NewLayerNoDialog => Shortcut {
+                alt: true,
+                ..shift_cmd(Key::N)
+            },
             Self::ToggleLayerVisibility => cmd(Key::Comma),
             Self::LayerViaCopy => cmd(Key::J),
             Self::LayerViaCut => shift_cmd(Key::J),
@@ -628,6 +635,7 @@ impl Command {
             | Self::Offset
             | Self::Mosaic
             | Self::NewLayer
+            | Self::NewLayerNoDialog
             | Self::ZoomIn
             | Self::ZoomOut
             | Self::FitOnScreen
@@ -672,6 +680,7 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::AutoColor,
     Command::Redo,
     Command::ToggleLastState,
+    Command::NewLayerNoDialog,
     Command::NewLayer,
     Command::CanvasSize,
     Command::ImageSize,
@@ -1170,7 +1179,11 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                     Some(false) => state.record("Disable Layer Mask"),
                     None => {}
                 },
-                Command::NewLayer => crate::panels::new_layer(state),
+                Command::NewLayer => {
+                    let name = state.doc.next_layer_name();
+                    app.new_layer_dialog = Some(crate::dialogs::NewLayerDialog::new(name));
+                }
+                Command::NewLayerNoDialog => crate::panels::new_layer(state),
                 Command::DuplicateLayer => {
                     if layer_ops::duplicate(&mut state.doc).is_some() {
                         state.record("Duplicate Layer");

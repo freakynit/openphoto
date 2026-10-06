@@ -320,6 +320,21 @@ impl OpenPhotoApp {
         }
     }
 
+    fn new_layer_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.state.new_layer_dialog.take() else {
+            return;
+        };
+        match dialog.show(ctx) {
+            dialogs::NewLayerOutcome::Open => self.state.new_layer_dialog = Some(dialog),
+            dialogs::NewLayerOutcome::Cancel => {}
+            dialogs::NewLayerOutcome::Create(layer) => {
+                if let Some(state) = self.state.active() {
+                    panels::new_layer_from(state, layer);
+                }
+            }
+        }
+    }
+
     fn new_guide_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.state.new_guide_dialog.take() else {
             return;
@@ -520,6 +535,7 @@ impl eframe::App for OpenPhotoApp {
         self.trim_dialog(&ctx);
         self.image_size_dialog(&ctx);
         self.new_guide_dialog(&ctx);
+        self.new_layer_dialog(&ctx);
         self.new_document_dialog(&ctx);
         self.modify_dialog(&ctx);
         self.adjust_dialog(&ctx);

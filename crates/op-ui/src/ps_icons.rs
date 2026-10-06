@@ -37,6 +37,8 @@ pub enum Icon {
     History,
     /// The Comments panel's icon: a filled speech bubble.
     Comments,
+    /// The larger V of dialog dropdowns (10 × 6 pt).
+    DialogChevron,
     // The Layers panel: filter buttons, lock buttons, the visibility eye,
     // the background's lock badge and the footer buttons
     FilterPixel,
@@ -149,6 +151,7 @@ pub fn paint(painter: &Painter, center: Pos2, icon: Icon, color: Color32, backgr
             pen.poly(&[(15.5, 0.0), (9.0, 5.0), (9.0, -5.0)]);
         }
         Icon::Caret => pen.line(&[(-6.0, -3.0), (0.0, 3.0), (6.0, -3.0)], 2.2),
+        Icon::DialogChevron => pen.line(&[(-8.5, -4.5), (0.0, 4.0), (8.5, -4.5)], 3.5),
         Icon::Share => {
             // The tray, open at the top around the arrow
             pen.line(

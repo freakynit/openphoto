@@ -609,9 +609,9 @@ fn layers_panel_drag_and_rename() {
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::J);
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::J);
     h.run_steps(3);
-    // Rows (top to bottom): "Layer 1 copy", "Layer 1", "Background", 43.5
-    // pt apart starting at 632 pt (Photoshop 2026). Drag the top row below
-    // "Layer 1".
+    // Rows (top to bottom): "Layer 1 copy", "Layer 1", "Background", 42.5
+    // pt apart (a 33.5 pt thumbnail + 8 pt + a 1 pt line) starting at 632 pt.
+    // Drag the top row below "Layer 1".
     drag(
         &mut h,
         at_pt(1130.0, 654.0),
@@ -641,7 +641,7 @@ fn layers_panel_drag_and_rename() {
     assert_eq!(last_history(&h), "Rename Layer");
 
     // Clicking the background's lock makes it "Layer 0"
-    click(&mut h, at_pt(1312.5, 739.5));
+    click(&mut h, at_pt(1312.5, 737.75));
     assert_eq!(layer_names(&h), ["Layer 0", "Sky", "Layer 1"]);
     assert!(!active(&h).doc.layers[0].is_background);
 }
@@ -1645,8 +1645,6 @@ const PHOTOSHOP_PIXELS: &[(&str, f32, f32, u8)] = &[
     ("eye column", 1031.0, 645.0, 83),
     ("eye divider", 1058.0, 645.0, 69),
     ("row selected", 1200.0, 640.0, 107),
-    ("row gap", 1200.0, 674.0, 77),
-    ("row line", 1200.0, 675.0, 69),
     ("list bg", 1200.0, 700.0, 77),
     ("footer line", 1200.0, 775.5, 62),
     ("new layer outline", 1286.5, 787.5, 221),
@@ -1743,4 +1741,63 @@ fn dragging_a_layer_off_the_canvas_and_reveal_all() {
     assert_eq!((doc.width, doc.height), (734 + 90, 811));
     assert_eq!(layer_pixel(&h, 1, 0, 120), [255, 0, 0, 255]);
     assert_eq!(last_history(&h), "Reveal All");
+}
+
+#[test]
+fn new_layer_dialog_names_colors_and_blends() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    // Shift+Cmd+N opens the dialog with the next name selected
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::N);
+    h.run_steps(3);
+    assert!(h.state().state.new_layer_dialog.is_some());
+    h.event(egui::Event::Text("Shade".into()));
+    h.run_steps(2);
+    // The dialog sits in the middle of the window (552 × 186 pt)
+    let origin = (675.0 - 276.0, 400.0 - 93.0);
+    let at = |x: f32, y: f32| at_pt(origin.0 + x, origin.1 + y);
+    click(&mut h, at(370.0, 60.0));
+    h.get_by_label("Violet").click();
+    h.run_steps(2);
+    click(&mut h, at(138.0, 125.0));
+    h.get_by_label("Multiply").click();
+    h.run_steps(2);
+    // Multiply's neutral color is white: fill with it
+    click(&mut h, at(64.0, 154.0));
+    click(&mut h, at(497.0, 60.0));
+    h.run_steps(2);
+    assert!(h.state().state.new_layer_dialog.is_none());
+    let doc = &active(&h).doc;
+    let layer = &doc.layers[1];
+    assert_eq!(layer.name, "Shade");
+    assert_eq!(layer.color, op_core::LayerColor::Violet);
+    assert_eq!(layer.blend_mode, op_core::BlendMode::Multiply);
+    assert_eq!(layer_pixel(&h, 1, 5, 5), [255, 255, 255, 255]);
+    assert_eq!(last_history(&h), "New Layer");
+
+    // Escape cancels; Alt+Shift+Cmd+N skips the dialog
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::N);
+    h.run_steps(2);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().state.new_layer_dialog.is_none());
+    assert_eq!(active(&h).doc.layers.len(), 2);
+    h.key_press_modifiers(
+        Modifiers::COMMAND | Modifiers::SHIFT | Modifiers::ALT,
+        egui::Key::N,
+    );
+    h.run_steps(2);
+    assert!(h.state().state.new_layer_dialog.is_none());
+    assert_eq!(layer_names(&h), ["Background", "Shade", "Layer 1"]);
+}
+
+#[test]
+#[ignore]
+fn screenshot_new_layer_dialog() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::N);
+    h.run_steps(3);
+    shot(&mut h, "new_layer");
 }

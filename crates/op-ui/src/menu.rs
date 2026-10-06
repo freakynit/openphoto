@@ -444,14 +444,14 @@ impl NativeMenu {
             "Layer",
             true,
             &[
-                // Photoshop's "Layer...", "Layer from Background..." and
-                // "Duplicate Layer..." open dialogs; ours act directly, so
-                // their labels have no ellipsis.
+                // Photoshop's "Layer from Background..." and "Duplicate
+                // Layer..." open dialogs; ours act directly, so their labels
+                // have no ellipsis.
                 &Submenu::with_items(
                     "New",
                     true,
                     &[
-                        &item("Layer", Command::NewLayer) as &dyn IsMenuItem,
+                        &item("Layer...", Command::NewLayer) as &dyn IsMenuItem,
                         &item("Layer from Background", Command::LayerFromBackground),
                         &todo("Group...", None),
                         &todo("Group from Layers...", None),

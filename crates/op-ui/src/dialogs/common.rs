@@ -107,6 +107,29 @@ pub fn number_field(
     font: f32,
     select_all: bool,
 ) -> egui::Response {
+    let pad = rect.height() * 0.23;
+    text_field(
+        ui,
+        rect,
+        text,
+        id,
+        FontId::proportional(font),
+        pad,
+        select_all,
+    )
+}
+
+/// [`number_field`] with a given font and left padding (the right one is
+/// 2 pt).
+pub fn text_field(
+    ui: &mut Ui,
+    rect: Rect,
+    text: &mut String,
+    id: impl egui::AsIdSalt,
+    font: FontId,
+    pad: f32,
+    select_all: bool,
+) -> egui::Response {
     use egui::text::{CCursor, CCursorRange};
     let id = ui.id().with(id);
     let has_focus = ui.memory(|m| m.has_focus(id));
@@ -122,14 +145,17 @@ pub fn number_field(
             .rect_stroke(rect, 4, Stroke::new(2.0, FOCUS), StrokeKind::Outside);
     }
 
-    let pad = rect.height() * 0.23;
-    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(pad, 0.0))));
+    let inner = Rect::from_min_max(
+        rect.min + vec2(pad, 0.0),
+        rect.max - vec2(crate::theme::pt(2.0), 0.0),
+    );
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(inner));
     let output = egui::TextEdit::singleline(text)
         .id(id)
         .frame(egui::Frame::NONE)
-        .font(FontId::proportional(font))
+        .font(font)
         .vertical_align(egui::Align::Center)
-        .desired_width(rect.width() - 2.0 * pad)
+        .desired_width(inner.width())
         .min_size(vec2(0.0, rect.height()))
         .show(&mut child);
 

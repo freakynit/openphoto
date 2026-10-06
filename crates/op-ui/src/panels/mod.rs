@@ -12,7 +12,9 @@ mod navigator;
 pub use color_panel::DEFAULT_SWATCHES;
 pub mod history;
 mod layers;
-pub use layers::{delete_active_layer, new_layer, toggle_active_visibility};
+pub use layers::{
+    delete_active_layer, layer_color, new_layer, new_layer_from, toggle_active_visibility,
+};
 mod properties;
 
 use egui::{Align2, Color32, CursorIcon, Pos2, Rect, Sense, Ui, UiBuilder, Vec2};

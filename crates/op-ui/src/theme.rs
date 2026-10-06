@@ -82,8 +82,6 @@ pub mod size {
     /// Panel tab bar: 27 pt of tabs and a 1 pt line under them.
     pub const PANEL_TAB_BAR: f32 = super::pt(28.0);
     pub const FIELD_HEIGHT: f32 = 26.0;
-    /// Layer rows, 43.5 pt apart (Photoshop 2026).
-    pub const LAYER_ROW: f32 = super::pt(43.5);
 }
 
 pub mod font {
@@ -120,6 +118,22 @@ pub fn small() -> FontId {
 pub fn semibold(size: f32) -> FontId {
     FontId::new(size, FontFamily::Name(SEMIBOLD.into()))
 }
+
+/// Dialog text: Photoshop's dialogs use the macOS system font (SF), loaded
+/// at run time when present (see [`install_fonts`]), else Source Sans 3.
+pub fn dialog(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(DIALOG.into()))
+}
+
+/// Bold dialog text (titles, the default button).
+pub fn dialog_bold(size: f32) -> FontId {
+    FontId::new(size, FontFamily::Name(DIALOG_BOLD.into()))
+}
+
+const DIALOG: &str = "dialog";
+const DIALOG_BOLD: &str = "dialog-bold";
+/// Where macOS keeps its system font, a variable font with a weight axis.
+const SYSTEM_FONT: &str = "/System/Library/Fonts/SFNS.ttf";
 
 pub fn icon(size: f32) -> FontId {
     FontId::proportional(size)
@@ -168,6 +182,33 @@ pub fn install_fonts(ctx: &egui::Context) {
     fonts
         .families
         .insert(FontFamily::Name(SEMIBOLD.into()), semibold);
+
+    // Dialogs: the system font when it can be read (never bundled), with
+    // the interface fonts behind it for anything it lacks
+    let system = std::fs::read(SYSTEM_FONT).ok();
+    for (family, weight, fallback) in [
+        // A little heavier than Regular, as macOS draws it in Photoshop
+        (DIALOG, 510.0, FontFamily::Proportional),
+        (DIALOG_BOLD, 700.0, FontFamily::Name(SEMIBOLD.into())),
+    ] {
+        let mut chain = Vec::new();
+        if let Some(bytes) = &system {
+            let tweak = egui::FontTweak {
+                coords: egui::epaint::text::VariationCoords::new([(b"wght", weight)]),
+                ..Default::default()
+            };
+            let key = format!("system-{family}");
+            fonts.font_data.insert(
+                key.clone(),
+                FontData::from_owned(bytes.clone()).tweak(tweak).into(),
+            );
+            chain.push(key);
+        }
+        chain.extend(fonts.families[&fallback].iter().cloned());
+        fonts
+            .families
+            .insert(FontFamily::Name(family.into()), chain);
+    }
 
     ctx.set_fonts(fonts);
 }

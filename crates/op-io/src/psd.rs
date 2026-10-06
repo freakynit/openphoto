@@ -320,6 +320,13 @@ pub fn write(doc: &Document) -> Vec<u8> {
                 out.u32(4);
                 out.bytes(b"bgnd");
             }
+            // The color label: its index, then 6 bytes of zeros
+            if layer.color != op_core::LayerColor::None {
+                out.bytes(b"8BIMlclr");
+                out.u32(8);
+                out.u16(layer.color.psd_index());
+                out.bytes(&[0; 6]);
+            }
             // Fill opacity
             out.bytes(b"8BIMiOpa");
             out.u32(4);
@@ -422,6 +429,8 @@ fn read_channel(r: &mut Reader, len: usize, rows: usize, cols: usize) -> Result<
 }
 
 struct LayerRecord {
+    /// The color label's index (`lclr`).
+    label: u16,
     rect: (i32, i32, i32, i32),
     channels: Vec<(i16, usize)>,
     blend: [u8; 4],
@@ -535,6 +544,7 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                 r.seek(name_start + ((name_len as u64 + 1).next_multiple_of(4)));
                 let mut fill = 255;
                 let mut divider = false;
+                let mut label = 0u16;
                 while r.pos() + 12 <= extra_end {
                     let sig = r.take::<4>()?;
                     if &sig != b"8BIM" && &sig != b"8B64" {
@@ -553,6 +563,7 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                             name = String::from_utf16_lossy(&units);
                         }
                         b"iOpa" => fill = r.u8()?,
+                        b"lclr" => label = r.u16()?,
                         b"lsct" | b"lsdk" => divider = true,
                         _ => {}
                     }
@@ -569,6 +580,7 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                     fill,
                     divider,
                     mask,
+                    label,
                 });
             }
             for (i, rec) in records.iter().enumerate() {
@@ -631,6 +643,7 @@ pub fn read(data: &[u8], title: String) -> Result<Document, IoError> {
                 layer.visible = rec.flags & 2 == 0;
                 layer.opacity = rec.opacity as f32 / 255.0;
                 layer.fill = rec.fill as f32 / 255.0;
+                layer.color = op_core::LayerColor::from_psd_index(rec.label);
                 layer.blend_mode = BLEND_KEYS
                     .iter()
                     .find(|(_, k)| **k == rec.blend)
@@ -809,8 +822,8 @@ mod photoshop_check {
         let doc = read(&std::fs::read(&path).unwrap(), "t".into()).unwrap();
         for l in &doc.layers {
             eprintln!(
-                "{} bg={} visible={} opacity={}",
-                l.name, l.is_background, l.visible, l.opacity
+                "{} bg={} visible={} opacity={} color={:?}",
+                l.name, l.is_background, l.visible, l.opacity, l.color
             );
         }
         assert!(doc.layers[0].is_background);
@@ -832,5 +845,17 @@ mod photoshop_check {
         assert_eq!(image.pixel_at(-3, 1), [255, 0, 0, 255]);
         assert_eq!(image.pixel_at(6, 5), [0, 0, 255, 255]);
         assert_eq!(image.pixel(2, 1), [0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn color_labels_round_trip() {
+        let mut doc = Document::new_with_background("t", 4, 3, Color::WHITE);
+        let id = doc.new_layer_id();
+        let mut layer = op_core::Layer::raster(id, "Layer 1", TiledImage::new(4, 3));
+        layer.color = op_core::LayerColor::Violet;
+        doc.layers.push(layer);
+        let back = read(&write(&doc), "t.psd".into()).unwrap();
+        assert_eq!(back.layers[0].color, op_core::LayerColor::None);
+        assert_eq!(back.layers[1].color, op_core::LayerColor::Violet);
     }
 }
