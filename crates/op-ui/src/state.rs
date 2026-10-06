@@ -937,6 +937,8 @@ pub struct AppState {
     pub duplicate_dialog: Option<crate::dialogs::DuplicateLayerDialog>,
     /// Layer > Lock Layers...
     pub lock_dialog: Option<crate::dialogs::LockLayersDialog>,
+    /// Image > Image Rotation > Arbitrary...
+    pub rotate_dialog: Option<crate::dialogs::RotateCanvasDialog>,
     /// Image > Image Size, while open.
     pub image_size_dialog: Option<crate::dialogs::ImageSizeDialog>,
     /// Image > Trim, while open.
@@ -1012,6 +1014,7 @@ impl Default for AppState {
             delete_group_prompt: None,
             duplicate_dialog: None,
             lock_dialog: None,
+            rotate_dialog: None,
             new_document_dialog: None,
             modify_dialog: None,
             adjust_dialog: None,
@@ -1114,6 +1117,7 @@ impl AppState {
             || self.delete_group_prompt.is_some()
             || self.duplicate_dialog.is_some()
             || self.lock_dialog.is_some()
+            || self.rotate_dialog.is_some()
             || self.new_document_dialog.is_some()
             || self.modify_dialog.is_some()
             || self.adjust_dialog.is_some()

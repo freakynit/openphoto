@@ -113,6 +113,144 @@ pub fn reorient(doc: &mut Document, orientation: Orientation) {
     });
 }
 
+/// Image > Image Rotation > Arbitrary... ("Rotate Canvas"): turns the
+/// whole document by `degrees` (clockwise when positive) about its center.
+/// The canvas grows to the turned image's bounding box, rounded up
+/// (200 × 100 by 30° gives 224 × 187, as in Photoshop 2026); the
+/// background's new corners take `background`, other layers stay
+/// transparent there. Pixels are resampled bilinearly; layers keep pixels
+/// that turn past the canvas. Returns false for a multiple of 360°.
+pub fn rotate_arbitrary(doc: &mut Document, degrees: f32, background: crate::Color) -> bool {
+    let turns = degrees / 360.0;
+    if (turns - turns.round()).abs() < 1e-6 {
+        return false;
+    }
+    let (w, h) = (doc.width as f64, doc.height as f64);
+    let t = (degrees as f64).to_radians();
+    let (c, s) = (t.cos(), t.sin());
+    let nw = (w * c.abs() + h * s.abs() - 1e-6).ceil().max(1.0);
+    let nh = (w * s.abs() + h * c.abs() - 1e-6).ceil().max(1.0);
+    // New canvas point -> old canvas point (pixel corners)
+    let back = move |x: f64, y: f64| {
+        let (dx, dy) = (x - nw / 2.0, y - nh / 2.0);
+        (dx * c + dy * s + w / 2.0, -dx * s + dy * c + h / 2.0)
+    };
+    // Old -> new, for where a layer's pixels land
+    let forth = move |x: f64, y: f64| {
+        let (dx, dy) = (x - w / 2.0, y - h / 2.0);
+        (dx * c - dy * s + nw / 2.0, dx * s + dy * c + nh / 2.0)
+    };
+    let (cw, ch) = (nw as u32, nh as u32);
+    let fill = background.to_rgba8();
+    let turn = |image: &crate::tile::TiledImage, outside: [u8; 4], keep_outside: bool| {
+        let (sx0, sy0, sx1, sy1) = image.content_bounds().map_or((0, 0, 1, 1), |b| {
+            (b.0.min(0), b.1.min(0), b.2.max(w as i64), b.3.max(h as i64))
+        });
+        let (sw, sh) = ((sx1 - sx0) as usize, (sy1 - sy0) as usize);
+        let raw = image.region_rgba8(sx0, sy0, sw as u32, sh as u32);
+        // Premultiplied, so edges blend without dark fringes
+        let src: Vec<[f32; 4]> = raw
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&[r, g, b, a]| {
+                let k = a as f32 / 255.0;
+                [r as f32 * k, g as f32 * k, b as f32 * k, a as f32]
+            })
+            .collect();
+        // Where the content lands, with the new canvas
+        let (mut dx0, mut dy0, mut dx1, mut dy1) = (0i64, 0i64, cw as i64, ch as i64);
+        if keep_outside {
+            for (x, y) in [(sx0, sy0), (sx1, sy0), (sx1, sy1), (sx0, sy1)] {
+                let (fx, fy) = forth(x as f64, y as f64);
+                dx0 = dx0.min(fx.floor() as i64);
+                dy0 = dy0.min(fy.floor() as i64);
+                dx1 = dx1.max(fx.ceil() as i64);
+                dy1 = dy1.max(fy.ceil() as i64);
+            }
+        }
+        let (dw, dh) = ((dx1 - dx0) as usize, (dy1 - dy0) as usize);
+        let at = |x: i64, y: i64| -> [f32; 4] {
+            if x < 0 || y < 0 || x >= sw as i64 || y >= sh as i64 {
+                [0.0; 4]
+            } else {
+                src[y as usize * sw + x as usize]
+            }
+        };
+        let mut out = vec![0u8; dw * dh * 4];
+        for y in 0..dh {
+            for x in 0..dw {
+                let (ox, oy) = back((dx0 + x as i64) as f64 + 0.5, (dy0 + y as i64) as f64 + 0.5);
+                let (fx, fy) = (
+                    (ox - sx0 as f64 - 0.5) as f32,
+                    (oy - sy0 as f64 - 0.5) as f32,
+                );
+                let (ix, iy) = (fx.floor(), fy.floor());
+                let (tx, ty) = (fx - ix, fy - iy);
+                let (ix, iy) = (ix as i64, iy as i64);
+                let mut p = [0f32; 4];
+                for (dxi, dyi, wgt) in [
+                    (0, 0, (1.0 - tx) * (1.0 - ty)),
+                    (1, 0, tx * (1.0 - ty)),
+                    (0, 1, (1.0 - tx) * ty),
+                    (1, 1, tx * ty),
+                ] {
+                    let q = at(ix + dxi, iy + dyi);
+                    for k in 0..4 {
+                        p[k] += q[k] * wgt;
+                    }
+                }
+                // What isn't covered shows `outside` (the background color)
+                let a = p[3] / 255.0;
+                let oa = outside[3] as f32 / 255.0;
+                let ra = a + oa * (1.0 - a);
+                let o = (y * dw + x) * 4;
+                if ra > 0.0 {
+                    for k in 0..3 {
+                        let v = (p[k] + outside[k] as f32 * oa * (1.0 - a)) / ra;
+                        out[o + k] = v.round().clamp(0.0, 255.0) as u8;
+                    }
+                    out[o + 3] = (ra * 255.0).round() as u8;
+                }
+            }
+        }
+        crate::tile::TiledImage::from_region(cw, ch, dx0, dy0, dw as u32, dh as u32, &out)
+    };
+    for layer in &mut doc.layers {
+        let is_background = layer.is_background;
+        if let Some(image) = layer.image_mut() {
+            *image = if is_background {
+                turn(image, fill, false).clipped()
+            } else {
+                turn(image, [0; 4], true)
+            };
+        }
+        // New corners of a mask reveal, as Canvas Size does
+        if let Some(mask) = &mut layer.mask {
+            mask.image = turn(&mask.image, [255; 4], false).clipped();
+        }
+    }
+    // The selection turns with the image
+    for sel in [doc.selection().cloned()].into_iter().flatten() {
+        let mut mask = vec![0u8; (cw * ch) as usize];
+        for y in 0..ch {
+            for x in 0..cw {
+                let (ox, oy) = back(x as f64 + 0.5, y as f64 + 0.5);
+                if ox >= 0.0 && oy >= 0.0 && ox < w && oy < h {
+                    mask[(y * cw + x) as usize] = sel.get(ox as u32, oy as u32);
+                }
+            }
+        }
+        doc.set_selection(Some(crate::selection::Selection::from_mask(
+            cw, ch, mask, false,
+        )));
+    }
+    doc.width = cw;
+    doc.height = ch;
+    doc.mark_dirty();
+    true
+}
+
 /// Image > Reveal All: grows the canvas so every layer's pixels, including
 /// the ones outside it, are on it. The background layer is extended with
 /// `background`. Returns false (and changes nothing) when nothing lies
@@ -606,6 +744,40 @@ mod tests {
         assert!(peak(Resample::BicubicSharper) > peak(Resample::Bicubic));
         assert!(peak(Resample::Bicubic) > peak(Resample::BicubicSmoother));
         assert!(peak(Resample::Bilinear) <= 200.0 + 1e-3);
+    }
+
+    /// Photoshop 2026: 200 × 100 by 30° is 224 × 187, then by −45° is
+    /// 291 × 291; the background's new corners take the background color,
+    /// a layer's stay transparent, and a dot turns about the center.
+    #[test]
+    fn rotate_arbitrary_like_photoshop() {
+        let mut doc = Document::new_with_background("t", 200, 100, Color::WHITE);
+        let mut image = crate::tile::TiledImage::new(200, 100);
+        // A dot right of the center
+        for y in 48..52 {
+            for x in 148..152 {
+                image.set_pixel(x, y, [255, 0, 0, 255]);
+            }
+        }
+        let id = doc.new_layer_id();
+        doc.layers.push(crate::Layer::raster(id, "dot", image));
+        assert!(!rotate_arbitrary(&mut doc, 360.0, Color::BLACK));
+        assert!(rotate_arbitrary(&mut doc, 90.0, Color::BLACK));
+        assert_eq!((doc.width, doc.height), (100, 200));
+        // Clockwise: right of the center goes below it
+        let px = |doc: &Document, x, y| doc.layer(id).unwrap().image().unwrap().pixel(x, y);
+        assert_eq!(px(&doc, 50, 150)[0], 255);
+        let mut doc = Document::new_with_background("t", 200, 100, Color::WHITE);
+        assert!(rotate_arbitrary(&mut doc, 30.0, Color::BLACK));
+        assert_eq!((doc.width, doc.height), (224, 187));
+        // A corner is outside the turned image: background color
+        assert_eq!(doc.layers[0].image().unwrap().pixel(0, 0), [0, 0, 0, 255]);
+        assert_eq!(
+            doc.layers[0].image().unwrap().pixel(112, 93),
+            [255, 255, 255, 255]
+        );
+        assert!(rotate_arbitrary(&mut doc, -45.0, Color::BLACK));
+        assert_eq!((doc.width, doc.height), (291, 291));
     }
 
     /// 3×2 white background with red at (0, 0) and blue at (2, 1).

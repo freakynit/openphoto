@@ -35,6 +35,8 @@ pub enum Command {
     CanvasSize,
     ImageSize,
     Rotate180,
+    /// Image > Image Rotation > Arbitrary... (opens Rotate Canvas).
+    RotateArbitrary,
     Rotate90Clockwise,
     Rotate90CounterClockwise,
     FlipCanvasHorizontal,
@@ -408,6 +410,7 @@ impl Command {
             | Self::TransformFlipHorizontal
             | Self::TransformFlipVertical
             | Self::RenameLayer
+            | Self::RotateArbitrary
             | Self::DeselectLayers
             | Self::LinkLayers
             | Self::SelectLinkedLayers
@@ -700,6 +703,7 @@ impl Command {
             | Self::ImageSize
             | Self::Rotate180
             | Self::Rotate90Clockwise
+            | Self::RotateArbitrary
             | Self::Rotate90CounterClockwise
             | Self::FlipCanvasHorizontal
             | Self::FlipCanvasVertical
@@ -1262,6 +1266,9 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                     let orientation = command.orientation().expect("rotation command");
                     image_ops::reorient(&mut state.doc, orientation);
                     state.record(orientation.history_name());
+                }
+                Command::RotateArbitrary => {
+                    app.rotate_dialog = Some(crate::dialogs::RotateCanvasDialog::default());
                 }
                 Command::Crop => {
                     if image_ops::crop_to_selection(&mut state.doc) {

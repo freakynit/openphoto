@@ -1873,6 +1873,36 @@ fn image_size_dialog_controls() {
 }
 
 #[test]
+fn rotate_canvas_dialog() {
+    use crate::commands::Command;
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    run_command(&mut h, Command::RotateArbitrary);
+    assert!(h.state().state.rotate_dialog.is_some());
+    // The angle is selected: type 90, choose Counter Clockwise (the dialog
+    // is centered, its corner at (500, 336) pt), then Enter
+    h.event(egui::Event::Text("90".into()));
+    h.run_steps(2);
+    click(&mut h, at_pt(500.0 + 142.75, 336.0 + 83.75));
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(h.state().state.rotate_dialog.is_none());
+    let d = &active(&h).doc;
+    assert_eq!((d.width, d.height), (811, 734));
+    assert_eq!(last_history(&h), "Rotate Canvas");
+}
+
+#[test]
+#[ignore]
+fn screenshot_rotate_canvas_dialog() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    run_command(&mut h, crate::commands::Command::RotateArbitrary);
+    h.run_steps(3);
+    shot(&mut h, "rotate_canvas");
+}
+
+#[test]
 #[ignore]
 fn screenshot_image_size_dialog() {
     let mut h = harness(Vec::new());

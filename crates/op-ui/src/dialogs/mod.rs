@@ -13,6 +13,7 @@ mod modify_selection;
 mod new_document;
 mod new_guide;
 mod new_layer;
+mod rotate_canvas;
 pub mod save_changes;
 mod trim;
 
@@ -27,5 +28,6 @@ pub use modify_selection::{ModifyDialog, ModifyKind, Outcome as ModifyOutcome};
 pub use new_document::{Contents as NewContents, NewDocumentDialog, Outcome as NewDocumentOutcome};
 pub use new_guide::{NewGuideDialog, Outcome as NewGuideOutcome};
 pub use new_layer::{Kind as NewLayerKind, NewLayer, NewLayerDialog, Outcome as NewLayerOutcome};
+pub use rotate_canvas::{Outcome as RotateOutcome, RotateCanvasDialog};
 pub use save_changes::SaveChoice;
 pub use trim::{Outcome as TrimOutcome, TrimDialog};

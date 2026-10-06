@@ -374,6 +374,24 @@ impl OpenPhotoApp {
         }
     }
 
+    fn rotate_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.state.rotate_dialog.take() else {
+            return;
+        };
+        match dialog.show(ctx) {
+            dialogs::RotateOutcome::Open => self.state.rotate_dialog = Some(dialog),
+            dialogs::RotateOutcome::Cancel => {}
+            dialogs::RotateOutcome::Rotate(degrees) => {
+                let background = self.state.background;
+                if let Some(state) = self.state.active()
+                    && op_core::image_ops::rotate_arbitrary(&mut state.doc, degrees, background)
+                {
+                    state.record("Rotate Canvas");
+                }
+            }
+        }
+    }
+
     fn new_guide_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.state.new_guide_dialog.take() else {
             return;
@@ -577,6 +595,7 @@ impl eframe::App for OpenPhotoApp {
         self.new_layer_dialog(&ctx);
         self.duplicate_dialog(&ctx);
         self.lock_dialog(&ctx);
+        self.rotate_dialog(&ctx);
         self.new_document_dialog(&ctx);
         self.modify_dialog(&ctx);
         self.adjust_dialog(&ctx);
