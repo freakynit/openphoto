@@ -21,6 +21,21 @@ pub enum OffsetFill {
     Wrap,
 }
 
+/// Spherize's Mode.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpherizeMode {
+    Normal,
+    HorizontalOnly,
+    VerticalOnly,
+}
+
+/// Pinch's radial shift at 100% for distances 0, 0.05, … 1 of the
+/// radius, measured from Photoshop 2026 (it scales with the amount).
+const PINCH_SHIFT: [f32; 21] = [
+    0.0, 0.0422, 0.0796, 0.1133, 0.1447, 0.1727, 0.1943, 0.2111, 0.2211, 0.2248, 0.2204, 0.2101,
+    0.1936, 0.1707, 0.1436, 0.1135, 0.0828, 0.0529, 0.0269, 0.0077, 0.0,
+];
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Filter {
     /// Blur > Gaussian Blur; the radius is the standard deviation in pixels.
@@ -69,6 +84,15 @@ pub enum Filter {
         height: u32,
         amount: u32,
     },
+    /// Distort > Twirl: degrees (−999–999) at the center, fading out.
+    Twirl { angle: i32 },
+    /// Distort > Pinch: −100–100 percent (positive pinches in).
+    Pinch { amount: i32 },
+    /// Distort > Spherize: −100–100 percent, in `mode`.
+    Spherize { amount: i32, mode: SpherizeMode },
+    /// Distort > Polar Coordinates: Rectangular to Polar (`to_polar`) or
+    /// Polar to Rectangular.
+    PolarCoordinates { to_polar: bool },
     /// Other > High Pass: the image minus its Gaussian blur, around gray.
     HighPass { radius: f32 },
     /// Other > Offset: shifts the layer by (dx, dy) pixels.
@@ -102,6 +126,10 @@ impl Filter {
             Self::FindEdges => "Find Edges",
             Self::MotionBlur { .. } => "Motion Blur",
             Self::Emboss { .. } => "Emboss",
+            Self::Twirl { .. } => "Twirl",
+            Self::Pinch { .. } => "Pinch",
+            Self::Spherize { .. } => "Spherize",
+            Self::PolarCoordinates { .. } => "Polar Coordinates",
         }
     }
 }
@@ -428,6 +456,84 @@ impl Buffer {
     }
 }
 
+/// Where a distortion filter takes pixel (`x`, `y`)'s color from. Twirl,
+/// Pinch and Spherize act inside the ellipse touching the image's edges
+/// (distances measured as fractions of it); Polar Coordinates maps angle
+/// around the center (from straight up, anticlockwise) to x and distance
+/// to y.
+fn distort_source(filter: Filter, x: f32, y: f32, cx: f32, cy: f32, w: f32, h: f32) -> (f32, f32) {
+    let (dx, dy) = ((x - cx) / cx, (y - cy) / cy);
+    let t = (dx * dx + dy * dy).sqrt();
+    let radial = |s: f32| {
+        if t <= 0.0 || t >= 1.0 {
+            (x, y)
+        } else {
+            (cx + dx * s / t * cx, cy + dy * s / t * cy)
+        }
+    };
+    // Spherize's map for one distance: arcsine out (positive) or sine in
+    let sphere = |t: f32, amount: i32| -> f32 {
+        let a = amount as f32 / 100.0;
+        let curve = if a >= 0.0 {
+            t.clamp(0.0, 1.0).asin() * 2.0 / std::f32::consts::PI
+        } else {
+            (t.clamp(0.0, 1.0) * std::f32::consts::FRAC_PI_2).sin()
+        };
+        t + a.abs() * (curve - t)
+    };
+    match filter {
+        Filter::Twirl { angle } => {
+            if t >= 1.0 {
+                return (x, y);
+            }
+            // The turn fades with the square of the distance to the edge
+            let turn = -(angle as f32).to_radians() * (1.0 - t) * (1.0 - t);
+            let (sin, cos) = turn.sin_cos();
+            (
+                cx + (dx * cos - dy * sin) * cx,
+                cy + (dx * sin + dy * cos) * cy,
+            )
+        }
+        Filter::Pinch { amount } => {
+            let f = t * 20.0;
+            let i = (f as usize).min(19);
+            let shift = PINCH_SHIFT[i] + (PINCH_SHIFT[i + 1] - PINCH_SHIFT[i]) * (f - i as f32);
+            radial(t + amount as f32 / 100.0 * shift)
+        }
+        Filter::Spherize { amount, mode } => match mode {
+            SpherizeMode::Normal => radial(sphere(t, amount)),
+            SpherizeMode::HorizontalOnly => {
+                let s = if dx.abs() < 1.0 {
+                    sphere(dx.abs(), amount)
+                } else {
+                    dx.abs()
+                };
+                (cx + dx.signum() * s * cx, y)
+            }
+            SpherizeMode::VerticalOnly => {
+                let s = if dy.abs() < 1.0 {
+                    sphere(dy.abs(), amount)
+                } else {
+                    dy.abs()
+                };
+                (x, cy + dy.signum() * s * cy)
+            }
+        },
+        Filter::PolarCoordinates { to_polar: true } => {
+            let (ox, oy) = (x - cx, y - cy);
+            let angle = (-ox).atan2(-oy).rem_euclid(std::f32::consts::TAU);
+            let r = ((ox / cx).powi(2) + (oy / cy).powi(2)).sqrt();
+            (angle / std::f32::consts::TAU * w, r * h)
+        }
+        Filter::PolarCoordinates { to_polar: false } => {
+            let angle = (x + 1.0) / w * std::f32::consts::TAU;
+            let r = y / h;
+            (cx - r * angle.sin() * cx, cy - r * angle.cos() * cy)
+        }
+        _ => (x, y),
+    }
+}
+
 /// A repeatable per-pixel random value in 0..1.
 fn noise(x: usize, y: usize, channel: usize) -> f32 {
     let mut v = (x as u64)
@@ -621,6 +727,21 @@ fn filtered(
                 .px
                 .into_iter()
                 .map(Buffer::straight)
+                .collect()
+        }
+        Filter::Twirl { .. }
+        | Filter::Pinch { .. }
+        | Filter::Spherize { .. }
+        | Filter::PolarCoordinates { .. } => {
+            // Each pixel takes the color at the place the distortion maps
+            // it from (measured from Photoshop 2026 on a coordinate image)
+            let (cx, cy) = (w as f32 / 2.0, h as f32 / 2.0);
+            (0..w * h)
+                .map(|i| {
+                    let (x, y) = ((i % w) as f32, (i / w) as f32);
+                    let (sx, sy) = distort_source(filter, x, y, cx, cy, w as f32, h as f32);
+                    Buffer::straight(src.sample(sx, sy))
+                })
                 .collect()
         }
         Filter::Emboss {
@@ -877,6 +998,55 @@ mod tests {
         assert_eq!(image.pixel(0, 0), [255, 0, 0, 85]);
     }
 
+    /// The distortions against Photoshop: the mean difference allowed (a
+    /// mapping a fraction of a pixel off moves isolated dots a lot, so the
+    /// worst pixel says little).
+    #[test]
+    fn distortions_match_photoshop() {
+        for (name, filter, allowed) in [
+            ("f_tw.rgb", Filter::Twirl { angle: 120 }, 0.6),
+            ("f_pinch.rgb", Filter::Pinch { amount: 60 }, 0.25),
+            ("f_pinchm.rgb", Filter::Pinch { amount: -40 }, 0.25),
+            (
+                "f_sph.rgb",
+                Filter::Spherize {
+                    amount: 70,
+                    mode: SpherizeMode::Normal,
+                },
+                1.5,
+            ),
+            (
+                "f_sphm.rgb",
+                Filter::Spherize {
+                    amount: -80,
+                    mode: SpherizeMode::Normal,
+                },
+                1.4,
+            ),
+            (
+                "f_sphv.rgb",
+                Filter::Spherize {
+                    amount: 100,
+                    mode: SpherizeMode::VerticalOnly,
+                },
+                1.8,
+            ),
+            (
+                "f_polar.rgb",
+                Filter::PolarCoordinates { to_polar: true },
+                0.7,
+            ),
+            (
+                "f_rect.rgb",
+                Filter::PolarCoordinates { to_polar: false },
+                0.1,
+            ),
+        ] {
+            let (_, _, mean) = photoshop::compare_mean(filter, name);
+            assert!(mean <= allowed, "{name}: off by {mean} on average");
+        }
+    }
+
     /// Comparisons with Photoshop 2026's own results (fixtures/filter):
     /// probe.rgb is a 64 × 64 image (a red–green ramp, a white square, a
     /// black line, scattered dots); the other files are Photoshop's output.
@@ -890,6 +1060,12 @@ mod tests {
         /// difference from Photoshop's `expected` output and how many
         /// channels differ by more than 2.
         pub fn compare(filter: Filter, expected: &str) -> (u8, usize) {
+            let (worst, off, _) = compare_mean(filter, expected);
+            (worst, off)
+        }
+
+        /// [`compare`] with the mean difference too.
+        pub fn compare_mean(filter: Filter, expected: &str) -> (u8, usize, f32) {
             let probe = std::fs::read(format!("{FIXTURES}probe.rgb")).unwrap();
             let want = std::fs::read(format!("{FIXTURES}{expected}")).unwrap();
             let mut doc = Document::new_with_background("t", 64, 64, Color::WHITE);
@@ -900,15 +1076,16 @@ mod tests {
             }
             apply(&mut doc, filter, [255; 3]).unwrap();
             let got = doc.composite_rgba8();
-            let (mut worst, mut off) = (0u8, 0);
+            let (mut worst, mut off, mut sum) = (0u8, 0, 0u32);
             for (i, w) in want.chunks(3).enumerate() {
                 for c in 0..3 {
                     let d = got[i * 4 + c].abs_diff(w[c]);
                     worst = worst.max(d);
                     off += (d > 2) as usize;
+                    sum += d as u32;
                 }
             }
-            (worst, off)
+            (worst, off, sum as f32 / want.len() as f32)
         }
 
         /// Each filter against Photoshop: the largest difference allowed

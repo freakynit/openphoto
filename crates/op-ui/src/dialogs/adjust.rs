@@ -11,7 +11,7 @@
 
 use egui::{Align2, Color32, FontId, Key, Pos2, Rect, Sense, Shape, Stroke, Ui, vec2};
 use op_core::adjust::Adjustment;
-use op_core::filter::{Filter, OffsetFill};
+use op_core::filter::{Filter, OffsetFill, SpherizeMode};
 
 use super::{
     black_white, brightness_contrast, channel_mixer, color_balance, common, curves, exposure,
@@ -131,6 +131,17 @@ const MOTION_BLUR: &[Param] = &[
     param("Angle (°):", -360.0, 360.0, 0.0, 0),
     param("Distance (pixels):", 1.0, 2000.0, 10.0, 0),
 ];
+const TWIRL: &[Param] = &[param("Angle (°):", -999.0, 999.0, 50.0, 0)];
+const PINCH: &[Param] = &[param("Amount (%):", -100.0, 100.0, 50.0, 0)];
+const SPHERIZE: &[Param] = &[
+    param("Amount (%):", -100.0, 100.0, 100.0, 0),
+    choice("Mode", &["Normal", "Horizontal only", "Vertical only"], 0),
+];
+const POLAR: &[Param] = &[choice(
+    "Options",
+    &["Rectangular to Polar", "Polar to Rectangular"],
+    0,
+)];
 const EMBOSS: &[Param] = &[
     param("Angle (°):", -180.0, 180.0, 135.0, 0),
     param("Height (pixels):", 1.0, 10.0, 3.0, 0),
@@ -176,6 +187,10 @@ pub enum Kind {
     Mosaic,
     MotionBlur,
     Emboss,
+    Twirl,
+    Pinch,
+    Spherize,
+    PolarCoordinates,
 }
 
 impl Kind {
@@ -207,6 +222,10 @@ impl Kind {
             Self::Mosaic => "Mosaic",
             Self::MotionBlur => "Motion Blur",
             Self::Emboss => "Emboss",
+            Self::Twirl => "Twirl",
+            Self::Pinch => "Pinch",
+            Self::Spherize => "Spherize",
+            Self::PolarCoordinates => "Polar Coordinates",
         }
     }
 
@@ -238,6 +257,10 @@ impl Kind {
             Self::Mosaic => MOSAIC,
             Self::MotionBlur => MOTION_BLUR,
             Self::Emboss => EMBOSS,
+            Self::Twirl => TWIRL,
+            Self::Pinch => PINCH,
+            Self::Spherize => SPHERIZE,
+            Self::PolarCoordinates => POLAR,
         }
     }
 
@@ -444,6 +467,21 @@ impl AdjustDialog {
             Kind::MotionBlur => Filter::MotionBlur {
                 angle: v[0] as i32,
                 distance: v[1] as u32,
+            },
+            Kind::Twirl => Filter::Twirl { angle: v[0] as i32 },
+            Kind::Pinch => Filter::Pinch {
+                amount: v[0] as i32,
+            },
+            Kind::Spherize => Filter::Spherize {
+                amount: v[0] as i32,
+                mode: [
+                    SpherizeMode::Normal,
+                    SpherizeMode::HorizontalOnly,
+                    SpherizeMode::VerticalOnly,
+                ][v[1] as usize],
+            },
+            Kind::PolarCoordinates => Filter::PolarCoordinates {
+                to_polar: v[0] == 0.0,
             },
             Kind::Emboss => Filter::Emboss {
                 angle: v[0] as i32,

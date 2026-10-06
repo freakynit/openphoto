@@ -75,6 +75,10 @@ const ALL_COMMANDS: &[Command] = &[
     Command::Mosaic,
     Command::MotionBlur,
     Command::Emboss,
+    Command::Twirl,
+    Command::Pinch,
+    Command::Spherize,
+    Command::PolarCoordinates,
     Command::Blur,
     Command::BlurMore,
     Command::Sharpen,
@@ -779,7 +783,20 @@ impl NativeMenu {
                     ],
                 ),
                 &todo_sub("Blur Gallery"),
-                &todo_sub("Distort"),
+                &filter_sub(
+                    "Distort",
+                    &[
+                        ("Displace...", None),
+                        ("Pinch...", Some(Command::Pinch)),
+                        ("Polar Coordinates...", Some(Command::PolarCoordinates)),
+                        ("Ripple...", None),
+                        ("Shear...", None),
+                        ("Spherize...", Some(Command::Spherize)),
+                        ("Twirl...", Some(Command::Twirl)),
+                        ("Wave...", None),
+                        ("ZigZag...", None),
+                    ],
+                ),
                 &filter_sub(
                     "Noise",
                     &[

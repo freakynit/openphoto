@@ -3293,13 +3293,56 @@ fn more_filters_from_the_menu() {
     }
     // Motion Blur and Emboss open their dialogs; Enter applies the defaults
     for (command, filter) in [
-        (Command::MotionBlur, Filter::MotionBlur { angle: 0, distance: 10 }),
-        (Command::Emboss, Filter::Emboss { angle: 135, height: 3, amount: 100 }),
+        (
+            Command::MotionBlur,
+            Filter::MotionBlur {
+                angle: 0,
+                distance: 10,
+            },
+        ),
+        (
+            Command::Emboss,
+            Filter::Emboss {
+                angle: 135,
+                height: 3,
+                amount: 100,
+            },
+        ),
     ] {
         run_command(&mut h, command);
         assert!(h.state().state.adjust_dialog.is_some());
         h.key_press(egui::Key::Enter);
         h.run_steps(3);
         assert_eq!(h.state().state.last_filter, Some(filter));
+    }
+}
+
+#[test]
+fn distort_filters_from_the_menu() {
+    use crate::commands::Command;
+    use op_core::filter::{Filter, SpherizeMode};
+    let mut h = harness(Vec::new());
+    color_document(&mut h, [200, 100, 50]);
+    for (command, filter) in [
+        (Command::Twirl, Filter::Twirl { angle: 50 }),
+        (Command::Pinch, Filter::Pinch { amount: 50 }),
+        (
+            Command::Spherize,
+            Filter::Spherize {
+                amount: 100,
+                mode: SpherizeMode::Normal,
+            },
+        ),
+        (
+            Command::PolarCoordinates,
+            Filter::PolarCoordinates { to_polar: true },
+        ),
+    ] {
+        run_command(&mut h, command);
+        assert!(h.state().state.adjust_dialog.is_some());
+        h.key_press(egui::Key::Enter);
+        h.run_steps(3);
+        assert_eq!(h.state().state.last_filter, Some(filter));
+        assert_eq!(last_history(&h), filter.name());
     }
 }

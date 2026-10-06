@@ -90,6 +90,10 @@ pub enum Command {
     Mosaic,
     MotionBlur,
     Emboss,
+    Twirl,
+    Pinch,
+    Spherize,
+    PolarCoordinates,
     /// Layer > New > Layer... (Shift+Cmd+N): opens the New Layer dialog.
     NewLayer,
     /// Alt+Shift+Cmd+N: a new layer without the dialog.
@@ -462,6 +466,10 @@ impl Command {
             | Self::SharpenMore
             | Self::FindEdges
             | Self::MotionBlur
+            | Self::Twirl
+            | Self::Pinch
+            | Self::Spherize
+            | Self::PolarCoordinates
             | Self::Emboss
             | Self::GaussianBlur
             | Self::BoxBlur
@@ -767,6 +775,10 @@ impl Command {
             | Self::Sharpen
             | Self::SharpenMore
             | Self::FindEdges
+            | Self::Twirl
+            | Self::Pinch
+            | Self::Spherize
+            | Self::PolarCoordinates
             | Self::MotionBlur
             | Self::Emboss
             | Self::GaussianBlur
@@ -1109,7 +1121,11 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
         | Command::Offset
         | Command::Mosaic
         | Command::MotionBlur
-        | Command::Emboss => {
+        | Command::Emboss
+        | Command::Twirl
+        | Command::Pinch
+        | Command::Spherize
+        | Command::PolarCoordinates => {
             let (kind, name) = match command {
                 Command::Threshold => (AdjustKind::Threshold, "Threshold"),
                 Command::Posterize => (AdjustKind::Posterize, "Posterize"),
@@ -1138,6 +1154,10 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 Command::Offset => (AdjustKind::Offset, "Offset"),
                 Command::MotionBlur => (AdjustKind::MotionBlur, "Motion Blur"),
                 Command::Emboss => (AdjustKind::Emboss, "Emboss"),
+                Command::Twirl => (AdjustKind::Twirl, "Twirl"),
+                Command::Pinch => (AdjustKind::Pinch, "Pinch"),
+                Command::Spherize => (AdjustKind::Spherize, "Spherize"),
+                Command::PolarCoordinates => (AdjustKind::PolarCoordinates, "Polar Coordinates"),
                 _ => (AdjustKind::Mosaic, "Mosaic"),
             };
             let rgb = |c: op_core::Color| {
