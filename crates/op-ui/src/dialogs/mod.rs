@@ -2,15 +2,18 @@
 
 mod adjust;
 pub mod alert;
+mod appkit;
 mod brightness_contrast;
 mod canvas_size;
 mod color_balance;
 mod color_picker;
 mod common;
+mod curves;
 mod duplicate_layer;
 mod fill;
 mod hue_saturation;
 mod image_size;
+mod levels;
 mod lock_layers;
 mod modify_selection;
 mod new_document;

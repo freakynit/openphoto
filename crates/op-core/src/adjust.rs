@@ -851,6 +851,35 @@ pub fn channel_histogram(doc: &Document) -> [u64; 256] {
     hist
 }
 
+/// Histograms of the red, green and blue channels of the active layer's
+/// selected, non-transparent pixels (Levels and Curves show them).
+pub fn rgb_histograms(doc: &Document) -> [[u64; 256]; 3] {
+    let mut hists = [[0u64; 256]; 3];
+    let Some(image) = doc
+        .active_layer
+        .and_then(|id| doc.layer(id))
+        .and_then(|l| l.image())
+    else {
+        return hists;
+    };
+    let selection = doc.selection();
+    for y in 0..doc.height {
+        for x in 0..doc.width {
+            if selection.is_some_and(|s| s.get(x, y) == 0) {
+                continue;
+            }
+            let px = image.pixel(x, y);
+            if px[3] == 0 {
+                continue;
+            }
+            for c in 0..3 {
+                hists[c][px[c] as usize] += 1;
+            }
+        }
+    }
+    hists
+}
+
 /// Equalize's lookup table: each value maps to its place in the cumulative
 /// histogram.
 fn equalize_table(hist: &[u64; 256]) -> [u8; 256] {
@@ -1167,6 +1196,16 @@ mod tests {
         apply(&mut d, Adjustment::AutoTone).unwrap();
         assert_eq!(first(&d), [0, 0, 0, 255]);
         assert_eq!(&d.composite_rgba8()[4..8], [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn channel_histograms() {
+        let d = doc([10, 20, 30, 255]);
+        let [r, g, b] = rgb_histograms(&d);
+        // The second pixel is the white background
+        assert_eq!((r[10], g[20], b[30], r[255]), (1, 1, 1, 1));
+        let merged = channel_histogram(&d);
+        assert_eq!((merged[10], merged[255]), (1, 3));
     }
 
     #[test]

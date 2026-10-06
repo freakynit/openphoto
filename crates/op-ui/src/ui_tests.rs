@@ -1830,15 +1830,14 @@ fn curves_dialog_adds_points() {
     h.key_press_modifiers(Modifiers::COMMAND, egui::Key::M);
     h.run_steps(3);
     assert!(h.state().state.adjust_dialog.is_some());
-    // The 420 × 380 dialog is centered in the 1350 × 800 window; its graph
-    // (240 square) starts 20 right and 88 down of the dialog's corner.
-    // Click the curve point (128, 192).
-    let (gx, gy) = (675.0 - 210.0 + 20.0, 400.0 - 190.0 + 88.0);
-    let p = at_pt(
-        gx + 128.0 / 255.0 * 240.0,
-        gy + 240.0 - 192.0 / 255.0 * 240.0,
+    // The graph spans (89, 108)–(346, 365) of the 658 × 445 dialog: click
+    // the curve point (128, 192)
+    click_dialog(
+        &mut h,
+        (658.0, 445.0),
+        89.0 + 128.0 / 255.0 * 257.0,
+        365.0 - 192.0 / 255.0 * 257.0,
     );
-    click(&mut h, p);
     shot(&mut h, "curves");
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
@@ -3083,4 +3082,42 @@ fn hue_saturation_ranges_and_colorize() {
     };
     let before = hs.apply([230, 40, 40, 255]);
     assert_eq!(composite_pixel(&mut h, 5, 5), colorize.apply(before));
+}
+
+#[test]
+fn levels_and_curves_edit_one_channel() {
+    let mut h = harness(Vec::new());
+    color_document(&mut h, [100, 100, 100]);
+    // Levels: ⌥3 picks Red; its input black point 50
+    run_command(&mut h, crate::commands::Command::Levels);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Num3);
+    h.run_steps(2);
+    click_dialog(&mut h, (412.0, 371.0), 80.0, 258.5);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::A);
+    h.event(egui::Event::Text("50".into()));
+    h.run_steps(2);
+    shot(&mut h, "levels_red");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(last_history(&h), "Levels");
+    // (100 − 50) / 205 of the way: 62
+    assert_eq!(composite_pixel(&mut h, 5, 5), [62, 100, 100, 255]);
+
+    // Curves: ⌥4 picks Green; a point at (128, 192) lifts it
+    run_command(&mut h, crate::commands::Command::Curves);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Num4);
+    h.run_steps(2);
+    click_dialog(
+        &mut h,
+        (658.0, 445.0),
+        89.0 + 128.0 / 255.0 * 257.0,
+        365.0 - 192.0 / 255.0 * 257.0,
+    );
+    shot(&mut h, "curves_green");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(last_history(&h), "Curves");
+    let px = composite_pixel(&mut h, 5, 5);
+    assert_eq!((px[0], px[2]), (62, 100));
+    assert!(px[1] > 130, "{px:?}");
 }

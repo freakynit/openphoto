@@ -1101,6 +1101,7 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                         dialog.colors = colors;
                         // Colorize starts from the foreground color's hue
                         dialog.set_colorize_hue(adjust::hue_of(colors.0).round() as i32);
+                        dialog.set_channel_histograms(adjust::rgb_histograms(&state.doc));
                         app.adjust_dialog = Some(dialog);
                     }
                     Err(e) => app.alert = Some(e.message(name)),

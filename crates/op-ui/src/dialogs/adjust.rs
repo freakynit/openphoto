@@ -10,10 +10,10 @@
 //! Preview on, the document shows the result while the dialog is open.
 
 use egui::{Align2, Color32, FontId, Key, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Ui, vec2};
-use op_core::adjust::{Adjustment, Levels};
+use op_core::adjust::Adjustment;
 use op_core::filter::{Filter, OffsetFill};
 
-use super::{brightness_contrast, color_balance, common, hue_saturation, uxp};
+use super::{brightness_contrast, color_balance, common, curves, hue_saturation, levels, uxp};
 use crate::theme::{self, color, pt};
 
 const FONT: f32 = pt(12.5);
@@ -109,14 +109,6 @@ const fn check(label: &'static str, default: bool) -> Param {
 
 const THRESHOLD: &[Param] = &[param("Threshold Level:", 1.0, 255.0, 128.0, 0)];
 const POSTERIZE: &[Param] = &[param("Levels:", 2.0, 255.0, 4.0, 0)];
-/// Input black, gamma, input white, output black, output white.
-const LEVELS: &[Param] = &[
-    param("", 0.0, 253.0, 0.0, 0),
-    param("", 0.01, 9.99, 1.0, 2),
-    param("", 2.0, 255.0, 255.0, 0),
-    param("", 0.0, 255.0, 0.0, 0),
-    param("", 0.0, 255.0, 255.0, 0),
-];
 const EXPOSURE: &[Param] = &[
     param("Exposure:", -20.0, 20.0, 0.0, 2),
     param("Offset:", -0.5, 0.5, 0.0, 4),
@@ -256,11 +248,12 @@ impl Kind {
         match self {
             Self::Threshold => THRESHOLD,
             Self::Posterize => POSTERIZE,
-            Self::Levels => LEVELS,
             // Their own dialogs keep their settings
-            Self::Curves | Self::HueSaturation | Self::BrightnessContrast | Self::ColorBalance => {
-                &[]
-            }
+            Self::Levels
+            | Self::Curves
+            | Self::HueSaturation
+            | Self::BrightnessContrast
+            | Self::ColorBalance => &[],
             Self::Exposure => EXPOSURE,
             Self::BlackWhite => BLACK_WHITE,
             Self::Vibrance => VIBRANCE,
@@ -281,8 +274,6 @@ impl Kind {
         match self {
             Self::Threshold => vec2(pt(400.0), pt(232.0)),
             Self::Posterize => vec2(pt(330.0), pt(132.0)),
-            Self::Levels => vec2(pt(400.0), pt(330.0)),
-            Self::Curves => vec2(pt(420.0), pt(380.0)),
             _ => {
                 let rows: f32 = self.params().iter().map(row_height).sum();
                 vec2(pt(400.0), (pt(36.0) + rows + pt(20.0)).max(pt(150.0)))
@@ -321,11 +312,6 @@ pub struct AdjustDialog {
     pub before: op_core::Snapshot,
     /// Gradient Map's colors (the foreground and background colors).
     pub colors: ([u8; 3], [u8; 3]),
-    /// Curves: the points (input, output) in 0–255, sorted by input, the
-    /// selected one and the one being dragged.
-    curve: Vec<(f32, f32)>,
-    curve_selected: Option<usize>,
-    curve_drag: Option<usize>,
     /// The dialogs rebuilt after Photoshop 2026, which keep their own
     /// settings.
     custom: Option<Custom>,
@@ -336,6 +322,8 @@ enum Custom {
     BrightnessContrast(brightness_contrast::Dialog),
     ColorBalance(color_balance::Dialog),
     HueSaturation(Box<hue_saturation::Dialog>),
+    Levels(Box<levels::Dialog>),
+    Curves(Box<curves::Dialog>),
 }
 
 fn format(v: f32, decimals: usize) -> String {
@@ -357,17 +345,25 @@ impl AdjustDialog {
             previewing: None,
             before,
             colors: ([0; 3], [255; 3]),
-            curve: vec![(0.0, 0.0), (255.0, 255.0)],
-            curve_selected: None,
-            curve_drag: None,
             custom: match kind {
                 Kind::BrightnessContrast => Some(Custom::BrightnessContrast(Default::default())),
                 Kind::ColorBalance => Some(Custom::ColorBalance(Default::default())),
                 Kind::HueSaturation => Some(Custom::HueSaturation(Box::new(
                     hue_saturation::Dialog::new(0),
                 ))),
+                Kind::Levels => Some(Custom::Levels(Box::new(levels::Dialog::new([[0; 256]; 3])))),
+                Kind::Curves => Some(Custom::Curves(Box::new(curves::Dialog::new([[0; 256]; 3])))),
                 _ => None,
             },
+        }
+    }
+
+    /// Levels' (and Curves') per-channel histograms.
+    pub fn set_channel_histograms(&mut self, histograms: [[u64; 256]; 3]) {
+        match &mut self.custom {
+            Some(Custom::Levels(d)) => **d = levels::Dialog::new(histograms),
+            Some(Custom::Curves(d)) => **d = curves::Dialog::new(histograms),
+            _ => {}
         }
     }
 
@@ -395,6 +391,8 @@ impl AdjustDialog {
             Some(Custom::BrightnessContrast(d)) => return d.adjustment().map(Effect::Adjustment),
             Some(Custom::ColorBalance(d)) => return d.adjustment().map(Effect::Adjustment),
             Some(Custom::HueSaturation(d)) => return d.adjustment().map(Effect::Adjustment),
+            Some(Custom::Levels(d)) => return d.adjustment().map(Effect::Adjustment),
+            Some(Custom::Curves(d)) => return Some(Effect::Adjustment(d.adjustment())),
             None => {}
         }
         let v: Vec<f32> = (0..self.values.len())
@@ -444,22 +442,6 @@ impl AdjustDialog {
         Some(match self.kind {
             Kind::Threshold => Adjustment::Threshold(v[0] as u8),
             Kind::Posterize => Adjustment::Posterize(v[0] as u8),
-            Kind::Levels => {
-                // The black point must stay below the white point
-                if v[0] + 2.0 > v[2] {
-                    return None;
-                }
-                Adjustment::Levels(
-                    Levels {
-                        input_black: v[0] as u8,
-                        gamma: v[1],
-                        input_white: v[2] as u8,
-                        output_black: v[3] as u8,
-                        output_white: v[4] as u8,
-                    }
-                    .composite(),
-                )
-            }
             Kind::Exposure => Adjustment::Exposure {
                 exposure: v[0],
                 offset: v[1],
@@ -477,14 +459,6 @@ impl AdjustDialog {
                 density: v[1] as u8,
                 preserve_luminosity: v[2] == 1.0,
             },
-            Kind::Curves => {
-                let points: Vec<(u8, u8)> = self
-                    .curve
-                    .iter()
-                    .map(|&(x, y)| (x.round() as u8, y.round() as u8))
-                    .collect();
-                Adjustment::curves(&points)
-            }
             Kind::GradientMap => {
                 let (a, b) = self.colors;
                 let (from, to) = if v[0] == 1.0 { (b, a) } else { (a, b) };
@@ -504,6 +478,8 @@ impl AdjustDialog {
                     Some(Custom::BrightnessContrast(_)) => brightness_contrast::SIZE,
                     Some(Custom::ColorBalance(_)) => color_balance::SIZE,
                     Some(Custom::HueSaturation(_)) => hue_saturation::SIZE,
+                    Some(Custom::Levels(_)) => levels::SIZE,
+                    Some(Custom::Curves(_)) => curves::SIZE,
                     None => self.kind.size(),
                 };
                 let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
@@ -534,6 +510,8 @@ impl AdjustDialog {
             }
             Some(Custom::ColorBalance(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
             Some(Custom::HueSaturation(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
+            Some(Custom::Levels(d)) => d.ui(ui, frame, self.first_frame, &mut self.preview),
+            Some(Custom::Curves(d)) => d.ui(ui, frame, &mut self.preview),
             None => None,
         };
         match button {
@@ -551,11 +529,9 @@ impl AdjustDialog {
                 self.labeled_field(ui, 0, at(LEFT, pt(52.0)));
                 let hist = Rect::from_min_size(at(LEFT, pt(78.0)), vec2(pt(258.0), HISTOGRAM_H));
                 self.histogram_ui(ui, hist);
-                self.track(ui, hist, &[0], false);
+                self.track(ui, hist, 0);
             }
             Kind::Posterize => self.labeled_field(ui, 0, at(LEFT, pt(58.0))),
-            Kind::Levels => self.levels_ui(ui, frame),
-            Kind::Curves => self.curves_ui(ui, frame),
             _ => {
                 let mut y = pt(52.0);
                 for (i, p) in self.kind.params().iter().enumerate() {
@@ -671,259 +647,42 @@ impl AdjustDialog {
             vec2(width, pt(2.0)),
         );
         ui.painter().rect_filled(line, 0, Color32::from_gray(0x3a));
-        self.track(ui, line, &[i], false);
+        self.track(ui, line, i);
     }
 
-    /// Triangle markers under `above` for the given parameters; dragging
-    /// one sets its value. With `gamma_between`, the middle parameter is
-    /// Levels' gamma, placed between the other two.
-    fn track(&mut self, ui: &mut Ui, above: Rect, params: &[usize], gamma_between: bool) {
+    /// A triangle marker under `above` for parameter `i`; pressing or
+    /// dragging along the track sets its value in proportion.
+    fn track(&mut self, ui: &mut Ui, above: Rect, i: usize) {
         let track = Rect::from_min_max(
             Pos2::new(above.left(), above.bottom() + pt(2.0)),
             Pos2::new(above.right(), above.bottom() + pt(2.0) + TRACK_H),
         );
-        let id = ui.id().with(("adjust-track", params[0]));
-        let response = ui.interact(track, id, Sense::click_and_drag());
-        let frac = |p: &Param, v: f32| (v - p.min) / (p.max - p.min);
-
-        // Marker positions as 0–1 along the track
-        let positions: Vec<f32> = params
-            .iter()
-            .map(|&i| {
-                let p = &self.kind.params()[i];
-                let v = self.value(i).unwrap_or(p.default);
-                if gamma_between && i == params[1] {
-                    let lo = self.value(params[0]).unwrap_or(0.0) / 255.0;
-                    let hi = self.value(params[2]).unwrap_or(255.0) / 255.0;
-                    lo + (hi - lo) * 0.5f32.powf(v)
-                } else if self.kind == Kind::Levels {
-                    v / 255.0
-                } else {
-                    frac(p, v)
-                }
-            })
-            .collect();
-
-        if let Some(p) = response.interact_pointer_pos()
+        let response = ui.interact(
+            track,
+            ui.id().with(("adjust-track", i)),
+            Sense::click_and_drag(),
+        );
+        let p = &self.kind.params()[i];
+        if let Some(pointer) = response.interact_pointer_pos()
             && (response.dragged() || response.clicked())
         {
-            let t = ((p.x - track.left()) / track.width()).clamp(0.0, 1.0);
-            // The marker being dragged: remembered from the press
-            let grabbed = ui.memory_mut(|m| {
-                let key = id.with("grabbed");
-                if response.drag_started() || response.clicked() {
-                    let nearest = positions
-                        .iter()
-                        .enumerate()
-                        .min_by(|a, b| (a.1 - t).abs().total_cmp(&(b.1 - t).abs()))
-                        .map_or(0, |(k, _)| k);
-                    m.data.insert_temp(key, nearest);
-                }
-                m.data.get_temp::<usize>(key).unwrap_or(0)
-            });
-            let i = params[grabbed];
-            let p = &self.kind.params()[i];
-            if gamma_between && grabbed == 1 {
-                let lo = self.value(params[0]).unwrap_or(0.0) / 255.0;
-                let hi = self.value(params[2]).unwrap_or(255.0) / 255.0;
-                let u = ((t - lo) / (hi - lo)).clamp(0.001, 0.999);
-                self.set(i, u.ln() / 0.5f32.ln());
-            } else if self.kind == Kind::Levels {
-                self.set(i, (t * 255.0).round());
-            } else {
-                let v = p.min + t * (p.max - p.min);
-                let scale = 10f32.powi(p.decimals as i32);
-                self.set(i, (v * scale).round() / scale);
-            }
+            let t = ((pointer.x - track.left()) / track.width()).clamp(0.0, 1.0);
+            let v = p.min + t * (p.max - p.min);
+            let scale = 10f32.powi(p.decimals as i32);
+            self.set(i, (v * scale).round() / scale);
         }
-
-        for (k, &pos) in positions.iter().enumerate() {
-            let x = track.left() + pos.clamp(0.0, 1.0) * track.width();
-            let fill = if params.len() == 1 {
-                color::TEXT
-            } else if gamma_between && k == 1 {
-                Color32::from_gray(0x80)
-            } else if k == 0 {
-                Color32::BLACK
-            } else {
-                Color32::WHITE
-            };
-            ui.painter().add(Shape::convex_polygon(
-                vec![
-                    Pos2::new(x, track.top()),
-                    Pos2::new(x + pt(6.0), track.bottom()),
-                    Pos2::new(x - pt(6.0), track.bottom()),
-                ],
-                fill,
-                Stroke::new(1.0, Color32::from_gray(0x9a)),
-            ));
-        }
-    }
-
-    fn levels_ui(&mut self, ui: &mut Ui, frame: Rect) {
-        let at = |x: f32, y: f32| frame.min + vec2(x, y);
-        let width = pt(258.0);
-        self.label(ui, "Channel:   RGB", at(LEFT, pt(48.0)));
-        self.label(ui, "Input Levels:", at(LEFT, pt(76.0)));
-        let hist = Rect::from_min_size(at(LEFT, pt(90.0)), vec2(width, HISTOGRAM_H));
-        self.histogram_ui(ui, hist);
-        self.track(ui, hist, &[0, 1, 2], true);
-        let fields_y = hist.bottom() + pt(32.0);
-        let center = LEFT + (width - FIELD_W) / 2.0;
-        for (i, x) in [(0, LEFT), (1, center), (2, LEFT + width - FIELD_W)] {
-            let r = Rect::from_min_size(
-                Pos2::new(frame.left() + x, fields_y - FIELD_H / 2.0),
-                vec2(FIELD_W, FIELD_H),
-            );
-            self.field(ui, i, r);
-        }
-        let out_y = fields_y + pt(30.0);
-        self.label(ui, "Output Levels:", Pos2::new(frame.left() + LEFT, out_y));
-        let ramp = Rect::from_min_size(
-            Pos2::new(frame.left() + LEFT, out_y + pt(12.0)),
-            vec2(width, pt(10.0)),
-        );
-        // Black-to-white ramp
-        let mut mesh = egui::Mesh::default();
-        mesh.colored_vertex(ramp.left_top(), Color32::BLACK);
-        mesh.colored_vertex(ramp.right_top(), Color32::WHITE);
-        mesh.colored_vertex(ramp.right_bottom(), Color32::WHITE);
-        mesh.colored_vertex(ramp.left_bottom(), Color32::BLACK);
-        mesh.add_triangle(0, 1, 2);
-        mesh.add_triangle(0, 2, 3);
-        ui.painter().add(Shape::mesh(mesh));
-        self.track(ui, ramp, &[3, 4], false);
-        let out_fields_y = ramp.bottom() + pt(30.0);
-        for (i, x) in [(3, LEFT), (4, LEFT + width - FIELD_W)] {
-            let r = Rect::from_min_size(
-                Pos2::new(frame.left() + x, out_fields_y - FIELD_H / 2.0),
-                vec2(FIELD_W, FIELD_H),
-            );
-            self.field(ui, i, r);
-        }
-    }
-
-    /// The Curves graph: histogram, quarter grid, the diagonal, the curve and
-    /// its points. Click to add a point, drag to move it, drag it out of the
-    /// graph to remove it; the end points always stay.
-    fn curves_ui(&mut self, ui: &mut Ui, frame: Rect) {
-        let at = |x: f32, y: f32| frame.min + vec2(x, y);
-        self.label(ui, "Preset: Default", at(LEFT, pt(48.0)));
-        self.label(ui, "Channel: RGB", at(LEFT, pt(70.0)));
-        let graph = Rect::from_min_size(at(LEFT, pt(88.0)), vec2(pt(240.0), pt(240.0)));
-        self.histogram_ui(ui, graph);
-        let painter = ui.painter_at(graph.expand(pt(6.0)));
-        let grid = Stroke::new(1.0, Color32::from_gray(0x55));
-        for k in 1..4 {
-            let x = graph.left() + graph.width() * k as f32 / 4.0;
-            let y = graph.top() + graph.height() * k as f32 / 4.0;
-            painter.line_segment(
-                [Pos2::new(x, graph.top()), Pos2::new(x, graph.bottom())],
-                grid,
-            );
-            painter.line_segment(
-                [Pos2::new(graph.left(), y), Pos2::new(graph.right(), y)],
-                grid,
-            );
-        }
-        painter.line_segment([graph.left_bottom(), graph.right_top()], grid);
-        // Curve coordinates (0–255, y up) ↔ screen
-        let to_screen = |(x, y): (f32, f32)| {
-            Pos2::new(
-                graph.left() + x / 255.0 * graph.width(),
-                graph.bottom() - y / 255.0 * graph.height(),
-            )
-        };
-        let to_curve = |p: Pos2| {
-            (
-                ((p.x - graph.left()) / graph.width() * 255.0).clamp(0.0, 255.0),
-                ((graph.bottom() - p.y) / graph.height() * 255.0).clamp(0.0, 255.0),
-            )
-        };
-
-        let id = ui.id().with("curves-graph");
-        let response = ui.interact(graph.expand(pt(4.0)), id, Sense::click_and_drag());
-        if (response.drag_started() || response.clicked())
-            && let Some(p) = response.interact_pointer_pos()
-        {
-            let near = self
-                .curve
-                .iter()
-                .position(|&c| to_screen(c).distance(p) <= pt(8.0));
-            let index = near.unwrap_or_else(|| {
-                // A new point where the pointer is
-                let c = to_curve(p);
-                let i = self
-                    .curve
-                    .iter()
-                    .position(|&(x, _)| x > c.0)
-                    .unwrap_or(self.curve.len());
-                self.curve.insert(i, c);
-                i
-            });
-            self.curve_selected = Some(index);
-            self.curve_drag = response.drag_started().then_some(index);
-        }
-        if let (Some(i), Some(p)) = (self.curve_drag, response.interact_pointer_pos()) {
-            let (mut x, y) = to_curve(p);
-            // A point stays between its neighbors
-            let lo = if i > 0 {
-                self.curve[i - 1].0 + 1.0
-            } else {
-                0.0
-            };
-            let hi = if i + 1 < self.curve.len() {
-                self.curve[i + 1].0 - 1.0
-            } else {
-                255.0
-            };
-            x = x.clamp(lo, hi.max(lo));
-            self.curve[i] = (x, y);
-            let outside = !graph.expand(pt(20.0)).contains(p);
-            let end = i == 0 || i + 1 == self.curve.len();
-            if response.drag_stopped() {
-                if outside && !end {
-                    self.curve.remove(i);
-                    self.curve_selected = None;
-                }
-                self.curve_drag = None;
-            }
-        }
-
-        // The curve
-        let points: Vec<(u8, u8)> = self
-            .curve
-            .iter()
-            .map(|&(x, y)| (x.round() as u8, y.round() as u8))
-            .collect();
-        let table = op_core::adjust::curve_table(&points);
-        let line: Vec<Pos2> = (0..256)
-            .map(|x| to_screen((x as f32, table[x] as f32)))
-            .collect();
-        painter.add(Shape::line(line, Stroke::new(1.5, color::TEXT)));
-        for (i, &c) in self.curve.iter().enumerate() {
-            let r = Rect::from_center_size(to_screen(c), egui::Vec2::splat(pt(6.0)));
-            if self.curve_selected == Some(i) {
-                painter.rect_filled(r, 0, color::TEXT);
-            } else {
-                painter.rect(
-                    r,
-                    0,
-                    Color32::from_gray(0x3c),
-                    Stroke::new(1.0, color::TEXT),
-                    StrokeKind::Inside,
-                );
-            }
-        }
-        // Input and Output of the selected point
-        if let Some(&(x, y)) = self.curve_selected.and_then(|i| self.curve.get(i)) {
-            self.label(ui, &format!("Output: {}", y.round()), at(LEFT, pt(346.0)));
-            self.label(
-                ui,
-                &format!("Input: {}", x.round()),
-                at(LEFT + pt(130.0), pt(346.0)),
-            );
-        }
+        let p = &self.kind.params()[i];
+        let v = self.value(i).unwrap_or(p.default);
+        let x = track.left() + ((v - p.min) / (p.max - p.min)).clamp(0.0, 1.0) * track.width();
+        ui.painter().add(Shape::convex_polygon(
+            vec![
+                Pos2::new(x, track.top()),
+                Pos2::new(x + pt(6.0), track.bottom()),
+                Pos2::new(x - pt(6.0), track.bottom()),
+            ],
+            color::TEXT,
+            Stroke::new(1.0, Color32::from_gray(0x9a)),
+        ));
     }
 
     fn histogram_ui(&self, ui: &Ui, rect: Rect) {
@@ -1041,7 +800,7 @@ fn auto_brightness_contrast(histogram: &[u64; 256]) -> (i32, i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use op_core::adjust::HueSaturation;
+    use op_core::adjust::{HueSaturation, Levels};
 
     fn dialog(kind: Kind) -> AdjustDialog {
         let doc = op_core::Document::new_with_background("t", 1, 1, op_core::Color::WHITE);
@@ -1088,13 +847,5 @@ mod tests {
                 fill: OffsetFill::Wrap
             }))
         );
-    }
-
-    #[test]
-    fn invalid_values_disable_the_dialog() {
-        let mut d = dialog(Kind::Levels);
-        d.values[0] = "250".into();
-        d.values[2] = "251".into();
-        assert_eq!(d.effect(), None);
     }
 }

@@ -88,6 +88,21 @@ pub enum Icon {
     Eyedropper,
     EyedropperPlus,
     EyedropperMinus,
+    /// Levels' and Curves' Set Black/Gray/White Point eyedroppers: the
+    /// tube's lower half holds that color.
+    EyedropperBlack,
+    EyedropperGray,
+    EyedropperWhite,
+    /// Curves' point tool: a wave through four points.
+    CurvePoints,
+    /// Curves' pencil tool.
+    Pencil,
+    /// Curves' targeted adjustment: a hand with up and down arrows.
+    TargetedHandVertical,
+    /// Curves' quarter grid button.
+    GridQuarters,
+    /// Curves' ten-by-ten grid button.
+    GridTenths,
     /// The presets menu button (three bars and a corner).
     PresetMenu,
 }
@@ -702,7 +717,12 @@ pub fn paint_scaled(
                 pen.color,
             );
         }
-        Icon::Eyedropper | Icon::EyedropperPlus | Icon::EyedropperMinus => {
+        Icon::Eyedropper
+        | Icon::EyedropperPlus
+        | Icon::EyedropperMinus
+        | Icon::EyedropperBlack
+        | Icon::EyedropperGray
+        | Icon::EyedropperWhite => {
             // A hollow tube from the lower left, a collar across it and
             // the bulb at the upper right
             let tube = [(-9.5, 9.5), (3.0, -3.0)];
@@ -713,6 +733,19 @@ pub fn paint_scaled(
                     ..pen
                 };
                 inner.round_line((-9.5, 9.5), (2.5, -2.5), 2.4);
+                let liquid = match icon {
+                    Icon::EyedropperBlack => Some(Color32::BLACK),
+                    Icon::EyedropperGray => Some(Color32::from_gray(0xa0)),
+                    Icon::EyedropperWhite => Some(Color32::WHITE),
+                    _ => None,
+                };
+                if let Some(liquid) = liquid {
+                    let fill = Pen {
+                        color: liquid,
+                        ..pen
+                    };
+                    fill.round_line((-9.5, 9.5), (-4.0, 4.0), 2.4);
+                }
             }
             pen.round_line((0.5, -8.0), (7.5, -1.0), 4.0);
             pen.round_line((4.0, -4.5), (10.5, -11.0), 5.5);
@@ -724,6 +757,65 @@ pub fn paint_scaled(
                 }
                 Icon::EyedropperMinus => pen.rect(4.4, 5.5, 14.4, 7.5),
                 _ => {}
+            }
+        }
+        Icon::CurvePoints => {
+            let pts = [(-16.0, 6.25), (-6.25, -7.5), (7.5, 8.75), (17.0, -6.25)];
+            let mut curve = Vec::new();
+            for k in 0..=24 {
+                let t = k as f32 / 24.0;
+                let x = -16.0 + 33.0 * t;
+                curve.push((
+                    x,
+                    -7.5 * (std::f32::consts::PI * (x + 1.0) / 14.0).sin() * 0.95 + 0.6,
+                ));
+            }
+            pen.line(&curve, 1.5);
+            for (x, y) in pts {
+                pen.dot(x, y, 1.8);
+            }
+        }
+        Icon::Pencil => {
+            let outline = [
+                (-13.75, 13.75),
+                (-11.0, 5.5),
+                (9.5, -15.0),
+                (15.0, -9.5),
+                (-5.5, 11.0),
+                (-13.75, 13.75),
+            ];
+            pen.line(&outline, 1.5);
+            pen.line(&[(6.0, -11.5), (11.5, -6.0)], 1.5);
+            pen.line(&[(-11.0, 5.5), (-5.5, 11.0)], 1.5);
+        }
+        Icon::TargetedHandVertical => {
+            pen.poly(&[(-8.0, -9.5), (-11.0, -5.5), (-5.0, -5.5)]);
+            pen.poly(&[(-8.0, 9.5), (-5.0, 5.5), (-11.0, 5.5)]);
+            for (y, x0) in [(-4.0, -3.0), (0.0, -6.0), (4.0, -3.0)] {
+                pen.round_line((x0, y), (4.0, y), 2.4);
+            }
+            pen.dot(7.0, 0.0, 6.5);
+            pen.round_line((2.0, -6.5), (8.0, -6.5), 2.0);
+        }
+        Icon::GridQuarters => {
+            pen.line(
+                &[
+                    (-13.0, -13.0),
+                    (13.0, -13.0),
+                    (13.0, 13.0),
+                    (-13.0, 13.0),
+                    (-13.0, -13.0),
+                ],
+                1.5,
+            );
+            pen.line(&[(0.0, -13.0), (0.0, 13.0)], 1.5);
+            pen.line(&[(-13.0, 0.0), (13.0, 0.0)], 1.5);
+        }
+        Icon::GridTenths => {
+            for k in 0..=4 {
+                let v = -12.5 + 6.25 * k as f32;
+                pen.line(&[(v, -12.5), (v, 12.5)], 1.2);
+                pen.line(&[(-12.5, v), (12.5, v)], 1.2);
             }
         }
         Icon::PresetMenu => {
