@@ -20,15 +20,30 @@ fn active_index(doc: &Document) -> Option<usize> {
     doc.layers.iter().position(|l| l.id == id)
 }
 
-/// "Name copy", then "Name copy 2", "Name copy 3"... like Photoshop.
+/// "Name copy", then "Name copy 2", "Name copy 3"... like Photoshop. A
+/// copy of a copy counts on instead: "A copy" gives "A copy 2" and
+/// "E copy 7" gives "E copy 8" (checked in Photoshop 2026).
 fn copy_name(doc: &Document, name: &str) -> String {
-    let base = format!("{name} copy");
-    if !doc.layers.iter().any(|l| l.name == base) {
-        return base;
-    }
-    (2..)
+    let free = |candidate: &String| !doc.layers.iter().any(|l| &l.name == candidate);
+    // "<base> copy" or "<base> copy N"
+    let numbered = name.rsplit_once(' ').and_then(|(head, n)| {
+        let n: u32 = n.parse().ok()?;
+        head.ends_with(" copy").then_some((head, n + 1))
+    });
+    let (base, first) = match numbered {
+        Some((head, next)) => (head.to_string(), next),
+        None if name.ends_with(" copy") => (name.to_string(), 2),
+        None => {
+            let base = format!("{name} copy");
+            if free(&base) {
+                return base;
+            }
+            (base, 2)
+        }
+    };
+    (first..)
         .map(|n| format!("{base} {n}"))
-        .find(|candidate| !doc.layers.iter().any(|l| &l.name == candidate))
+        .find(free)
         .expect("some name is free")
 }
 
@@ -86,6 +101,61 @@ pub fn duplicate_named(doc: &mut Document, name: &str) -> Option<LayerId> {
     doc.select_layer(id);
     doc.mark_dirty();
     Some(id)
+}
+
+/// Dragging the selected layers onto the Layers panel's "Create a new
+/// layer" button: each one (a group with everything in it) is copied and
+/// named "Name copy" (or "copy 2", ...). One layer's copy goes right above
+/// it; several copies go together, in order, above the topmost selected
+/// layer, as in Photoshop 2026. The copies end up selected, the active
+/// layer's copy active. Returns the copies, bottom to top.
+pub fn duplicate_selected(doc: &mut Document) -> Vec<LayerId> {
+    let index = |doc: &Document, id| doc.layers.iter().position(|l| l.id == id);
+    let mut roots = selected_roots(doc);
+    roots.sort_by_key(|&id| index(doc, id));
+    let Some(&top) = roots.last() else {
+        return Vec::new();
+    };
+    if roots.len() == 1 {
+        return duplicate(doc).into_iter().collect();
+    }
+    let active = doc.active_layer;
+    let parent = doc.layer(top).and_then(|l| l.parent);
+    let mut copies: Vec<Layer> = Vec::new();
+    let mut pairs: Vec<(LayerId, LayerId)> = Vec::new();
+    for &root in &roots {
+        let Some(name) = doc.layer(root).map(|l| l.name.clone()) else {
+            continue;
+        };
+        let name = copy_name(doc, &name);
+        let Some(mut block) = cloned_block(doc, root, doc, &name) else {
+            continue;
+        };
+        let copy = block.last_mut().expect("not empty");
+        copy.parent = parent;
+        pairs.push((root, copy.id));
+        copies.extend(block);
+    }
+    let Some(at) = doc.block(top).map(|b| b.end) else {
+        return Vec::new();
+    };
+    let ids: Vec<LayerId> = pairs.iter().map(|&(_, c)| c).collect();
+    doc.layers.splice(at..at, copies);
+    // The active layer's copy last, so it stays active
+    let mut selection: Vec<LayerId> = pairs
+        .iter()
+        .filter(|&&(root, _)| Some(root) != active)
+        .map(|&(_, c)| c)
+        .collect();
+    selection.extend(
+        pairs
+            .iter()
+            .find(|&&(root, _)| Some(root) == active)
+            .map(|&(_, c)| c),
+    );
+    doc.set_selected_layers(selection);
+    doc.mark_dirty();
+    ids
 }
 
 /// Layer > Duplicate Layer... into another document: a copy of `source`'s
@@ -967,6 +1037,63 @@ mod tests {
         // and a second Cmd+/ clears every lock, like Photoshop
         assert_eq!(toggle_lock_all(&mut doc), Some(false));
         assert_eq!(doc.layer(id).unwrap().locks(), Locks::default());
+    }
+
+    /// Dragging A and "Background copy" onto the new-layer button in
+    /// Photoshop 2026 gave "A copy" and "Background copy 2" on top.
+    #[test]
+    fn duplicating_several_layers_puts_the_copies_on_top() {
+        let mut doc = doc();
+        let bg = doc.layers[0].id;
+        doc.select_layer(bg);
+        let bg_copy = duplicate(&mut doc).unwrap();
+        let a = doc.layers[2].id;
+        assert_eq!(names(&doc), ["Background", "Background copy", "Layer 1"]);
+        doc.set_selected_layers(vec![bg_copy, a]);
+        let copies = duplicate_selected(&mut doc);
+        assert_eq!(
+            names(&doc),
+            [
+                "Background",
+                "Background copy",
+                "Layer 1",
+                "Background copy 2",
+                "Layer 1 copy"
+            ]
+        );
+        assert_eq!(copies.len(), 2);
+        let mut selected = doc.selected_layers();
+        selected.sort_by_key(|i| i.0);
+        assert_eq!(selected, copies);
+        assert_eq!(doc.active_layer, Some(copies[1]));
+        // One layer: its copy goes right above it
+        doc.select_layer(bg_copy);
+        duplicate_selected(&mut doc);
+        assert_eq!(doc.layers[2].name, "Background copy 3");
+    }
+
+    #[test]
+    fn copies_of_copies_count_on() {
+        let mut doc = doc();
+        let named = |doc: &mut Document, name: &str| {
+            let id = doc.new_layer_id();
+            doc.layers
+                .push(Layer::raster(id, name, TiledImage::new(4, 4)));
+            id
+        };
+        // As Photoshop 2026 named them
+        for (name, copy) in [
+            ("B copy", "B copy 2"),
+            ("E copy 7", "E copy 8"),
+            ("Gcopy", "Gcopy copy"),
+            ("H copy x", "H copy x copy"),
+        ] {
+            named(&mut doc, name);
+            assert_eq!(copy_name(&doc, name), copy, "{name}");
+        }
+        // The next free number from there
+        named(&mut doc, "B copy 2");
+        assert_eq!(copy_name(&doc, "B copy"), "B copy 3");
     }
 
     #[test]

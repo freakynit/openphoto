@@ -108,13 +108,16 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
     let mut list_ui = ui.new_child(egui::UiBuilder::new().max_rect(list_rect));
     let out = area.show(&mut list_ui, |ui| layer_list(ui, state));
     scroll_thumb(ui, track, &out, drag_id);
-    let from_background = out.inner;
+    let (from_background, footer_drop) = out.inner;
     if from_background {
         app.new_layer_dialog = Some(crate::dialogs::NewLayerDialog::from_background());
         return;
     }
 
     let (layer_dialog, group_dialog, delete) = bottom_bar(ui, state, bar_rect);
+    if let Some((id, pointer, released)) = footer_drop {
+        drop_on_footer(ui, state, bar_rect, id, pointer, released);
+    }
     if delete {
         app.delete_layers();
     } else if layer_dialog {
@@ -500,7 +503,11 @@ fn scroll_thumb<R>(
 
 /// The rows. Returns true when double-clicking the background asks for
 /// the Layer from Background dialog.
-fn layer_list(ui: &mut Ui, state: &mut DocState) -> bool {
+/// A row dragged below the list: the layer, where the pointer is and
+/// whether it was let go.
+type FooterDrop = (LayerId, Pos2, bool);
+
+fn layer_list(ui: &mut Ui, state: &mut DocState) -> (bool, Option<FooterDrop>) {
     let mut from_background = false;
     ui.spacing_mut().item_spacing.y = 0.0;
     // Top to bottom, as listed; layers in collapsed groups aren't
@@ -822,9 +829,13 @@ fn layer_list(ui: &mut Ui, state: &mut DocState) -> bool {
         }
     }
     if let Some((from_row, pointer, released)) = dragged {
+        // Below the list: over the footer's buttons
+        if pointer.y > ui.clip_rect().bottom() {
+            return (from_background, Some((rows[from_row].0, pointer, released)));
+        }
         drop_layer(ui, state, &rows, &spans, from_row, pointer, released);
     }
-    from_background
+    (from_background, None)
 }
 
 /// The inline text field for renaming a layer: Enter or clicking elsewhere
@@ -941,6 +952,89 @@ fn visible_rows(doc: &op_core::Document) -> Vec<(LayerId, usize)> {
         .collect()
 }
 
+/// The footer's buttons: centers measured from the panel's right edge
+/// (Photoshop 2026), 12.5 pt below the footer's top.
+const FOOTER_BUTTONS: [(f32, Icon); 8] = [
+    (222.5, Icon::FooterBrush),
+    (196.5, Icon::LinkLayers),
+    (169.5, Icon::LayerStyle),
+    (139.75, Icon::LayerMask),
+    (113.5, Icon::NewAdjustment),
+    (86.5, Icon::NewGroup),
+    (58.25, Icon::NewLayer),
+    (30.25, Icon::DeleteLayer),
+];
+
+fn footer_button_rect(bar: Rect, x: f32) -> Rect {
+    let center = Pos2::new(bar.right() - pt(x), bar.top() + pt(12.5));
+    Rect::from_center_size(center, Vec2::new(pt(24.0), pt(22.0)))
+}
+
+/// Dragging layers onto the footer, as in Photoshop 2026: onto "Create a
+/// new layer" duplicates them ("Duplicate Layer"), onto "Create a new
+/// group" groups them ("Create Group from Layers"), onto the mask button
+/// adds a mask ("Add Layer Mask"), onto the trash deletes them without
+/// asking, groups with everything in them ("Delete Layer" / "Delete
+/// Group"). A dragged layer that isn't selected is selected alone first.
+/// While dragging, the button under the pointer is highlighted.
+fn drop_on_footer(
+    ui: &Ui,
+    state: &mut DocState,
+    bar: Rect,
+    id: LayerId,
+    pointer: Pos2,
+    released: bool,
+) {
+    let Some(&(x, button)) = FOOTER_BUTTONS
+        .iter()
+        .find(|(x, _)| footer_button_rect(bar, *x).contains(pointer))
+    else {
+        return;
+    };
+    if !released {
+        ui.painter()
+            .rect_filled(footer_button_rect(bar, x), pt(3.0), color::HOVER);
+        return;
+    }
+    if !state.doc.is_layer_selected(id) {
+        state.doc.select_layer(id);
+    }
+    use op_core::layer_ops;
+    match button {
+        Icon::NewLayer => {
+            if !layer_ops::duplicate_selected(&mut state.doc).is_empty() {
+                state.record("Duplicate Layer");
+            }
+        }
+        Icon::NewGroup => {
+            if layer_ops::group_selected(&mut state.doc).is_some() {
+                state.record("Create Group from Layers");
+            }
+        }
+        Icon::LayerMask => {
+            let kind = if state.doc.selection().is_some() {
+                layer_ops::NewMask::RevealSelection
+            } else {
+                layer_ops::NewMask::RevealAll
+            };
+            if state.doc.selected_layers().len() == 1 && layer_ops::add_mask(&mut state.doc, kind) {
+                state.record("Add Layer Mask");
+            }
+        }
+        Icon::DeleteLayer => {
+            let group = state.doc.layer(id).is_some_and(|l| l.is_group());
+            if layer_ops::delete_selected(&mut state.doc) {
+                state.record(if group {
+                    "Delete Group"
+                } else {
+                    "Delete Layer"
+                });
+            }
+        }
+        _ => {}
+    }
+}
+
 /// The footer: eight buttons at Photoshop 2026's positions (centers
 /// measured from the panel's right edge). Returns true when Alt-clicking
 /// "Create a new layer" asks for the New Layer dialog, as in Photoshop.
@@ -991,8 +1085,8 @@ fn bottom_bar(ui: &mut Ui, state: &mut DocState, rect: Rect) -> (bool, bool, boo
         (30.25, Icon::DeleteLayer, "Delete layer", can_delete),
     ];
     for (x, i, tip, enabled) in buttons {
-        let center = Pos2::new(rect.right() - pt(x), rect.top() + pt(12.5));
-        let hit = Rect::from_center_size(center, Vec2::new(pt(24.0), pt(22.0)));
+        let hit = footer_button_rect(rect, x);
+        let center = hit.center();
         let mut response = ui.interact(hit, ui.id().with(("footer", x.to_bits())), Sense::click());
         if enabled && response.hovered() {
             painter.rect_filled(hit, pt(3.0), color::HOVER);

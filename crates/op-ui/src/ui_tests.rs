@@ -2220,6 +2220,40 @@ fn layers_rows_and_scrollbar_match_photoshop() {
 }
 
 #[test]
+fn dragging_layers_onto_the_footer_buttons() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    h.run_steps(2);
+    // The top row (Layer 1) and the footer buttons (from the right edge)
+    let top_row = at_pt(1100.0, 652.0);
+    let button = |x: f32| at_pt(1350.0 - x, 787.5);
+    // Onto "Create a new layer": a copy
+    drag(&mut h, top_row, button(58.25), Modifiers::NONE);
+    assert_eq!(layer_names(&h), ["Background", "Layer 1", "Layer 1 copy"]);
+    assert_eq!(last_history(&h), "Duplicate Layer");
+    // Onto the trash: deleted without asking
+    drag(&mut h, top_row, button(30.25), Modifiers::NONE);
+    assert_eq!(layer_names(&h), ["Background", "Layer 1"]);
+    assert_eq!(last_history(&h), "Delete Layer");
+    // Onto "Create a new group": grouped
+    drag(&mut h, top_row, button(86.5), Modifiers::NONE);
+    assert_eq!(layer_names(&h), ["Background", "Layer 1", "Group 1"]);
+    assert_eq!(last_history(&h), "Create Group from Layers");
+    // A group onto the trash goes with its layers, without asking
+    drag(&mut h, top_row, button(30.25), Modifiers::NONE);
+    assert!(h.state().state.delete_group_prompt.is_none());
+    assert_eq!(layer_names(&h), ["Background"]);
+    assert_eq!(last_history(&h), "Delete Group");
+    // Onto the mask button: a mask on the dragged layer
+    crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    h.run_steps(2);
+    drag(&mut h, top_row, button(139.75), Modifiers::NONE);
+    assert!(active(&h).doc.layers[1].mask.is_some());
+    assert_eq!(last_history(&h), "Add Layer Mask");
+}
+
+#[test]
 fn link_layers_from_the_panel_and_the_menu() {
     use crate::commands::Command;
     let mut h = harness(Vec::new());
