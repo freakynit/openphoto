@@ -3,6 +3,7 @@
 //! This crate has no GPU or UI dependencies; every edit ends up as a change to
 //! the data structures defined here.
 
+pub mod adjust;
 pub mod blend;
 pub mod clipboard;
 pub mod color;

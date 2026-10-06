@@ -408,6 +408,8 @@ pub struct AppState {
     pub canvas_size_dialog: Option<crate::dialogs::CanvasSizeDialog>,
     /// Edit > Fill, while open.
     pub fill_dialog: Option<crate::dialogs::FillDialog>,
+    /// Threshold or Posterize, while open.
+    pub adjust_dialog: Option<crate::dialogs::AdjustDialog>,
     /// Image > Trim, while open.
     pub trim_dialog: Option<crate::dialogs::TrimDialog>,
     /// Paint Bucket options.
@@ -448,6 +450,7 @@ impl Default for AppState {
             canvas_size_dialog: None,
             fill_dialog: None,
             trim_dialog: None,
+            adjust_dialog: None,
             bucket: Default::default(),
             color_picker: None,
             swatches: crate::panels::DEFAULT_SWATCHES
@@ -508,6 +511,7 @@ impl AppState {
         self.canvas_size_dialog.is_some()
             || self.fill_dialog.is_some()
             || self.trim_dialog.is_some()
+            || self.adjust_dialog.is_some()
             || self.color_picker.is_some()
             || self.alert.is_some()
     }

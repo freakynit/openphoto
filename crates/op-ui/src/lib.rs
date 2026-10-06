@@ -165,6 +165,44 @@ impl OpenPhotoApp {
         }
     }
 
+    /// Threshold / Posterize: previews on the document while open.
+    fn adjust_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.state.adjust_dialog.take() else {
+            return;
+        };
+        let outcome = dialog.show(ctx);
+        let Some(state) = self.state.active() else {
+            return;
+        };
+        let undo_preview = |state: &mut state::DocState, dialog: &mut dialogs::AdjustDialog| {
+            if dialog.previewing.take().is_some() {
+                state.doc.restore(&dialog.before);
+            }
+        };
+        match outcome {
+            dialogs::AdjustOutcome::Open => {
+                let wanted = dialog.adjustment().filter(|_| dialog.preview);
+                if wanted != dialog.previewing {
+                    undo_preview(state, &mut dialog);
+                    if let Some(adjustment) = wanted
+                        && op_core::adjust::apply(&mut state.doc, adjustment).is_ok()
+                    {
+                        dialog.previewing = Some(adjustment);
+                    }
+                }
+                self.state.adjust_dialog = Some(dialog);
+            }
+            dialogs::AdjustOutcome::Cancel => undo_preview(state, &mut dialog),
+            dialogs::AdjustOutcome::Apply(adjustment) => {
+                undo_preview(state, &mut dialog);
+                match op_core::adjust::apply(&mut state.doc, adjustment) {
+                    Ok(()) => state.record(adjustment.name()),
+                    Err(e) => self.state.alert = Some(e.message(adjustment.name())),
+                }
+            }
+        }
+    }
+
     fn trim_dialog(&mut self, ctx: &egui::Context) {
         let Some(mut dialog) = self.state.trim_dialog.take() else {
             return;
@@ -333,6 +371,7 @@ impl eframe::App for OpenPhotoApp {
         self.canvas_size_dialog(&ctx);
         self.fill_dialog(&ctx);
         self.trim_dialog(&ctx);
+        self.adjust_dialog(&ctx);
         self.color_picker(&ctx);
 
         #[cfg(target_os = "macos")]

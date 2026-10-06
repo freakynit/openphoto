@@ -3,10 +3,12 @@
 
 use egui::{Key, Modifiers};
 
+use op_core::adjust::{self, Adjustment};
 use op_core::image_ops::{self, Orientation};
 use op_core::layer_ops::{self, Arrange};
 
 use crate::actions;
+use crate::dialogs::{AdjustDialog, AdjustKind};
 use crate::document_view;
 use crate::state::AppState;
 
@@ -31,6 +33,13 @@ pub enum Command {
     Crop,
     /// Image > Trim... (opens the dialog).
     Trim,
+    Invert,
+    Desaturate,
+    Equalize,
+    /// Image > Adjustments > Threshold... (opens the dialog).
+    Threshold,
+    /// Image > Adjustments > Posterize... (opens the dialog).
+    Posterize,
     NewLayer,
     DeleteLayer,
     /// Layer > Hide Layers / Show Layers for the active layer.
@@ -201,7 +210,12 @@ impl Command {
             | Self::FlipCanvasHorizontal
             | Self::FlipCanvasVertical
             | Self::Crop
-            | Self::Trim => return None,
+            | Self::Trim
+            | Self::Equalize
+            | Self::Threshold
+            | Self::Posterize => return None,
+            Self::Invert => cmd(Key::I),
+            Self::Desaturate => shift_cmd(Key::U),
             Self::DeleteLayer
             | Self::ToggleHistory
             | Self::DuplicateLayer
@@ -305,6 +319,11 @@ impl Command {
             | Self::FlipCanvasHorizontal
             | Self::FlipCanvasVertical
             | Self::Trim
+            | Self::Invert
+            | Self::Desaturate
+            | Self::Equalize
+            | Self::Threshold
+            | Self::Posterize
             | Self::NewLayer
             | Self::ZoomIn
             | Self::ZoomOut
@@ -329,6 +348,7 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::FillBackground,
     Command::Reselect,
     Command::SelectInverse,
+    Command::Desaturate,
     Command::Redo,
     Command::ToggleLastState,
     Command::NewLayer,
@@ -336,6 +356,7 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::CloseAll,
     Command::CloseOthers,
     Command::Undo,
+    Command::Invert,
     Command::LayerViaCopy,
     Command::BringForward,
     Command::SendBackward,
@@ -484,6 +505,36 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
             match result {
                 Ok(_) => state.record(name),
                 Err(e) => app.alert = Some(e.message(name)),
+            }
+        }
+        Command::Invert | Command::Desaturate | Command::Equalize => {
+            let adjustment = match command {
+                Command::Invert => Adjustment::Invert,
+                Command::Desaturate => Adjustment::Desaturate,
+                _ => Adjustment::Equalize,
+            };
+            if let Some(state) = app.active_doc.and_then(|id| app.docs.get_mut(&id)) {
+                match adjust::apply(&mut state.doc, adjustment) {
+                    Ok(()) => state.record(adjustment.name()),
+                    Err(e) => app.alert = Some(e.message(adjustment.name())),
+                }
+            }
+        }
+        Command::Threshold | Command::Posterize => {
+            let (kind, name) = if command == Command::Threshold {
+                (AdjustKind::Threshold, "Threshold")
+            } else {
+                (AdjustKind::Posterize, "Posterize")
+            };
+            if let Some(state) = app.active_doc.and_then(|id| app.docs.get_mut(&id)) {
+                match adjust::check(&state.doc) {
+                    Ok(()) => {
+                        let histogram = adjust::luminosity_histogram(&state.doc);
+                        let before = state.doc.snapshot();
+                        app.adjust_dialog = Some(AdjustDialog::new(kind, histogram, before));
+                    }
+                    Err(e) => app.alert = Some(e.message(name)),
+                }
             }
         }
         Command::Trim => {

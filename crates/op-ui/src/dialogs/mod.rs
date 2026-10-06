@@ -1,11 +1,13 @@
 //! Modal dialogs.
 
+mod adjust;
 mod canvas_size;
 mod color_picker;
 mod common;
 mod fill;
 mod trim;
 
+pub use adjust::{AdjustDialog, Kind as AdjustKind, Outcome as AdjustOutcome};
 pub use canvas_size::{CanvasSizeDialog, Outcome};
 pub use color_picker::{ColorPicker, Outcome as ColorPickerOutcome};
 pub use fill::{FillDialog, Outcome as FillOutcome};

@@ -672,3 +672,43 @@ fn screenshot_trim_dialog() {
     run_command(&mut h, crate::commands::Command::Trim);
     shot(&mut h, "trim_dialog");
 }
+
+#[test]
+fn adjustments_invert_and_threshold_preview() {
+    use crate::commands::Command;
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    // The reference document is #141414 gray
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::I);
+    h.run_steps(2);
+    assert_eq!(composite_pixel(&mut h, 5, 5), [0xeb, 0xeb, 0xeb, 255]);
+    assert_eq!(last_history(&h), "Invert");
+
+    // Threshold previews while open; Cancel puts the pixels back
+    run_command(&mut h, Command::Threshold);
+    assert!(h.state().state.adjust_dialog.is_some());
+    h.run_steps(2);
+    assert_eq!(composite_pixel(&mut h, 5, 5), [255, 255, 255, 255]);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(h.state().state.adjust_dialog.is_none());
+    assert_eq!(composite_pixel(&mut h, 5, 5), [0xeb, 0xeb, 0xeb, 255]);
+    assert_eq!(last_history(&h), "Invert");
+
+    // Posterize to 2 levels with Enter
+    run_command(&mut h, Command::Posterize);
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert_eq!(composite_pixel(&mut h, 5, 5), [255, 255, 255, 255]);
+    assert_eq!(last_history(&h), "Posterize");
+}
+
+#[test]
+#[ignore]
+fn screenshot_threshold_dialog() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    run_command(&mut h, crate::commands::Command::Threshold);
+    shot(&mut h, "threshold_dialog");
+}
