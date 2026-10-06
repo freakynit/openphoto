@@ -7,6 +7,7 @@ use op_core::adjust::{self, Adjustment};
 use op_core::filter::Filter;
 use op_core::image_ops::{self, Orientation};
 use op_core::layer_ops::{self, Arrange};
+use op_core::transform::{self, FixedTransform};
 
 use crate::actions;
 use crate::dialogs::{AdjustDialog, AdjustKind};
@@ -89,6 +90,14 @@ pub enum Command {
     FillBackground,
     /// Edit > Clear (Delete).
     Clear,
+    FreeTransform,
+    /// Edit > Transform > Again: the last transform once more.
+    TransformAgain,
+    TransformRotate180,
+    TransformRotate90Clockwise,
+    TransformRotate90CounterClockwise,
+    TransformFlipHorizontal,
+    TransformFlipVertical,
     Cut,
     Copy,
     CopyMerged,
@@ -236,6 +245,8 @@ impl Command {
                 ctrl: false,
                 key: Key::Backspace,
             },
+            Self::FreeTransform => cmd(Key::T),
+            Self::TransformAgain => shift_cmd(Key::T),
             Self::Cut => cmd(Key::X),
             Self::Copy => cmd(Key::C),
             Self::CopyMerged => shift_cmd(Key::C),
@@ -250,6 +261,11 @@ impl Command {
             Self::ZoomOut => cmd(Key::Minus),
             Self::FitOnScreen => cmd(Key::Num0),
             Self::ActualPixels => cmd(Key::Num1),
+            Self::TransformRotate180
+            | Self::TransformRotate90Clockwise
+            | Self::TransformRotate90CounterClockwise
+            | Self::TransformFlipHorizontal
+            | Self::TransformFlipVertical => return None,
             Self::Rotate180
             | Self::Rotate90Clockwise
             | Self::Rotate90CounterClockwise
@@ -352,6 +368,7 @@ impl Command {
                 doc.is_some_and(|d| d.doc.selection().is_some() && d.doc.active_layer.is_some())
             }
             Self::Crop => doc.is_some_and(|d| d.doc.selection().is_some()),
+            Self::TransformAgain => doc.is_some() && app.last_transform.is_some(),
             Self::LastFilter => doc.is_some() && app.last_filter.is_some(),
             Self::LayerFromBackground => doc.is_some_and(|d| d.doc.has_background()),
             Self::DeleteHiddenLayers => doc.is_some_and(|d| {
@@ -377,6 +394,12 @@ impl Command {
             | Self::FillForeground
             | Self::FillBackground
             | Self::Clear
+            | Self::FreeTransform
+            | Self::TransformRotate180
+            | Self::TransformRotate90Clockwise
+            | Self::TransformRotate90CounterClockwise
+            | Self::TransformFlipHorizontal
+            | Self::TransformFlipVertical
             | Self::Cut
             | Self::Copy
             | Self::CopyMerged
@@ -432,6 +455,7 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::CopyMerged,
     Command::PasteInPlace,
     Command::LayerViaCut,
+    Command::TransformAgain,
     Command::BringToFront,
     Command::SendToBack,
     Command::MergeVisible,
@@ -448,6 +472,7 @@ const SHORTCUT_ORDER: &[Command] = &[
     Command::CloseAll,
     Command::CloseOthers,
     Command::Undo,
+    Command::FreeTransform,
     Command::Save,
     Command::Quit,
     Command::Invert,
@@ -696,6 +721,53 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                     }
                     Err(e) => app.alert = Some(e.message(name)),
                 }
+            }
+        }
+        Command::FreeTransform
+        | Command::TransformAgain
+        | Command::TransformRotate180
+        | Command::TransformRotate90Clockwise
+        | Command::TransformRotate90CounterClockwise
+        | Command::TransformFlipHorizontal
+        | Command::TransformFlipVertical => {
+            let [r, g, b, _] = app.background.to_rgba8();
+            let last = app.last_transform;
+            let Some(state) = app.active_doc.and_then(|id| app.docs.get_mut(&id)) else {
+                return;
+            };
+            if command == Command::FreeTransform {
+                if let Err(e) = crate::free_transform::start(state) {
+                    app.alert = Some(e.message("Free Transform"));
+                }
+                return;
+            }
+            let fixed = match command {
+                Command::TransformRotate180 => Some(FixedTransform::Rotate180),
+                Command::TransformRotate90Clockwise => Some(FixedTransform::Rotate90Clockwise),
+                Command::TransformRotate90CounterClockwise => {
+                    Some(FixedTransform::Rotate90CounterClockwise)
+                }
+                Command::TransformFlipHorizontal => Some(FixedTransform::FlipHorizontal),
+                Command::TransformFlipVertical => Some(FixedTransform::FlipVertical),
+                _ => None,
+            };
+            let (name, affine) = match (fixed, last) {
+                (Some(f), _) => match transform::bounds(&state.doc) {
+                    Ok(b) => (f.name(), f.affine(b)),
+                    Err(e) => {
+                        app.alert = Some(e.message(f.name()));
+                        return;
+                    }
+                },
+                (None, Some(m)) => ("Transform Again", m),
+                (None, None) => return,
+            };
+            match transform::transform(&mut state.doc, affine, [r, g, b]) {
+                Ok(()) => {
+                    state.record(name);
+                    app.last_transform = Some(affine);
+                }
+                Err(e) => app.alert = Some(e.message(name)),
             }
         }
         Command::Trim => {

@@ -57,6 +57,8 @@ pub struct DocState {
     pub last_paint_point: Option<(f32, f32)>,
     /// A lasso outline being drawn.
     pub lasso: Option<LassoPath>,
+    /// Edit > Free Transform, while in progress.
+    pub free_transform: Option<FreeTransform>,
     /// A Gradient tool drag: start and current point, in document pixels.
     pub gradient_drag: Option<(egui::Pos2, egui::Pos2)>,
     /// A layer name being edited in the Layers panel, and the text so far.
@@ -92,6 +94,7 @@ impl DocState {
             last_paint_point: None,
             renaming: None,
             lasso: None,
+            free_transform: None,
             gradient_drag: None,
             outline: None,
             canvas: None,
@@ -330,6 +333,69 @@ pub struct MarqueeDrag {
     pub alt_for_op: bool,
 }
 
+/// What a Free Transform drag grabbed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransformHandle {
+    Move,
+    Rotate,
+    /// A scale handle: −1, 0 or 1 along each axis of the box (0 for the
+    /// middle of a side).
+    Scale(i8, i8),
+}
+
+/// A Free Transform drag: the handle and the box as it was at mouse-down.
+#[derive(Clone, Copy, Debug)]
+pub struct TransformDrag {
+    pub handle: TransformHandle,
+    pub start: egui::Pos2,
+    pub offset: (f32, f32),
+    pub scale: (f32, f32),
+    pub angle: f32,
+}
+
+/// Edit > Free Transform in progress: the box over the original bounds,
+/// scaled and rotated around its center and moved by `offset`. The
+/// document shows the result live; `before` is restored to cancel.
+pub struct FreeTransform {
+    pub before: op_core::Snapshot,
+    pub bounds: (f32, f32, f32, f32),
+    pub offset: (f32, f32),
+    pub scale: (f32, f32),
+    pub angle: f32,
+    pub drag: Option<TransformDrag>,
+    /// The transform the document currently shows.
+    pub applied: op_core::transform::Affine,
+}
+
+impl FreeTransform {
+    pub fn new(before: op_core::Snapshot, bounds: (f32, f32, f32, f32)) -> Self {
+        Self {
+            before,
+            bounds,
+            offset: (0.0, 0.0),
+            scale: (1.0, 1.0),
+            angle: 0.0,
+            drag: None,
+            applied: op_core::transform::Affine::IDENTITY,
+        }
+    }
+
+    pub fn center(&self) -> (f32, f32) {
+        let (x0, y0, x1, y1) = self.bounds;
+        ((x0 + x1) / 2.0, (y0 + y1) / 2.0)
+    }
+
+    pub fn affine(&self) -> op_core::transform::Affine {
+        op_core::transform::Affine::around(
+            self.center(),
+            self.scale.0,
+            self.scale.1,
+            self.angle,
+            self.offset,
+        )
+    }
+}
+
 /// A Lasso or Polygonal Lasso outline being drawn, in document pixels.
 #[derive(Clone, Debug)]
 pub struct LassoPath {
@@ -532,6 +598,8 @@ pub struct AppState {
     pub canvas_size_dialog: Option<crate::dialogs::CanvasSizeDialog>,
     /// Edit > Fill, while open.
     pub fill_dialog: Option<crate::dialogs::FillDialog>,
+    /// The last transform applied, for Edit > Transform > Again.
+    pub last_transform: Option<op_core::transform::Affine>,
     /// The last filter applied, for Filter > Last Filter.
     pub last_filter: Option<op_core::filter::Filter>,
     /// An adjustment or filter dialog, while open.
@@ -590,6 +658,7 @@ impl Default for AppState {
             trim_dialog: None,
             adjust_dialog: None,
             last_filter: None,
+            last_transform: None,
             bucket: Default::default(),
             color_picker: None,
             swatches: crate::panels::DEFAULT_SWATCHES
@@ -658,6 +727,15 @@ impl AppState {
             || self.color_picker.is_some()
             || self.save_prompt.is_some()
             || self.alert.is_some()
+            || self.transforming()
+    }
+
+    /// Whether the active document is in Free Transform (menus and tool
+    /// keys are off meanwhile, as in Photoshop).
+    pub fn transforming(&self) -> bool {
+        self.active_doc
+            .and_then(|id| self.docs.get(&id))
+            .is_some_and(|d| d.free_transform.is_some())
     }
 
     /// Opens the Color Picker for the foreground or background color, titled

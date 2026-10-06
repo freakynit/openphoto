@@ -144,6 +144,12 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
     let middle_drag = response.dragged_by(PointerButton::Middle);
     if (panning && response.dragged_by(PointerButton::Primary)) || middle_drag {
         state.view.offset += response.drag_delta();
+    } else if !space && state.free_transform.is_some() {
+        let [r, g, b, _] = background.to_rgba8();
+        let outcome = crate::free_transform::input(ui, &response, state, [r, g, b], ppp);
+        if let Some(crate::free_transform::Outcome::Committed(m)) = outcome {
+            app.last_transform = Some(m);
+        }
     } else if !space {
         match tool {
             Tool::Zoom if response.clicked() => {
@@ -269,6 +275,9 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
             } else {
                 CursorIcon::Grab
             }
+        } else if state.free_transform.is_some() {
+            let p = response.hover_pos().unwrap_or_default();
+            crate::free_transform::cursor(state, p, ppp)
         } else {
             match tool {
                 Tool::Zoom if alt => CursorIcon::ZoomOut,
@@ -317,7 +326,9 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
         .add(op_render::paint_callback(canvas_rect, image, view));
 
     draw_selection(ui, state, canvas_rect, ppp, tool);
-    if let (Some(opts), Some(p)) = (paint, response.hover_pos()) {
+    crate::free_transform::draw(ui, state, canvas_rect, ppp);
+    let transforming = state.free_transform.is_some();
+    if let (Some(opts), Some(p), false) = (paint, response.hover_pos(), transforming) {
         brush_cursor(ui, canvas_rect, p, opts.size * state.view.zoom / ppp);
     }
     status_bar(ui, state, status_rect, ppp);
@@ -325,7 +336,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
 }
 
 /// Screen point → document pixel coordinates (not clamped).
-fn to_doc(state: &DocState, p: Pos2, ppp: f32) -> Pos2 {
+pub(crate) fn to_doc(state: &DocState, p: Pos2, ppp: f32) -> Pos2 {
     let d = (p - origin(state, ppp)) * ppp / state.view.zoom;
     Pos2::new(d.x, d.y)
 }
@@ -339,7 +350,7 @@ pub fn visible_rect(state: &DocState, ppp: f32) -> [f32; 4] {
 }
 
 /// Document pixel → screen point.
-fn to_screen(state: &DocState, d: Pos2, ppp: f32) -> Pos2 {
+pub(crate) fn to_screen(state: &DocState, d: Pos2, ppp: f32) -> Pos2 {
     origin(state, ppp) + d.to_vec2() * state.view.zoom / ppp
 }
 

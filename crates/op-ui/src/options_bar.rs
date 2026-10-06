@@ -25,26 +25,18 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
             widgets::icon(ui, icons::CARET_DOWN, 13.0, color::ICON);
             widgets::vseparator(ui, 34.0);
 
-            match app.tool {
-                Tool::RectangularMarquee
-                | Tool::EllipticalMarquee
-                | Tool::SingleRowMarquee
-                | Tool::SingleColumnMarquee
-                | Tool::Lasso
-                | Tool::PolygonalLasso
-                | Tool::MagneticLasso => marquee_options(ui, app),
-                Tool::Move => move_options(ui),
-                Tool::Brush | Tool::Pencil | Tool::Eraser => paint_options(ui, app),
-                Tool::PaintBucket => bucket_options(ui, app),
-                Tool::Eyedropper => eyedropper_options(ui, app),
-                Tool::Gradient => gradient_options(ui, app),
-                Tool::MagicWand => wand_options(ui, app),
-                Tool::Hand | Tool::Zoom => view_options(ui, app),
-                _ => {}
+            if app.transforming() {
+                transform_options(ui, app);
+            } else {
+                tool_options(ui, app);
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_space(12.0);
+                if app.transforming() {
+                    transform_buttons(ui, app);
+                    return;
+                }
                 // Avatar placeholder
                 let (r, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::click());
                 ui.painter().circle_filled(
@@ -104,6 +96,66 @@ fn select_and_mask_button(ui: &mut Ui) {
 
 /// Marquee and Lasso tools: mode, Feather, Anti-alias; the marquees also
 /// have Style with Width and Height.
+fn tool_options(ui: &mut Ui, app: &mut AppState) {
+    match app.tool {
+        Tool::RectangularMarquee
+        | Tool::EllipticalMarquee
+        | Tool::SingleRowMarquee
+        | Tool::SingleColumnMarquee
+        | Tool::Lasso
+        | Tool::PolygonalLasso
+        | Tool::MagneticLasso => marquee_options(ui, app),
+        Tool::Move => move_options(ui),
+        Tool::Brush | Tool::Pencil | Tool::Eraser => paint_options(ui, app),
+        Tool::PaintBucket => bucket_options(ui, app),
+        Tool::Eyedropper => eyedropper_options(ui, app),
+        Tool::Gradient => gradient_options(ui, app),
+        Tool::MagicWand => wand_options(ui, app),
+        Tool::Hand | Tool::Zoom => view_options(ui, app),
+        _ => {}
+    }
+}
+
+/// Free Transform: the box's size (W, H in percent) and angle.
+fn transform_options(ui: &mut Ui, app: &mut AppState) {
+    let Some(t) = app.active().and_then(|s| s.free_transform.as_ref()) else {
+        return;
+    };
+    let (sx, sy, angle) = (t.scale.0, t.scale.1, t.angle);
+    let readout = |ui: &mut Ui, label: &str, value: String| {
+        ui.label(label);
+        widgets::field(ui, &value, 76.0, true);
+        ui.add_space(6.0);
+    };
+    readout(ui, "W:", format!("{:.2}%", sx * 100.0));
+    readout(ui, "H:", format!("{:.2}%", sy * 100.0));
+    widgets::vseparator(ui, 34.0);
+    widgets::icon(ui, icons::ANGLE, 16.0, color::ICON);
+    readout(ui, "", format!("{:.2}°", angle.to_degrees()));
+}
+
+/// Free Transform's Cancel and Commit buttons (right-aligned).
+fn transform_buttons(ui: &mut Ui, app: &mut AppState) {
+    let Some(state) = app.active() else {
+        return;
+    };
+    if widgets::icon_button(ui, icons::CHECK, 34.0, false)
+        .on_hover_text("Commit transform (Return)")
+        .clicked()
+        && let Some(crate::free_transform::Outcome::Committed(m)) =
+            crate::free_transform::commit(state)
+    {
+        app.last_transform = Some(m);
+        return;
+    }
+    if widgets::icon_button(ui, icons::PROHIBIT, 34.0, false)
+        .on_hover_text("Cancel transform (Esc)")
+        .clicked()
+    {
+        crate::free_transform::cancel(state);
+    }
+}
+
 fn marquee_options(ui: &mut Ui, app: &mut AppState) {
     let opts = &mut app.marquee;
     mode_buttons(ui, &mut opts.mode);

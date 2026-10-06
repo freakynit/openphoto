@@ -987,3 +987,60 @@ fn gradient_tool_paints_foreground_to_background() {
     assert!((118..=138).contains(&mid), "{mid}");
     shot(&mut h, "gradient");
 }
+
+#[test]
+fn free_transform_moves_scales_and_cancels() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    // The background can't be transformed without a selection
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::T);
+    h.run_steps(2);
+    assert_eq!(
+        h.state().state.alert.as_deref(),
+        Some("Could not complete the Free Transform command because the layer is locked.")
+    );
+    h.state_mut().state.alert = None;
+
+    // A red square 100..140 on a new layer
+    crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    h.state_mut().state.foreground = Color::from_rgba8([255, 0, 0, 255]);
+    select_rect(&mut h, 100.0, 100.0, 140.0, 140.0);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::D);
+    h.run_steps(2);
+
+    // Cmd+T, drag inside the box by (100, 50), Enter
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::T);
+    h.run_steps(2);
+    assert!(active(&h).free_transform.is_some());
+    let (a, b) = (doc_point(&h, 120.0, 120.0), doc_point(&h, 220.0, 170.0));
+    drag(&mut h, a, b, Modifiers::NONE);
+    // Previewed while still transforming
+    assert_eq!(layer_pixel(&h, 1, 210, 160), [255, 0, 0, 255]);
+    shot(&mut h, "free_transform");
+    h.key_press(egui::Key::Enter);
+    h.run_steps(2);
+    assert!(active(&h).free_transform.is_none());
+    assert_eq!(last_history(&h), "Free Transform");
+    assert_eq!(layer_pixel(&h, 1, 210, 160), [255, 0, 0, 255]);
+    assert_eq!(layer_pixel(&h, 1, 110, 110)[3], 0);
+
+    // Scale by the bottom-right handle, then Escape: nothing changes
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::T);
+    h.run_steps(2);
+    let (a, b) = (doc_point(&h, 240.0, 190.0), doc_point(&h, 280.0, 230.0));
+    drag(&mut h, a, b, Modifiers::NONE);
+    let t = active(&h).free_transform.as_ref().unwrap();
+    assert!((t.scale.0 - 2.0).abs() < 0.05, "{:?}", t.scale);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert!(active(&h).free_transform.is_none());
+    assert_eq!(layer_pixel(&h, 1, 260, 210)[3], 0);
+    assert_eq!(last_history(&h), "Free Transform");
+
+    // Shift+Cmd+T moves it by (100, 50) again
+    h.key_press_modifiers(Modifiers::COMMAND | Modifiers::SHIFT, egui::Key::T);
+    h.run_steps(2);
+    assert_eq!(layer_pixel(&h, 1, 310, 210), [255, 0, 0, 255]);
+    assert_eq!(last_history(&h), "Transform Again");
+}

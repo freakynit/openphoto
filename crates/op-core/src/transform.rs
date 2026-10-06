@@ -1,0 +1,398 @@
+//! Edit > Free Transform and Edit > Transform: moving, scaling, rotating
+//! and flipping the active layer's pixels (or the selected pixels) by an
+//! affine transform, resampled bilinearly.
+
+use crate::document::Document;
+use crate::layer::LayerKind;
+use crate::selection::Selection;
+use crate::tile::TiledImage;
+
+/// A 2-D affine map: `x' = a·x + b·y + c`, `y' = d·x + e·y + f`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Affine {
+    pub a: f32,
+    pub b: f32,
+    pub c: f32,
+    pub d: f32,
+    pub e: f32,
+    pub f: f32,
+}
+
+impl Affine {
+    pub const IDENTITY: Self = Self {
+        a: 1.0,
+        b: 0.0,
+        c: 0.0,
+        d: 0.0,
+        e: 1.0,
+        f: 0.0,
+    };
+
+    pub fn translate(x: f32, y: f32) -> Self {
+        Self {
+            c: x,
+            f: y,
+            ..Self::IDENTITY
+        }
+    }
+
+    pub fn scale(sx: f32, sy: f32) -> Self {
+        Self {
+            a: sx,
+            e: sy,
+            ..Self::IDENTITY
+        }
+    }
+
+    /// Rotation by `angle` radians (clockwise on screen, y pointing down).
+    pub fn rotate(angle: f32) -> Self {
+        let (s, c) = angle.sin_cos();
+        Self {
+            a: c,
+            b: -s,
+            d: s,
+            e: c,
+            ..Self::IDENTITY
+        }
+    }
+
+    /// `self` applied after `first`.
+    pub fn after(self, first: Self) -> Self {
+        Self {
+            a: self.a * first.a + self.b * first.d,
+            b: self.a * first.b + self.b * first.e,
+            c: self.a * first.c + self.b * first.f + self.c,
+            d: self.d * first.a + self.e * first.d,
+            e: self.d * first.b + self.e * first.e,
+            f: self.d * first.c + self.e * first.f + self.f,
+        }
+    }
+
+    pub fn apply(self, (x, y): (f32, f32)) -> (f32, f32) {
+        (
+            self.a * x + self.b * y + self.c,
+            self.d * x + self.e * y + self.f,
+        )
+    }
+
+    pub fn inverse(self) -> Option<Self> {
+        let det = self.a * self.e - self.b * self.d;
+        if det.abs() < 1e-9 {
+            return None;
+        }
+        let (a, b, d, e) = (self.e / det, -self.b / det, -self.d / det, self.a / det);
+        Some(Self {
+            a,
+            b,
+            c: -(a * self.c + b * self.f),
+            d,
+            e,
+            f: -(d * self.c + e * self.f),
+        })
+    }
+
+    /// Scale `sx`, `sy` and rotate `angle` around `center`, then move by
+    /// `offset`: what a Free Transform box describes.
+    pub fn around(center: (f32, f32), sx: f32, sy: f32, angle: f32, offset: (f32, f32)) -> Self {
+        Self::translate(center.0 + offset.0, center.1 + offset.1)
+            .after(Self::rotate(angle))
+            .after(Self::scale(sx, sy))
+            .after(Self::translate(-center.0, -center.1))
+    }
+}
+
+/// Why a transform can't be done; the messages match Photoshop's alerts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransformError {
+    NoLayer,
+    Hidden,
+    Locked,
+    /// Nothing to transform: the layer (or the selection on it) is empty.
+    Empty,
+}
+
+impl TransformError {
+    pub fn message(self, command: &str) -> String {
+        match self {
+            Self::NoLayer => {
+                format!("Could not complete the {command} command because there is no layer.")
+            }
+            Self::Hidden => format!(
+                "Could not complete the {command} command because the target layer is hidden."
+            ),
+            Self::Locked => {
+                format!("Could not complete the {command} command because the layer is locked.")
+            }
+            Self::Empty => format!(
+                "Could not complete the {command} command because the selected area is empty."
+            ),
+        }
+    }
+}
+
+/// What a transform acts on, as (x0, y0, x1, y1): the selection's bounds,
+/// or the active layer's non-transparent pixels. Also checks that the layer
+/// can be transformed: the background only with a selection.
+pub fn bounds(doc: &Document) -> Result<(f32, f32, f32, f32), TransformError> {
+    let layer = doc
+        .active_layer
+        .and_then(|id| doc.layer(id))
+        .ok_or(TransformError::NoLayer)?;
+    if !layer.visible {
+        return Err(TransformError::Hidden);
+    }
+    let selection = doc.selection();
+    if layer.lock_pixels || layer.lock_position || (layer.is_background && selection.is_none()) {
+        return Err(TransformError::Locked);
+    }
+    let LayerKind::Raster(image) = &layer.kind;
+    let (w, h) = (doc.width, doc.height);
+    let mut b: Option<(u32, u32, u32, u32)> = None;
+    for y in 0..h {
+        for x in 0..w {
+            let covered = image.pixel(x, y)[3] > 0 && selection.is_none_or(|s| s.get(x, y) > 0);
+            if covered {
+                b = Some(match b {
+                    None => (x, y, x + 1, y + 1),
+                    Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1)),
+                });
+            }
+        }
+    }
+    // With a selection, the box is the selection's (as in Photoshop)
+    let b = match selection {
+        Some(s) if b.is_some() => s.bounds(),
+        _ => b,
+    };
+    let (x0, y0, x1, y1) = b.ok_or(TransformError::Empty)?;
+    Ok((x0 as f32, y0 as f32, x1 as f32, y1 as f32))
+}
+
+/// Bilinear sample of premultiplied RGBA at (x, y) in pixel-center
+/// coordinates; transparent outside the image.
+fn sample(px: &[[f32; 4]], w: usize, h: usize, x: f32, y: f32) -> [f32; 4] {
+    let (fx, fy) = (x - 0.5, y - 0.5);
+    let (x0, y0) = (fx.floor(), fy.floor());
+    let (tx, ty) = (fx - x0, fy - y0);
+    let at = |ix: f32, iy: f32| -> [f32; 4] {
+        if ix < 0.0 || iy < 0.0 || ix >= w as f32 || iy >= h as f32 {
+            [0.0; 4]
+        } else {
+            px[iy as usize * w + ix as usize]
+        }
+    };
+    let (p00, p10, p01, p11) = (
+        at(x0, y0),
+        at(x0 + 1.0, y0),
+        at(x0, y0 + 1.0),
+        at(x0 + 1.0, y0 + 1.0),
+    );
+    let mut out = [0.0; 4];
+    for c in 0..4 {
+        let top = p00[c] + (p10[c] - p00[c]) * tx;
+        let bottom = p01[c] + (p11[c] - p01[c]) * tx;
+        out[c] = top + (bottom - top) * ty;
+    }
+    out
+}
+
+/// Applies `m` (source → destination, in document pixels) to the active
+/// layer. With a selection only the selected pixels move: the place they
+/// leave becomes transparent (the background color on the background
+/// layer), and the selection moves with them. Pixels moved off the canvas
+/// are lost.
+pub fn transform(doc: &mut Document, m: Affine, background: [u8; 3]) -> Result<(), TransformError> {
+    bounds(doc)?;
+    let inverse = m.inverse().ok_or(TransformError::Empty)?;
+    let selection = doc.selection().cloned();
+    let (w, h) = (doc.width as usize, doc.height as usize);
+    let id = doc.active_layer.expect("checked");
+    let layer = doc.layer_mut(id).expect("checked");
+    let is_background = layer.is_background;
+    let LayerKind::Raster(image) = &mut layer.kind;
+
+    // The moving pixels (premultiplied) and what stays behind (straight)
+    let raw = image.to_rgba8();
+    let mut moving = vec![[0f32; 4]; w * h];
+    let mut staying = raw.clone();
+    for i in 0..w * h {
+        let m = selection.as_ref().map_or(1.0, |s| {
+            s.get((i % w) as u32, (i / w) as u32) as f32 / 255.0
+        });
+        if m <= 0.0 {
+            continue;
+        }
+        let p = &raw[i * 4..i * 4 + 4];
+        let a = p[3] as f32 * m / 255.0;
+        moving[i] = [p[0] as f32 * a, p[1] as f32 * a, p[2] as f32 * a, a * 255.0];
+        let left = &mut staying[i * 4..i * 4 + 4];
+        if is_background {
+            for c in 0..3 {
+                left[c] = (left[c] as f32 * (1.0 - m) + background[c] as f32 * m).round() as u8;
+            }
+        } else {
+            left[3] = (left[3] as f32 * (1.0 - m)).round() as u8;
+        }
+    }
+
+    // Composite the moved pixels over what stayed
+    let mut out = staying;
+    for y in 0..h {
+        for x in 0..w {
+            let (sx, sy) = inverse.apply((x as f32 + 0.5, y as f32 + 0.5));
+            let s = sample(&moving, w, h, sx, sy);
+            let sa = s[3] / 255.0;
+            if sa <= 0.0 {
+                continue;
+            }
+            let i = (y * w + x) * 4;
+            let d = &mut out[i..i + 4];
+            let da = d[3] as f32 / 255.0;
+            let oa = sa + da * (1.0 - sa);
+            for c in 0..3 {
+                let v = (s[c] + d[c] as f32 * da * (1.0 - sa)) / oa;
+                d[c] = v.round().clamp(0.0, 255.0) as u8;
+            }
+            d[3] = (oa * 255.0).round() as u8;
+        }
+    }
+    *image = TiledImage::from_rgba8(w as u32, h as u32, &out);
+
+    if let Some(s) = selection {
+        let mut mask = vec![0u8; w * h];
+        let src: Vec<[f32; 4]> = (0..w * h)
+            .map(|i| {
+                let v = s.get((i % w) as u32, (i / w) as u32) as f32;
+                [v, 0.0, 0.0, 0.0]
+            })
+            .collect();
+        for y in 0..h {
+            for x in 0..w {
+                let (sx, sy) = inverse.apply((x as f32 + 0.5, y as f32 + 0.5));
+                mask[y * w + x] = sample(&src, w, h, sx, sy)[0].round().clamp(0.0, 255.0) as u8;
+            }
+        }
+        doc.set_selection(Some(Selection::from_mask(w as u32, h as u32, mask, false)));
+    }
+    doc.mark_dirty();
+    Ok(())
+}
+
+/// The fixed transforms of Edit > Transform.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FixedTransform {
+    Rotate180,
+    Rotate90Clockwise,
+    Rotate90CounterClockwise,
+    FlipHorizontal,
+    FlipVertical,
+}
+
+impl FixedTransform {
+    /// The map around the center of `bounds`.
+    pub fn affine(self, (x0, y0, x1, y1): (f32, f32, f32, f32)) -> Affine {
+        let center = ((x0 + x1) / 2.0, (y0 + y1) / 2.0);
+        let (sx, sy, angle) = match self {
+            Self::Rotate180 => (1.0, 1.0, std::f32::consts::PI),
+            Self::Rotate90Clockwise => (1.0, 1.0, std::f32::consts::FRAC_PI_2),
+            Self::Rotate90CounterClockwise => (1.0, 1.0, -std::f32::consts::FRAC_PI_2),
+            Self::FlipHorizontal => (-1.0, 1.0, 0.0),
+            Self::FlipVertical => (1.0, -1.0, 0.0),
+        };
+        Affine::around(center, sx, sy, angle, (0.0, 0.0))
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Rotate180 => "Rotate 180°",
+            Self::Rotate90Clockwise => "Rotate 90° Clockwise",
+            Self::Rotate90CounterClockwise => "Rotate 90° Counter Clockwise",
+            Self::FlipHorizontal => "Flip Horizontal",
+            Self::FlipVertical => "Flip Vertical",
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::color::Color;
+    use crate::layer::Layer;
+    use crate::selection::Rect;
+
+    /// 6×6 white background plus a layer with a 2×2 red square at (1, 1).
+    fn doc() -> Document {
+        let mut doc = Document::new_with_background("t", 6, 6, Color::WHITE);
+        let mut image = TiledImage::new(6, 6);
+        for y in 1..3 {
+            for x in 1..3 {
+                image.set_pixel(x, y, [255, 0, 0, 255]);
+            }
+        }
+        doc.insert_above_active(Layer::raster(doc.new_layer_id(), "Layer 1", image));
+        doc
+    }
+
+    fn layer_px(doc: &Document, x: u32, y: u32) -> [u8; 4] {
+        let LayerKind::Raster(image) = &doc.layers[1].kind;
+        image.pixel(x, y)
+    }
+
+    #[test]
+    fn affine_math() {
+        let m = Affine::around((1.0, 1.0), 2.0, 2.0, 0.0, (3.0, 0.0));
+        assert_eq!(m.apply((2.0, 1.0)), (6.0, 1.0));
+        let back = m.inverse().unwrap().apply((6.0, 1.0));
+        assert!((back.0 - 2.0).abs() < 1e-5 && (back.1 - 1.0).abs() < 1e-5);
+        let r = Affine::rotate(std::f32::consts::FRAC_PI_2).apply((1.0, 0.0));
+        assert!(r.0.abs() < 1e-6 && (r.1 - 1.0).abs() < 1e-6);
+        assert!(Affine::scale(0.0, 1.0).inverse().is_none());
+    }
+
+    #[test]
+    fn bounds_and_locks() {
+        let mut d = doc();
+        assert_eq!(bounds(&d), Ok((1.0, 1.0, 3.0, 3.0)));
+        d.active_layer = Some(d.layers[0].id);
+        assert_eq!(bounds(&d), Err(TransformError::Locked));
+        d.set_selection(Some(Selection::rect(6, 6, Rect::new(0.0, 0.0, 4.0, 4.0))));
+        assert_eq!(bounds(&d), Ok((0.0, 0.0, 4.0, 4.0)));
+    }
+
+    #[test]
+    fn move_scale_and_flip_the_layer() {
+        let mut d = doc();
+        transform(&mut d, Affine::translate(3.0, 2.0), [255; 3]).unwrap();
+        assert_eq!(layer_px(&d, 4, 3), [255, 0, 0, 255]);
+        assert_eq!(layer_px(&d, 1, 1)[3], 0);
+
+        let mut d = doc();
+        let double = Affine::around((2.0, 2.0), 2.0, 2.0, 0.0, (0.0, 0.0));
+        transform(&mut d, double, [255; 3]).unwrap();
+        // 0..4 after scaling; the outer ring is softened by interpolation
+        assert_eq!(layer_px(&d, 1, 1), [255, 0, 0, 255]);
+        assert_eq!(layer_px(&d, 2, 2), [255, 0, 0, 255]);
+        assert!(layer_px(&d, 0, 0)[3] > 0 && layer_px(&d, 4, 4)[3] < 255);
+
+        let mut d = doc();
+        let b = bounds(&d).unwrap();
+        let flip = FixedTransform::FlipHorizontal.affine((b.0, b.1, b.2 + 2.0, b.3));
+        transform(&mut d, flip, [255; 3]).unwrap();
+        assert_eq!(layer_px(&d, 3, 1), [255, 0, 0, 255]);
+        assert_eq!(layer_px(&d, 1, 1)[3], 0);
+    }
+
+    #[test]
+    fn selected_pixels_move_and_leave_the_background_color() {
+        let mut d = doc();
+        d.active_layer = Some(d.layers[0].id);
+        let LayerKind::Raster(image) = &mut d.layers[0].kind;
+        image.set_pixel(0, 0, [0, 0, 255, 255]);
+        d.set_selection(Some(Selection::rect(6, 6, Rect::new(0.0, 0.0, 1.0, 1.0))));
+        transform(&mut d, Affine::translate(5.0, 0.0), [0, 255, 0]).unwrap();
+        let LayerKind::Raster(image) = &d.layers[0].kind;
+        assert_eq!(image.pixel(5, 0), [0, 0, 255, 255]);
+        assert_eq!(image.pixel(0, 0), [0, 255, 0, 255]);
+        assert_eq!(d.selection().unwrap().bounds(), Some((5, 0, 6, 1)));
+    }
+}

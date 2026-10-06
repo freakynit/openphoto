@@ -20,6 +20,7 @@ pub mod paint;
 pub mod pixel;
 pub mod selection;
 pub mod tile;
+pub mod transform;
 
 pub use color::Color;
 pub use document::{Anchor, DocId, Document, Snapshot};

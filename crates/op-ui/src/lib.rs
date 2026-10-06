@@ -11,6 +11,7 @@ mod commands;
 mod dialogs;
 mod doc_tabs;
 mod document_view;
+mod free_transform;
 mod icons;
 #[cfg(target_os = "macos")]
 mod menu;
