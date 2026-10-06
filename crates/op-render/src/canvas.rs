@@ -27,6 +27,11 @@ pub struct CanvasView {
     pub pixel_grid: bool,
     /// The Crop tool's shield over the image outside the crop box.
     pub shield: Option<Shield>,
+    /// The image turned about a document point by an angle (clockwise
+    /// radians): the Crop tool shows the image turned under an upright box.
+    /// A screen point maps to the document point turned by the angle about
+    /// the pivot.
+    pub rotation: Option<([f32; 2], f32)>,
 }
 
 /// The crop shield: everything outside a (possibly turned) box is mixed
@@ -52,6 +57,7 @@ struct Uniforms {
     shield_box: [f32; 4],
     shield_color: [f32; 4],
     shield_params: [f32; 4],
+    rotation: [f32; 4],
 }
 
 struct Slot {
@@ -221,6 +227,10 @@ impl CallbackTrait for CanvasCallback {
                 0.0,
                 0.0,
             ],
+            rotation: self
+                .view
+                .rotation
+                .map_or([0.0; 4], |(p, a)| [p[0], p[1], a, 1.0]),
         };
         queue.write_buffer(&slot.uniforms, 0, bytemuck::bytes_of(&u));
         Vec::new()

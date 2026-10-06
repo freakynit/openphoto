@@ -1193,7 +1193,10 @@ fn crop_shield_presets_and_growing_the_canvas() {
     state.crop = Some(crate::crop_tool::fitted(state, aspect));
     h.run_steps(3);
     let r = active(&h).crop.unwrap().rect;
-    assert_eq!(r, egui::Rect::from_min_max(egui::pos2(50.0, 0.0), egui::pos2(350.0, 300.0)));
+    assert_eq!(
+        r,
+        egui::Rect::from_min_max(egui::pos2(50.0, 0.0), egui::pos2(350.0, 300.0))
+    );
     // The shield over white, outside the box: 75% of the pasteboard gray
     // mixed in linear light is 141 (Photoshop 2026, measured)
     let image = h.render().expect("render frame");
@@ -1208,9 +1211,13 @@ fn crop_shield_presets_and_growing_the_canvas() {
     let state = h.state_mut().state.active().unwrap();
     state.crop = Some(crate::state::CropBox {
         rect: egui::Rect::from_min_max(egui::pos2(300.0, 0.0), egui::pos2(500.0, 300.0)),
+        angle: 0.0,
         drag: None,
     });
-    h.state_mut().state.crop_options.choose(crate::crop_tool::CropPreset::SizeResolution);
+    h.state_mut()
+        .state
+        .crop_options
+        .choose(crate::crop_tool::CropPreset::SizeResolution);
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
     let d = &active(&h).doc;
@@ -1218,6 +1225,67 @@ fn crop_shield_presets_and_growing_the_canvas() {
     let bg = d.layers[0].image().unwrap();
     assert_eq!(bg.pixel(50, 10), [255, 255, 255, 255]);
     assert_eq!(bg.pixel(150, 10), [0, 0, 255, 255]);
+    assert_eq!(last_history(&h), "Crop");
+}
+
+#[test]
+fn crop_rotation_and_straighten() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.key_press(egui::Key::C);
+    h.run_steps(2);
+    let angle = |h: &Harness<'_, OpenPhotoApp>| active(h).crop.unwrap().angle.to_degrees();
+    // Dragging outside the box, a quarter turn clockwise about its center,
+    // turns the image clockwise: the box turns the other way on it
+    let center = doc_point(&h, 367.0, 405.5);
+    let r = 500.0;
+    drag(
+        &mut h,
+        center + egui::vec2(r, 0.0),
+        center + egui::vec2(0.0, r),
+        Modifiers::SHIFT,
+    );
+    assert!((angle(&h) + 90.0).abs() < 0.5, "{}", angle(&h));
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    assert_eq!(angle(&h), 0.0);
+    // Straighten: a line 10° below level levels the image, and the box
+    // shrinks to fit on it
+    h.state_mut().state.crop_options.straightening = true;
+    h.run_steps(1);
+    let a = doc_point(&h, 100.0, 300.0);
+    let t = 10f32.to_radians();
+    drag(
+        &mut h,
+        a,
+        a + egui::vec2(t.cos(), t.sin()) * 300.0,
+        Modifiers::NONE,
+    );
+    assert!((angle(&h) - 10.0).abs() < 0.5, "{}", angle(&h));
+    assert!(!h.state().state.crop_options.straightening);
+    let r = active(&h).crop.unwrap().rect;
+    assert!(r.width() < 734.0 && r.height() < 811.0);
+    // Cropping turns the image; the box was inside it, so no corner shows
+    // the background color
+    h.state_mut().state.background = Color::from_rgba8([0, 255, 0, 255]);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    let d = &active(&h).doc;
+    assert!(
+        (d.width as f32 - r.width()).abs() <= 1.0,
+        "{} {}",
+        d.width,
+        r.width()
+    );
+    let bg = d.layers[0].image().unwrap();
+    for (x, y) in [
+        (0, 0),
+        (d.width - 1, 0),
+        (0, d.height - 1),
+        (d.width - 1, d.height - 1),
+    ] {
+        assert_ne!(bg.pixel(x, y)[1], 255, "corner ({x}, {y})");
+    }
     assert_eq!(last_history(&h), "Crop");
 }
 
@@ -1978,6 +2046,14 @@ fn screenshot_crop_tool() {
     h.key_press(egui::Key::C);
     h.run_steps(3);
     shot(&mut h, "crop_tool");
+    let state = h.state_mut().state.active().unwrap();
+    state.crop = Some(crate::crop_tool::fitted_turned(
+        state,
+        734.0 / 811.0,
+        15f32.to_radians(),
+    ));
+    h.run_steps(3);
+    shot(&mut h, "crop_tool_turned");
 }
 
 #[test]

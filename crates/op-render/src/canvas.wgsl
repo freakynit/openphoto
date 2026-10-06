@@ -13,6 +13,8 @@ struct Uniforms {
     shield_box: vec4<f32>,
     shield_color: vec4<f32>,
     shield_params: vec4<f32>,
+    // The image turned: pivot (document px), angle (clockwise radians), on
+    rotation: vec4<f32>,
 };
 
 fn to_linear(c: vec3<f32>) -> vec3<f32> {
@@ -38,7 +40,14 @@ fn vs_main(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> {
 fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let local = frag.xy - u.origin_zoom.xy;
     let zoom = u.origin_zoom.z;
-    let d = local / zoom;
+    // The view's (upright) point, then the image point shown there
+    let b = local / zoom;
+    var d = b;
+    if u.rotation.w > 0.5 {
+        let a = u.rotation.z;
+        let q = b - u.rotation.xy;
+        d = u.rotation.xy + vec2<f32>(q.x * cos(a) - q.y * sin(a), q.x * sin(a) + q.y * cos(a));
+    }
     if d.x < 0.0 || d.y < 0.0 || d.x >= u.doc.x || d.y >= u.doc.y {
         discard;
     }
@@ -63,7 +72,7 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // The crop shield, mixed in linear light like Photoshop's
     if u.shield_params.y > 0.5 {
         let a = u.shield_color.w;
-        let p = d - u.shield_box.xy;
+        let p = b - u.shield_box.xy;
         // Into the box's own axes (it turns clockwise by a)
         let q = vec2<f32>(p.x * cos(a) + p.y * sin(a), -p.x * sin(a) + p.y * cos(a));
         if abs(q.x) > u.shield_box.z || abs(q.y) > u.shield_box.w {

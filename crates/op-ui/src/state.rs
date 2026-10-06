@@ -606,7 +606,11 @@ pub struct GuideDrag {
 /// The Crop tool's box, in document pixels.
 #[derive(Clone, Copy, Debug)]
 pub struct CropBox {
+    /// In box space: the image turned by −`angle` about its center, where
+    /// the box is upright (the same as the image when `angle` is 0).
     pub rect: egui::Rect,
+    /// How far the box is turned on the image, clockwise radians.
+    pub angle: f32,
     pub drag: Option<CropDrag>,
 }
 
@@ -617,6 +621,19 @@ pub struct CropDrag {
     pub handle: Option<(i8, i8)>,
     pub pointer: egui::Pos2,
     pub rect: egui::Rect,
+    /// The box's angle when the drag started.
+    pub angle: f32,
+    /// What the drag does besides moving the box or a handle.
+    pub kind: CropDragKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CropDragKind {
+    Box,
+    /// Outside the box: turning the image under it.
+    Rotate,
+    /// Straighten: a line to make level.
+    Straighten,
 }
 
 /// What a Free Transform drag grabbed.

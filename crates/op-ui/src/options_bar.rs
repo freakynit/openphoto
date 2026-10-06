@@ -508,7 +508,40 @@ fn crop_bar(ui: &mut Ui, app: &mut AppState, bar: Rect) {
             Rect::from_center_size(Pos2::new(at(x + dx), cy + pt(dy)), Vec2::splat(pt(24.0)));
         ps_button(ui, rect, icon).on_hover_text(tip)
     };
-    icon_button(ui, 574.0, -1.75, Icon::Straighten, "Straighten");
+    // Straighten: on while waiting for the line, as in Photoshop
+    let straighten_rect = Rect::from_center_size(
+        Pos2::new(at(574.0 + dx), cy - pt(1.75)),
+        Vec2::new(pt(80.0), pt(24.0)),
+    );
+    if options.straightening {
+        painter.rect_filled(
+            straighten_rect.translate(Vec2::new(pt(28.0), 0.0)),
+            pt(3.0),
+            color::TOOL_ACTIVE,
+        );
+    }
+    let label_click = ui
+        .interact(
+            Rect::from_min_max(
+                Pos2::new(at(587.0 + dx), cy - pt(10.0)),
+                Pos2::new(at(642.0 + dx), cy + pt(10.0)),
+            ),
+            ui.id().with("straighten-label"),
+            Sense::click(),
+        )
+        .clicked();
+    if icon_button(
+        ui,
+        574.0,
+        -1.75,
+        Icon::Straighten,
+        "Straighten the image by drawing a line on it",
+    )
+    .clicked()
+        || label_click
+    {
+        options.straightening = !options.straightening;
+    }
     painter.text(
         Pos2::new(at(592.0 + dx), cy - pt(0.5)),
         egui::Align2::LEFT_CENTER,

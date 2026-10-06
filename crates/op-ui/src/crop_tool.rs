@@ -13,7 +13,7 @@
 use egui::{Color32, CursorIcon, Key, Modifiers, Pos2, Rect, Shape, Stroke, Ui, Vec2};
 
 use crate::document_view::{to_doc, to_screen};
-use crate::state::{CropBox, CropDrag, DocState};
+use crate::state::{CropBox, CropDrag, CropDragKind, DocState};
 use crate::theme::{color, pt};
 
 const GRAB: f32 = pt(10.0);
@@ -210,6 +210,8 @@ pub struct CropOptions {
     pub shield_color: Option<Color32>,
     pub shield_opacity: f32,
     pub auto_adjust_opacity: bool,
+    /// Straighten: the next drag draws a line to make level.
+    pub straightening: bool,
 }
 
 impl Default for CropOptions {
@@ -231,6 +233,7 @@ impl Default for CropOptions {
             shield_color: None,
             shield_opacity: 0.75,
             auto_adjust_opacity: true,
+            straightening: false,
         }
     }
 }
@@ -349,6 +352,7 @@ pub fn full(state: &DocState) -> CropBox {
             Pos2::ZERO,
             Vec2::new(state.doc.width as f32, state.doc.height as f32),
         ),
+        angle: 0.0,
         drag: None,
     }
 }
@@ -363,8 +367,44 @@ pub fn fitted(state: &DocState, aspect: f32) -> CropBox {
     };
     CropBox {
         rect: Rect::from_center_size(Pos2::new(w / 2.0, h / 2.0), Vec2::new(bw, bh)),
+        angle: 0.0,
         drag: None,
     }
+}
+
+/// The largest box of `aspect` that fits on the image turned by
+/// `angle` (box space), about the image's center: what Straighten leaves.
+pub fn fitted_turned(state: &DocState, aspect: f32, angle: f32) -> CropBox {
+    let (w, h) = (state.doc.width as f32, state.doc.height as f32);
+    let (c, s) = (angle.cos().abs(), angle.sin().abs());
+    // Half sizes (x, x / aspect) with every corner on the image
+    let x = (w / 2.0 / (c + s / aspect)).min(h / 2.0 / (s + c / aspect));
+    CropBox {
+        rect: Rect::from_center_size(
+            Pos2::new(w / 2.0, h / 2.0),
+            Vec2::new(2.0 * x, 2.0 * x / aspect),
+        ),
+        angle,
+        drag: None,
+    }
+}
+
+/// Turns `v` clockwise by `a` radians (y down).
+fn turn(v: Vec2, a: f32) -> Vec2 {
+    let (s, c) = a.sin_cos();
+    Vec2::new(v.x * c - v.y * s, v.x * s + v.y * c)
+}
+
+/// The image turned under the box, for the canvas renderer: about the
+/// image's center, by the box's angle.
+pub fn rotation(state: &DocState) -> Option<([f32; 2], f32)> {
+    let c = state.crop.as_ref()?;
+    (c.angle != 0.0).then(|| {
+        (
+            [state.doc.width as f32 / 2.0, state.doc.height as f32 / 2.0],
+            c.angle,
+        )
+    })
 }
 
 /// Whether the box differs from the whole canvas (the options bar then
@@ -373,7 +413,7 @@ pub fn modified(state: &DocState) -> bool {
     state
         .crop
         .as_ref()
-        .is_some_and(|c| c.rect != full(state).rect)
+        .is_some_and(|c| c.rect != full(state).rect || c.angle != 0.0)
 }
 
 /// The handle (−1, 0 or 1 per axis) under screen point `p`, if any.
@@ -485,8 +525,8 @@ pub fn center_on_box(state: &mut DocState, ppp: f32) {
     state.view.offset += state.view.viewport.center() - on_screen;
 }
 
-/// Handles the Crop tool's input on the canvas. Returns true when the
-/// image was cropped.
+/// Handles the Crop tool's input on the canvas. Returns true when a
+/// Straighten line was drawn (Straighten then ends).
 pub fn input(
     ui: &Ui,
     response: &egui::Response,
@@ -509,7 +549,7 @@ pub fn input(
     if escape {
         state.crop = Some(full(state));
         center_on_box(state, ppp);
-        return false;
+        return options.straightening;
     }
     let mods = ui.input(|i| i.modifiers);
     let rect = state.crop.as_ref().map(|c| c.rect).unwrap_or(Rect::NOTHING);
@@ -518,9 +558,9 @@ pub fn input(
             .interact_pointer_pos()
             .is_some_and(|p| rect.contains(to_doc(state, p, ppp)));
     if enter || double_inside {
-        let changed = commit(state, options, background);
+        commit(state, options, background);
         center_on_box(state, ppp);
-        return changed;
+        return false;
     }
     let aspect = options.aspect((state.doc.width, state.doc.height));
     // The box stays in the view's middle unless in Classic Mode
@@ -531,23 +571,23 @@ pub fn input(
     {
         let d = to_doc(state, p, ppp);
         let handle = handle_at(state, rect, p, ppp);
-        let drag = match handle {
-            Some(h) => CropDrag {
-                handle: Some(h),
-                pointer: p,
-                rect,
-            },
-            None if rect.contains(d) => CropDrag {
-                handle: None,
-                pointer: p,
-                rect,
-            },
-            // Outside the box: draw a new one from here
-            None => CropDrag {
-                handle: Some((1, 1)),
-                pointer: p,
-                rect: Rect::from_min_max(d, d),
-            },
+        let angle = state.crop.as_ref().map_or(0.0, |c| c.angle);
+        let start = |handle, rect, kind| CropDrag {
+            handle,
+            pointer: p,
+            rect,
+            angle,
+            kind,
+        };
+        let drag = if options.straightening {
+            start(None, rect, CropDragKind::Straighten)
+        } else {
+            match handle {
+                Some(h) => start(Some(h), rect, CropDragKind::Box),
+                None if rect.contains(d) => start(None, rect, CropDragKind::Box),
+                // Outside the box: turning the image under it
+                None => start(None, rect, CropDragKind::Rotate),
+            }
         };
         if let Some(c) = &mut state.crop {
             c.drag = Some(drag);
@@ -555,8 +595,30 @@ pub fn input(
     }
     let pointer = ui.input(|i| i.pointer.interact_pos());
     let zoom = state.view.zoom;
+    let mut straightened = None;
+    let mut done = false;
     if let Some(drag) = state.crop.as_ref().and_then(|c| c.drag) {
-        if let Some(p) = pointer {
+        if let Some(p) = pointer
+            && drag.kind == CropDragKind::Rotate
+        {
+            // The image turns with the pointer about the box's center
+            let center = to_screen(state, drag.rect.center(), ppp);
+            let a0 = (drag.pointer - center).angle();
+            let a1 = (p - center).angle();
+            let mut angle = drag.angle - (a1 - a0);
+            if mods.shift {
+                let step = 15f32.to_radians();
+                angle = (angle / step).round() * step;
+            }
+            set_angle(state, drag.rect, drag.angle, angle);
+            if centered {
+                center_on_box(state, ppp);
+            }
+        } else if let Some(p) = pointer
+            && drag.kind == CropDragKind::Straighten
+        {
+            straightened = Some((drag.pointer, p));
+        } else if let Some(p) = pointer {
             // Screen movement since the press, in document pixels
             let d = (p - drag.pointer) * ppp / zoom;
             let new_rect = match (drag.handle, centered) {
@@ -581,13 +643,54 @@ pub fn input(
                     c.rect = drag.rect;
                 }
             }
+            if drag.kind == CropDragKind::Straighten
+                && let Some(p) = pointer
+            {
+                straighten(state, options, drag, p);
+                done = true;
+            }
             if centered {
                 center_on_box(state, ppp);
             }
         }
         ui.ctx().request_repaint();
     }
-    false
+    if let Some((a, b)) = straightened {
+        ui.painter()
+            .line_segment([a, b], Stroke::new(pt(1.0), LIGHT));
+    }
+    done
+}
+
+/// Sets the box's angle, keeping its center on the same image point.
+fn set_angle(state: &mut DocState, rect: Rect, from: f32, angle: f32) {
+    let pivot = Vec2::new(state.doc.width as f32 / 2.0, state.doc.height as f32 / 2.0);
+    // The box's center on the image, then in the new box space
+    let on_image = pivot + turn(rect.center().to_vec2() - pivot, from);
+    let center = pivot + turn(on_image - pivot, -angle);
+    if let Some(c) = &mut state.crop {
+        c.angle = angle;
+        c.rect = Rect::from_center_size(center.to_pos2(), rect.size());
+    }
+}
+
+/// Straighten: the line from the drag's start to `end` (screen) becomes
+/// level (or upright, when nearer upright), and the box shrinks to fit on
+/// the turned image, as in Photoshop. Ends Straighten.
+fn straighten(state: &mut DocState, options: &CropOptions, drag: CropDrag, end: Pos2) {
+    let v = end - drag.pointer;
+    if v.length() < 2.0 {
+        return;
+    }
+    let a = v.y.atan2(v.x);
+    // The nearest of level or upright
+    let quarter = std::f32::consts::FRAC_PI_2;
+    let off = a - (a / quarter).round() * quarter;
+    let angle = drag.angle + off;
+    let aspect = options
+        .aspect((state.doc.width, state.doc.height))
+        .unwrap_or(state.doc.width as f32 / state.doc.height as f32);
+    state.crop = Some(fitted_turned(state, aspect, angle));
 }
 
 /// Crops to the box (whole pixels; past the canvas the canvas grows, filled
@@ -597,6 +700,18 @@ pub fn commit(state: &mut DocState, options: &CropOptions, background: op_core::
     let Some(c) = state.crop.take() else {
         return false;
     };
+    let mut rect = c.rect;
+    let mut changed = false;
+    if c.angle != 0.0 {
+        // Turn the image so the box is upright on it: the canvas grows
+        // about its center, so the box moves with that center
+        let (w0, h0) = (state.doc.width as f32, state.doc.height as f32);
+        op_core::image_ops::rotate_arbitrary(&mut state.doc, -c.angle.to_degrees(), background);
+        let (w1, h1) = (state.doc.width as f32, state.doc.height as f32);
+        rect = rect.translate(Vec2::new((w1 - w0) / 2.0, (h1 - h0) / 2.0));
+        changed = true;
+    }
+    let c = CropBox { rect, ..c };
     let r = (
         c.rect.left().round() as i64,
         c.rect.top().round() as i64,
@@ -604,9 +719,8 @@ pub fn commit(state: &mut DocState, options: &CropOptions, background: op_core::
         c.rect.bottom().round() as i64,
     );
     let (w, h) = (state.doc.width as i64, state.doc.height as i64);
-    let mut changed = false;
     if r.2 > r.0 && r.3 > r.1 && r != (0, 0, w, h) {
-        changed = op_core::image_ops::crop_extended(
+        changed |= op_core::image_ops::crop_extended(
             &mut state.doc,
             r,
             options.delete_cropped,
@@ -648,7 +762,8 @@ pub fn cursor(state: &DocState, p: Pos2, ppp: f32) -> CursorIcon {
         Some((hx, hy)) if hx == hy => CursorIcon::ResizeNwSe,
         Some(_) => CursorIcon::ResizeNeSw,
         None if c.rect.contains(to_doc(state, p, ppp)) => CursorIcon::Move,
-        None => CursorIcon::Crosshair,
+        // Outside the box the drag turns the image
+        None => CursorIcon::Alias,
     }
 }
 
@@ -867,6 +982,8 @@ mod tests {
             handle,
             pointer: Pos2::new(100.0, 50.0),
             rect: Rect::from_min_max(Pos2::ZERO, Pos2::new(100.0, 50.0)),
+            angle: 0.0,
+            kind: CropDragKind::Box,
         }
     }
 

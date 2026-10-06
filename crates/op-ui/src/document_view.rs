@@ -138,6 +138,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
     let move_options = app.move_options;
     let type_options = app.type_options;
     let crop_options = app.crop_options.clone();
+    let mut straightened = false;
     let mut paint_error = None;
     let Some(state) = app.docs.get_mut(&id) else {
         return;
@@ -347,7 +348,8 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
                 }
             }
             Tool::Crop => {
-                crate::crop_tool::input(ui, &response, state, &crop_options, background, ppp);
+                straightened =
+                    crate::crop_tool::input(ui, &response, state, &crop_options, background, ppp);
             }
             Tool::HorizontalType => {
                 let [r, g, b, _] = foreground.to_rgba8();
@@ -450,6 +452,9 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
     if let Some(message) = paint_error {
         app.alert = Some(message);
     }
+    if straightened {
+        app.crop_options.straightening = false;
+    }
     let state = app.docs.get_mut(&id).unwrap();
     clamp_offset(state, ppp);
     if response.hovered() {
@@ -519,6 +524,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
         origin: [origin.x, origin.y],
         zoom: state.view.zoom,
         shield: crate::crop_tool::shield(state, &crop_options),
+        rotation: crate::crop_tool::rotation(state),
         pixel_grid: true,
     };
     ui.painter()
