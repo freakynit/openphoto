@@ -94,6 +94,9 @@ pub enum Command {
     Pinch,
     Spherize,
     PolarCoordinates,
+    SurfaceBlur,
+    DustAndScratches,
+    Fragment,
     /// Layer > New > Layer... (Shift+Cmd+N): opens the New Layer dialog.
     NewLayer,
     /// Alt+Shift+Cmd+N: a new layer without the dialog.
@@ -480,7 +483,10 @@ impl Command {
             | Self::Maximum
             | Self::HighPass
             | Self::Offset
-            | Self::Mosaic => return None,
+            | Self::Mosaic
+            | Self::SurfaceBlur
+            | Self::DustAndScratches
+            | Self::Fragment => return None,
             Self::Invert => cmd(Key::I),
             Self::Levels => cmd(Key::L),
             Self::Curves => cmd(Key::M),
@@ -775,6 +781,9 @@ impl Command {
             | Self::Sharpen
             | Self::SharpenMore
             | Self::FindEdges
+            | Self::SurfaceBlur
+            | Self::DustAndScratches
+            | Self::Fragment
             | Self::Twirl
             | Self::Pinch
             | Self::Spherize
@@ -1072,6 +1081,7 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
         | Command::Sharpen
         | Command::SharpenMore
         | Command::FindEdges
+        | Command::Fragment
         | Command::LastFilter => {
             let filter = match command {
                 Command::Average => Some(Filter::Average),
@@ -1081,6 +1091,7 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 Command::Sharpen => Some(Filter::Sharpen),
                 Command::SharpenMore => Some(Filter::SharpenMore),
                 Command::FindEdges => Some(Filter::FindEdges),
+                Command::Fragment => Some(Filter::Fragment),
                 _ => app.last_filter,
             };
             let [r, g, b, _] = app.background.to_rgba8();
@@ -1125,7 +1136,9 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
         | Command::Twirl
         | Command::Pinch
         | Command::Spherize
-        | Command::PolarCoordinates => {
+        | Command::PolarCoordinates
+        | Command::SurfaceBlur
+        | Command::DustAndScratches => {
             let (kind, name) = match command {
                 Command::Threshold => (AdjustKind::Threshold, "Threshold"),
                 Command::Posterize => (AdjustKind::Posterize, "Posterize"),
@@ -1158,6 +1171,8 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 Command::Pinch => (AdjustKind::Pinch, "Pinch"),
                 Command::Spherize => (AdjustKind::Spherize, "Spherize"),
                 Command::PolarCoordinates => (AdjustKind::PolarCoordinates, "Polar Coordinates"),
+                Command::SurfaceBlur => (AdjustKind::SurfaceBlur, "Surface Blur"),
+                Command::DustAndScratches => (AdjustKind::DustAndScratches, "Dust & Scratches"),
                 _ => (AdjustKind::Mosaic, "Mosaic"),
             };
             let rgb = |c: op_core::Color| {
@@ -1175,6 +1190,9 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                         };
                         let before = state.doc.snapshot();
                         let mut dialog = AdjustDialog::new(kind, histogram, before);
+                        if let Some(values) = app.filter_settings.get(&kind) {
+                            dialog.restore(values);
+                        }
                         // Gradient Map runs from the foreground to the background color
                         dialog.set_gradient_colors(colors);
                         // Colorize starts from the foreground color's hue

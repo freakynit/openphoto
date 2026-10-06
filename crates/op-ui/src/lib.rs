@@ -202,12 +202,19 @@ impl OpenPhotoApp {
                     {
                         dialog.previewing = Some(effect);
                     }
+                    dialog.pane = None;
+                }
+                if dialog.wants_pane() && dialog.pane.is_none() {
+                    dialog.pane = Some(pane_texture(ctx, &state.doc));
                 }
                 self.state.adjust_dialog = Some(dialog);
             }
             dialogs::AdjustOutcome::Cancel => undo_preview(state, &mut dialog),
             dialogs::AdjustOutcome::Apply(effect) => {
                 undo_preview(state, &mut dialog);
+                if let Some(values) = dialog.settings() {
+                    self.state.filter_settings.insert(dialog.kind, values);
+                }
                 match effect.apply(&mut state.doc, background) {
                     Ok(()) => {
                         state.record(effect.name());
@@ -670,4 +677,27 @@ impl eframe::App for OpenPhotoApp {
             }
         }
     }
+}
+
+/// The classic filter dialogs' preview pane: the middle of the document,
+/// as composited now, up to 392 pixels square (the pane at 100%).
+fn pane_texture(ctx: &egui::Context, doc: &op_core::Document) -> egui::TextureHandle {
+    let (w, h) = (doc.width as usize, doc.height as usize);
+    let (pw, ph) = (w.min(392), h.min(392));
+    let (x0, y0) = ((w - pw) / 2, (h - ph) / 2);
+    let all = doc.composite_rgba8();
+    let mut pixels = Vec::with_capacity(pw * ph);
+    for y in y0..y0 + ph {
+        for x in x0..x0 + pw {
+            let i = (y * w + x) * 4;
+            pixels.push(egui::Color32::from_rgba_unmultiplied(
+                all[i],
+                all[i + 1],
+                all[i + 2],
+                all[i + 3],
+            ));
+        }
+    }
+    let image = egui::ColorImage::new([pw, ph], pixels);
+    ctx.load_texture("filter-pane", image, egui::TextureOptions::NEAREST)
 }

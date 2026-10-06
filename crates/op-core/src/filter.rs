@@ -77,13 +77,27 @@ pub enum Filter {
     FindEdges,
     /// Blur > Motion Blur: `distance` pixels along `angle` degrees.
     MotionBlur { angle: i32, distance: u32 },
-    /// Stylize > Emboss: angle in degrees, height in pixels (1–10), amount
+    /// Stylize > Emboss: angle in degrees, height in pixels (1–100), amount
     /// in percent (1–500).
     Emboss {
         angle: i32,
         height: u32,
         amount: u32,
     },
+    /// Pixelate > Fragment: four copies offset 4 pixels diagonally,
+    /// averaged.
+    Fragment,
+    /// Other > Custom: a 5 × 5 kernel (rows top to bottom, −999–999),
+    /// the sum divided by `scale` plus `offset`.
+    Custom {
+        kernel: [i16; 25],
+        scale: i16,
+        offset: i16,
+    },
+    /// Blur > Surface Blur: radius 1–100, threshold 2–255.
+    SurfaceBlur { radius: u32, threshold: u8 },
+    /// Noise > Dust & Scratches: radius 1–500, threshold 0–255.
+    DustAndScratches { radius: u32, threshold: u8 },
     /// Distort > Twirl: degrees (−999–999) at the center, fading out.
     Twirl { angle: i32 },
     /// Distort > Pinch: −100–100 percent (positive pinches in).
@@ -127,6 +141,10 @@ impl Filter {
             Self::MotionBlur { .. } => "Motion Blur",
             Self::Emboss { .. } => "Emboss",
             Self::Twirl { .. } => "Twirl",
+            Self::Fragment => "Fragment",
+            Self::Custom { .. } => "Custom",
+            Self::SurfaceBlur { .. } => "Surface Blur",
+            Self::DustAndScratches { .. } => "Dust & Scratches",
             Self::Pinch { .. } => "Pinch",
             Self::Spherize { .. } => "Spherize",
             Self::PolarCoordinates { .. } => "Polar Coordinates",
@@ -729,6 +747,88 @@ fn filtered(
                 .map(Buffer::straight)
                 .collect()
         }
+        Filter::Fragment => {
+            let taps: Vec<_> = [(4, 4), (-4, 4), (4, -4), (-4, -4)]
+                .map(|o| (o, 0.25))
+                .to_vec();
+            src.taps(&taps)
+                .px
+                .into_iter()
+                .map(Buffer::straight)
+                .collect()
+        }
+        Filter::Custom {
+            kernel,
+            scale,
+            offset,
+        } => {
+            let scale = if scale == 0 { 1.0 } else { scale as f32 };
+            let mut taps = Vec::new();
+            for (i, &k) in kernel.iter().enumerate() {
+                if k != 0 {
+                    taps.push((
+                        ((i % 5) as isize - 2, (i / 5) as isize - 2),
+                        k as f32 / scale,
+                    ));
+                }
+            }
+            let sum = src.taps(&taps);
+            (0..w * h)
+                .map(|i| {
+                    let mut out = Buffer::straight(src.px[i]);
+                    let a = src.px[i][3];
+                    if a > 0.0 {
+                        for (o, s) in out.iter_mut().zip(&sum.px[i][..3]) {
+                            let v = s * 255.0 / a + offset as f32;
+                            *o = v.round().clamp(0.0, 255.0) as u8;
+                        }
+                    }
+                    out
+                })
+                .collect()
+        }
+        Filter::SurfaceBlur { radius, threshold } => {
+            // Each channel averages the square around it, a neighbour
+            // counting 1 − |difference| / (2.5 × threshold) (no less than 0)
+            let r = radius as isize;
+            let reach = 2.5 * threshold.max(1) as f32;
+            (0..w * h)
+                .map(|i| {
+                    let (x, y) = ((i % w) as isize, (i / w) as isize);
+                    let here = Buffer::straight(src.px[i]);
+                    let mut out = here;
+                    for (c, v) in out.iter_mut().take(3).enumerate() {
+                        let (mut num, mut den) = (0f32, 0f32);
+                        for dy in -r..=r {
+                            for dx in -r..=r {
+                                let p = Buffer::straight(src.at(x + dx, y + dy))[c] as f32;
+                                let wgt = (1.0 - (p - here[c] as f32).abs() / reach).max(0.0);
+                                num += wgt * p;
+                                den += wgt;
+                            }
+                        }
+                        *v = (num / den).round().clamp(0.0, 255.0) as u8;
+                    }
+                    out
+                })
+                .collect()
+        }
+        Filter::DustAndScratches { radius, threshold } => {
+            // The median, where any channel differs from it by more than
+            // the threshold
+            let median = src.rank(radius, |v| {
+                let mid = v.len() / 2;
+                *v.select_nth_unstable_by(mid, f32::total_cmp).1
+            });
+            (0..w * h)
+                .map(|i| {
+                    let here = Buffer::straight(src.px[i]);
+                    let m = Buffer::straight(median.px[i]);
+                    let far = (0..3).any(|c| here[c].abs_diff(m[c]) > threshold);
+                    if far { m } else { here }
+                })
+                .collect()
+        }
         Filter::Twirl { .. }
         | Filter::Pinch { .. }
         | Filter::Spherize { .. }
@@ -1111,6 +1211,60 @@ mod tests {
                 ("f_hp2.rgb", Filter::HighPass { radius: 2.0 }, 1),
                 ("f_mos5.rgb", Filter::Mosaic { cell: 5 }, 1),
                 ("f_sol.rgb", Filter::Solarize, 1),
+                ("f_frag.rgb", Filter::Fragment, 1),
+                (
+                    "f_cust.rgb",
+                    Filter::Custom {
+                        kernel: [
+                            0, 0, 0, 0, 0, 0, -1, -1, -1, 0, 0, -1, 12, -1, 0, 0, -1, -1, -1, 0, 0,
+                            0, 0, 0, 0,
+                        ],
+                        scale: 4,
+                        offset: 10,
+                    },
+                    1,
+                ),
+                (
+                    "f_cust2.rgb",
+                    Filter::Custom {
+                        kernel: [1; 25],
+                        scale: 25,
+                        offset: 0,
+                    },
+                    1,
+                ),
+                (
+                    "f_surf.rgb",
+                    Filter::SurfaceBlur {
+                        radius: 5,
+                        threshold: 15,
+                    },
+                    1,
+                ),
+                (
+                    "f_surf2.rgb",
+                    Filter::SurfaceBlur {
+                        radius: 2,
+                        threshold: 40,
+                    },
+                    1,
+                ),
+                (
+                    "f_dust.rgb",
+                    Filter::DustAndScratches {
+                        radius: 2,
+                        threshold: 0,
+                    },
+                    1,
+                ),
+                (
+                    "f_dust2.rgb",
+                    Filter::DustAndScratches {
+                        radius: 3,
+                        threshold: 20,
+                    },
+                    1,
+                ),
             ] {
                 let (worst, _) = compare(filter, name);
                 assert!(worst <= allowed, "{name}: off by {worst}");

@@ -15,6 +15,7 @@ mod duplicate_layer;
 mod equalize;
 mod exposure;
 mod fill;
+mod filter_layout;
 mod gradient_map;
 mod hue_saturation;
 mod image_size;

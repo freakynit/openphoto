@@ -1044,6 +1044,8 @@ pub struct AppState {
     pub last_transform: Option<op_core::transform::Projective>,
     /// The last filter applied, for Filter > Last Filter.
     pub last_filter: Option<op_core::filter::Filter>,
+    /// Each filter dialog's last settings, to open with next time.
+    pub filter_settings: std::collections::HashMap<crate::dialogs::AdjustKind, Vec<String>>,
     /// An adjustment or filter dialog, while open.
     pub adjust_dialog: Option<crate::dialogs::AdjustDialog>,
     /// Select > Modify > Border/Smooth/Expand/Contract/Feather, while open.
@@ -1144,6 +1146,7 @@ impl Default for AppState {
             modify_dialog: None,
             adjust_dialog: None,
             last_filter: None,
+            filter_settings: Default::default(),
             last_transform: None,
             bucket: Default::default(),
             color_picker: None,

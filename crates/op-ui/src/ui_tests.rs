@@ -874,10 +874,20 @@ fn screenshot_filter_dialogs() {
         (Command::GaussianBlur, "gaussian_blur_dialog"),
         (Command::AddNoise, "add_noise_dialog"),
         (Command::Offset, "offset_dialog"),
+        (Command::UnsharpMask, "unsharp_mask_dialog"),
+        (Command::MotionBlur, "motion_blur_dialog"),
+        (Command::Minimum, "minimum_dialog"),
+        (Command::Emboss, "emboss_dialog"),
+        (Command::SurfaceBlur, "surface_blur_dialog"),
+        (Command::DustAndScratches, "dust_and_scratches_dialog"),
+        (Command::Mosaic, "mosaic_dialog"),
+        (Command::BoxBlur, "box_blur_dialog"),
     ] {
+        // A small flat document: the pane shows it whole, centered
         let mut h = harness(Vec::new());
-        reference_document(&mut h);
+        color_document(&mut h, [120, 160, 200]);
         run_command(&mut h, command);
+        h.run_steps(2);
         shot(&mut h, name);
     }
 }
@@ -3308,6 +3318,20 @@ fn more_filters_from_the_menu() {
                 amount: 100,
             },
         ),
+        (
+            Command::SurfaceBlur,
+            Filter::SurfaceBlur {
+                radius: 5,
+                threshold: 15,
+            },
+        ),
+        (
+            Command::DustAndScratches,
+            Filter::DustAndScratches {
+                radius: 1,
+                threshold: 0,
+            },
+        ),
     ] {
         run_command(&mut h, command);
         assert!(h.state().state.adjust_dialog.is_some());
@@ -3345,4 +3369,52 @@ fn distort_filters_from_the_menu() {
         assert_eq!(h.state().state.last_filter, Some(filter));
         assert_eq!(last_history(&h), filter.name());
     }
+}
+
+#[test]
+fn filter_dialogs_remember_their_last_values() {
+    use crate::commands::Command;
+    use op_core::filter::Filter;
+    let mut h = harness(Vec::new());
+    color_document(&mut h, [120, 160, 200]);
+    run_command(&mut h, Command::GaussianBlur);
+    // The radius field has the focus with its text selected
+    h.event(egui::Event::Text("4".into()));
+    h.run_steps(2);
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert_eq!(
+        h.state().state.last_filter,
+        Some(Filter::GaussianBlur { radius: 4.0 })
+    );
+    // Opened again, the dialog starts at 4; Enter applies it again
+    run_command(&mut h, Command::GaussianBlur);
+    let effect = h
+        .state()
+        .state
+        .adjust_dialog
+        .as_ref()
+        .and_then(|d| d.effect());
+    assert_eq!(
+        effect,
+        Some(crate::dialogs::Effect::Filter(Filter::GaussianBlur {
+            radius: 4.0
+        }))
+    );
+    h.key_press(egui::Key::Escape);
+    h.run_steps(2);
+    // Another filter keeps its own defaults
+    run_command(&mut h, Command::BoxBlur);
+    let effect = h
+        .state()
+        .state
+        .adjust_dialog
+        .as_ref()
+        .and_then(|d| d.effect());
+    assert_eq!(
+        effect,
+        Some(crate::dialogs::Effect::Filter(Filter::BoxBlur {
+            radius: 1
+        }))
+    );
 }
