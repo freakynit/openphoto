@@ -360,6 +360,49 @@ fn paint_bucket_fills_contiguous_area() {
 }
 
 #[test]
+fn move_tool_drags_and_nudges() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    // A red square on a new layer
+    crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    h.state_mut().state.foreground = Color::from_rgba8([255, 0, 0, 255]);
+    select_rect(&mut h, 100.0, 100.0, 140.0, 140.0);
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::D);
+    h.run_steps(2);
+
+    h.key_press(egui::Key::V);
+    h.run_steps(2);
+    let (a, b) = (doc_point(&h, 120.0, 120.0), doc_point(&h, 220.0, 170.0));
+    drag(&mut h, a, b, Modifiers::NONE);
+    assert_eq!(composite_pixel(&mut h, 220, 170), [255, 0, 0, 255]);
+    assert_eq!(composite_pixel(&mut h, 110, 110), [0x14, 0x14, 0x14, 255]);
+    assert_eq!(active(&h).history.states().last().unwrap().name, "Move");
+
+    // The square now spans x 200..240; nudge it right by 1 and then 10
+    h.key_press(egui::Key::ArrowRight);
+    h.key_press_modifiers(Modifiers::SHIFT, egui::Key::ArrowRight);
+    h.run_steps(2);
+    assert_eq!(composite_pixel(&mut h, 250, 170), [255, 0, 0, 255]);
+    assert_eq!(composite_pixel(&mut h, 205, 170), [0x14, 0x14, 0x14, 255]);
+    assert_eq!(active(&h).history.states().last().unwrap().name, "Nudge");
+}
+
+#[test]
+fn moving_the_background_without_selection_is_refused() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.key_press(egui::Key::V);
+    h.run_steps(2);
+    let (a, b) = (doc_point(&h, 120.0, 120.0), doc_point(&h, 220.0, 170.0));
+    drag(&mut h, a, b, Modifiers::NONE);
+    assert_eq!(
+        h.state().state.alert.as_deref(),
+        Some("Could not use the move tool because the layer is locked.")
+    );
+}
+
+#[test]
 fn toolbar_foreground_opens_color_picker() {
     let mut h = harness(Vec::new());
     h.state_mut().state.foreground = Color::from_rgba8([0x00, 0xaf, 0xdc, 255]);

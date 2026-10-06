@@ -44,6 +44,8 @@ pub struct DocState {
     pending_edit: bool,
     /// A marquee being dragged on the canvas.
     pub marquee_drag: Option<MarqueeDrag>,
+    /// A Move tool drag: the move and where it started (document pixels).
+    pub move_drag: Option<(op_core::move_tool::Move, egui::Pos2)>,
     /// The paint stroke in progress, and the tool painting it.
     pub stroke: Option<(op_core::paint::Stroke, Tool)>,
     /// Where the last stroke ended; Shift-click draws a line from here.
@@ -71,6 +73,7 @@ impl DocState {
             view: View::default(),
             pending_edit: false,
             marquee_drag: None,
+            move_drag: None,
             stroke: None,
             last_paint_point: None,
             outline: None,

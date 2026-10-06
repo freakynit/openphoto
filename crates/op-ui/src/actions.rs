@@ -112,7 +112,7 @@ pub fn handle_tool_keys(ctx: &egui::Context, app: &mut AppState) {
             .collect()
     });
     for (key, shift) in keys {
-        if paint_key(app, key, shift) {
+        if paint_key(app, key, shift) || nudge_key(app, key, shift) {
             continue;
         }
         match key {
@@ -171,6 +171,28 @@ fn paint_key(app: &mut AppState, key: Key, shift: bool) -> bool {
             Some(d) => opts.opacity = d as f32 / 10.0,
             None => return false,
         },
+    }
+    true
+}
+
+/// Arrow keys nudge with the Move tool (1 pixel, 10 with Shift).
+fn nudge_key(app: &mut AppState, key: Key, shift: bool) -> bool {
+    if app.tool != op_tools::Tool::Move {
+        return false;
+    }
+    let step = if shift { 10 } else { 1 };
+    let (dx, dy) = match key {
+        Key::ArrowLeft => (-step, 0),
+        Key::ArrowRight => (step, 0),
+        Key::ArrowUp => (0, -step),
+        Key::ArrowDown => (0, step),
+        _ => return false,
+    };
+    let [r, g, b, _] = app.background.to_rgba8();
+    if let Some(state) = app.active()
+        && let Err(message) = crate::document_view::nudge(state, dx, dy, [r, g, b])
+    {
+        app.alert = Some(message);
     }
     true
 }

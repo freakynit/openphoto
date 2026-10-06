@@ -163,6 +163,10 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
                     }
                 }
             }
+            Tool::Move => {
+                let [r, g, b, _] = background.to_rgba8();
+                paint_error = move_input(ui, &response, state, [r, g, b], ppp);
+            }
             Tool::PaintBucket if response.clicked() => {
                 if let Some(p) = response.interact_pointer_pos() {
                     let d = to_doc(state, p, ppp);
@@ -407,6 +411,56 @@ fn marquee_input(
         state.doc.set_selection(None);
         state.record("Deselect");
     }
+}
+
+/// Move tool: drag to move the active layer (or its selected pixels); the
+/// layer is recomputed from its original pixels at every step. One "Move"
+/// history state when released, if anything moved.
+fn move_input(
+    ui: &Ui,
+    response: &egui::Response,
+    state: &mut DocState,
+    background: [u8; 3],
+    ppp: f32,
+) -> Option<String> {
+    use op_core::move_tool::Move;
+    if response.drag_started_by(PointerButton::Primary) {
+        let start = ui
+            .input(|i| i.pointer.press_origin())
+            .map(|p| to_doc(state, p, ppp))?;
+        match Move::begin(&state.doc, background) {
+            Ok(m) => state.move_drag = Some((m, start)),
+            Err(e) => return Some(e.message().to_owned()),
+        }
+    }
+    let pointer = ui
+        .input(|i| i.pointer.interact_pos())
+        .map(|p| to_doc(state, p, ppp));
+    let Some((m, start)) = &state.move_drag else {
+        return None;
+    };
+    let delta = pointer.map_or(egui::Vec2::ZERO, |p| p - *start);
+    let (dx, dy) = (delta.x.round() as i64, delta.y.round() as i64);
+    m.apply(&mut state.doc, dx, dy);
+    if !ui.input(|i| i.pointer.primary_down()) {
+        state.move_drag = None;
+        if dx != 0 || dy != 0 {
+            state.record("Move");
+        }
+    } else {
+        ui.ctx().request_repaint();
+    }
+    None
+}
+
+/// Arrow keys with the Move tool: nudge by 1 pixel, 10 with Shift
+/// ("Nudge" in the history, as in Photoshop).
+pub fn nudge(state: &mut DocState, dx: i64, dy: i64, background: [u8; 3]) -> Result<(), String> {
+    let m = op_core::move_tool::Move::begin(&state.doc, background)
+        .map_err(|e| e.message().to_owned())?;
+    m.apply(&mut state.doc, dx, dy);
+    state.record("Nudge");
+    Ok(())
 }
 
 /// Brush, Pencil and Eraser: press to start a stroke, drag to continue,

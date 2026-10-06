@@ -9,6 +9,7 @@ pub mod document;
 pub mod fill;
 pub mod history;
 pub mod layer;
+pub mod move_tool;
 pub mod paint;
 pub mod pixel;
 pub mod selection;
