@@ -269,10 +269,11 @@ pub fn radio(ui: &mut Ui, center: Pos2, label: &str, chosen: bool) -> bool {
         painter.circle_filled(center, pt(6.5), Color32::from_gray(0xd4));
         painter.circle_filled(center, pt(2.5), Color32::from_gray(0x32));
     } else {
+        painter.circle_filled(center, pt(6.0), Color32::from_gray(0x47));
         painter.circle_stroke(
             center,
             pt(6.0),
-            Stroke::new(pt(1.0), Color32::from_gray(0x7a)),
+            Stroke::new(pt(1.0), Color32::from_gray(0x84)),
         );
     }
     painter.galley(

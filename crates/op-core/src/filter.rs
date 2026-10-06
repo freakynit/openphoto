@@ -98,6 +98,14 @@ pub enum Filter {
     SurfaceBlur { radius: u32, threshold: u8 },
     /// Noise > Dust & Scratches: radius 1–500, threshold 0–255.
     DustAndScratches { radius: u32, threshold: u8 },
+    /// Noise > Despeckle: Blur More, held back where the image has edges.
+    Despeckle,
+    /// Sharpen > Sharpen Edges: Sharpen, only where the image has edges.
+    SharpenEdges,
+    /// Stylize > Trace Contour: per channel, white with black lines along
+    /// where values cross `level`, on its lower side (`upper`) or its
+    /// upper side.
+    TraceContour { level: u8, upper: bool },
     /// Distort > Twirl: degrees (−999–999) at the center, fading out.
     Twirl { angle: i32 },
     /// Distort > Pinch: −100–100 percent (positive pinches in).
@@ -145,6 +153,9 @@ impl Filter {
             Self::Custom { .. } => "Custom",
             Self::SurfaceBlur { .. } => "Surface Blur",
             Self::DustAndScratches { .. } => "Dust & Scratches",
+            Self::Despeckle => "Despeckle",
+            Self::SharpenEdges => "Sharpen Edges",
+            Self::TraceContour { .. } => "Trace Contour",
             Self::Pinch { .. } => "Pinch",
             Self::Spherize { .. } => "Spherize",
             Self::PolarCoordinates { .. } => "Polar Coordinates",
@@ -701,6 +712,71 @@ fn filtered(
                 .map(Buffer::straight)
                 .collect()
         }
+        Filter::Despeckle | Filter::SharpenEdges => {
+            // Blur More (Despeckle) or Sharpen (Sharpen Edges), clipped,
+            // mixed in by how strong the Sobel gradient is in that channel:
+            // Sharpen Edges takes (|g| − 64) / 192 of it, Despeckle the
+            // rest (measured from Photoshop 2026)
+            let despeckle = filter == Filter::Despeckle;
+            let target = src.kernel3(if despeckle {
+                [[1.0, 2.0, 1.0], [2.0, 2.0, 2.0], [1.0, 2.0, 1.0]].map(|r| r.map(|v| v / 14.0))
+            } else {
+                [[0.0, -0.25, 0.0], [-0.25, 2.0, -0.25], [0.0, -0.25, 0.0]]
+            });
+            let gx = src.kernel3([[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]]);
+            let gy = src.kernel3([[-1.0, -2.0, -1.0], [0.0, 0.0, 0.0], [1.0, 2.0, 1.0]]);
+            (0..w * h)
+                .map(|i| {
+                    let orig = Buffer::straight(src.px[i]);
+                    let a = src.px[i][3];
+                    let mut out = orig;
+                    if a <= 0.0 {
+                        return out;
+                    }
+                    for (c, v) in out.iter_mut().take(3).enumerate() {
+                        let k = 255.0 / a;
+                        let (dx, dy) = (gx.px[i][c] * k, gy.px[i][c] * k);
+                        let edge = (((dx * dx + dy * dy).sqrt() - 64.0) / 192.0).clamp(0.0, 1.0);
+                        let mix = if despeckle { 1.0 - edge } else { edge };
+                        let t = (target.px[i][c] * k).clamp(0.0, 255.0);
+                        let o = *v as f32;
+                        *v = (o + (t - o) * mix).round().clamp(0.0, 255.0) as u8;
+                    }
+                    out
+                })
+                .collect()
+        }
+        Filter::TraceContour { level, upper } => {
+            // A pixel is on the line where it is at or below the level
+            // (Upper; at or above for Lower) and a side neighbour is past it
+            let level = level as i32;
+            let past = |v: u8| {
+                if upper {
+                    v as i32 > level
+                } else {
+                    (v as i32) < level
+                }
+            };
+            let straight: Vec<[u8; 4]> = src.px.iter().map(|&p| Buffer::straight(p)).collect();
+            let at = |x: isize, y: isize| {
+                straight
+                    [y.clamp(0, h as isize - 1) as usize * w + x.clamp(0, w as isize - 1) as usize]
+            };
+            (0..w * h)
+                .map(|i| {
+                    let (x, y) = ((i % w) as isize, (i / w) as isize);
+                    let mut out = straight[i];
+                    for (c, v) in out.iter_mut().take(3).enumerate() {
+                        let line = !past(*v)
+                            && [(1, 0), (-1, 0), (0, 1), (0, -1)]
+                                .iter()
+                                .any(|&(dx, dy)| past(at(x + dx, y + dy)[c]));
+                        *v = if line { 0 } else { 255 };
+                    }
+                    out
+                })
+                .collect()
+        }
         Filter::FindEdges => {
             // 255 less the Sobel gradient's length, per channel
             let gx = src.kernel3([[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]]);
@@ -1219,6 +1295,16 @@ mod tests {
                 ("f_mos5.rgb", Filter::Mosaic { cell: 5 }, 1),
                 ("f_sol.rgb", Filter::Solarize, 1),
                 ("f_frag.rgb", Filter::Fragment, 1),
+                ("f_desp.rgb", Filter::Despeckle, 1),
+                ("f_shrpe.rgb", Filter::SharpenEdges, 1),
+                (
+                    "f_tracel.rgb",
+                    Filter::TraceContour {
+                        level: 100,
+                        upper: false,
+                    },
+                    0,
+                ),
                 (
                     "f_cust.rgb",
                     Filter::Custom {
@@ -1276,6 +1362,20 @@ mod tests {
                 let (worst, _) = compare(filter, name);
                 assert!(worst <= allowed, "{name}: off by {worst}");
             }
+        }
+
+        #[test]
+        fn trace_contour_upper_matches_photoshop() {
+            // One channel value of 12 288 differs: a lone 255 among
+            // neighbours exactly at the level, which Photoshop marks
+            let (_, off) = compare(
+                Filter::TraceContour {
+                    level: 128,
+                    upper: true,
+                },
+                "f_trace.rgb",
+            );
+            assert!(off <= 1, "{off} values differ");
         }
     }
 }

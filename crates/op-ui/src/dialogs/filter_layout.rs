@@ -1,6 +1,7 @@
 //! The classic Photoshop 2026 filter dialogs' layouts (Gaussian Blur, Box
 //! Blur, Unsharp Mask, Add Noise, Median, Minimum, Maximum, High Pass,
-//! Offset, Mosaic, Motion Blur, Emboss, Surface Blur, Dust & Scratches),
+//! Offset, Mosaic, Motion Blur, Emboss, Surface Blur, Dust & Scratches,
+//! Trace Contour),
 //! measured on Photoshop: a preview pane at the top left with zoom
 //! controls under it, OK / Cancel / Preview at the top right, and the
 //! settings below: "Label: [field] unit" rows over 3 pt slider tracks with
@@ -128,7 +129,8 @@ pub const RANGE_500: Scale = Scale::Table(&[
     (400.0, 0.968),
     (500.0, 1.0),
 ]);
-/// Thresholds 0–255 (Unsharp Mask, Dust & Scratches).
+/// Thresholds 0–255 (Unsharp Mask, Dust & Scratches, Trace Contour's
+/// level).
 pub const LEVELS_255: Scale = Scale::Table(&[
     (0.0, 0.0),
     (10.0, 0.056),
@@ -448,6 +450,29 @@ pub const DUST_AND_SCRATCHES: &Layout = &Layout {
             Some((21.0, 303.0, 362.0)),
             LEVELS_255,
         ),
+    ],
+};
+
+pub const TRACE_CONTOUR: &Layout = &Layout {
+    size: (324.0, 425.0),
+    button_width: 59.5,
+    preview_y: 118.5,
+    pane: true,
+    rows: &[
+        number(
+            "Level:",
+            52.0,
+            [57.0, 287.0, 102.5, 306.0],
+            "",
+            0.0,
+            Some((21.0, 198.0, 313.0)),
+            LEVELS_255,
+        ),
+        Row::Radios {
+            title: "Edge",
+            group: [10.5, 344.5, 314.0, 413.5],
+            ys: &[369.5, 396.5],
+        },
     ],
 };
 

@@ -154,6 +154,10 @@ const SURFACE_BLUR: &[Param] = &[
     param("Radius (pixels):", 1.0, 100.0, 5.0, 0),
     param("Threshold (levels):", 2.0, 255.0, 15.0, 0),
 ];
+const TRACE_CONTOUR: &[Param] = &[
+    param("Level:", 0.0, 255.0, 128.0, 0),
+    choice("Edge", &["Lower", "Upper"], 1),
+];
 const DUST_AND_SCRATCHES: &[Param] = &[
     param("Radius (pixels):", 1.0, 500.0, 1.0, 0),
     param("Threshold (levels):", 0.0, 255.0, 0.0, 0),
@@ -195,6 +199,7 @@ pub enum Kind {
     DustAndScratches,
     /// Filter > Other > Custom...
     Custom,
+    TraceContour,
 }
 
 impl Kind {
@@ -233,6 +238,7 @@ impl Kind {
             Self::SurfaceBlur => "Surface Blur",
             Self::DustAndScratches => "Dust & Scratches",
             Self::Custom => "Custom",
+            Self::TraceContour => "Trace Contour",
         }
     }
 
@@ -271,6 +277,7 @@ impl Kind {
             Self::PolarCoordinates => POLAR,
             Self::SurfaceBlur => SURFACE_BLUR,
             Self::DustAndScratches => DUST_AND_SCRATCHES,
+            Self::TraceContour => TRACE_CONTOUR,
         }
     }
 
@@ -292,6 +299,7 @@ impl Kind {
             Self::SurfaceBlur => l::SURFACE_BLUR,
             Self::DustAndScratches => l::DUST_AND_SCRATCHES,
             Self::Offset => l::OFFSET,
+            Self::TraceContour => l::TRACE_CONTOUR,
             _ => return None,
         })
     }
@@ -633,6 +641,10 @@ impl AdjustDialog {
             Kind::DustAndScratches => Filter::DustAndScratches {
                 radius: v[0] as u32,
                 threshold: v[1] as u8,
+            },
+            Kind::TraceContour => Filter::TraceContour {
+                level: v[0] as u8,
+                upper: v[1] == 1.0,
             },
             // Every adjustment has its own dialog
             _ => return None,
@@ -1215,6 +1227,7 @@ mod tests {
             Kind::PolarCoordinates,
             Kind::SurfaceBlur,
             Kind::DustAndScratches,
+            Kind::TraceContour,
         ] {
             assert!(
                 matches!(dialog(kind).effect(), Some(Effect::Filter(_))),

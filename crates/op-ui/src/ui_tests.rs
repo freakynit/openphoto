@@ -883,6 +883,7 @@ fn screenshot_filter_dialogs() {
         (Command::Mosaic, "mosaic_dialog"),
         (Command::BoxBlur, "box_blur_dialog"),
         (Command::CustomFilter, "custom_filter_dialog"),
+        (Command::TraceContour, "trace_contour_dialog"),
     ] {
         // A small flat document: the pane shows it whole, centered
         let mut h = harness(Vec::new());
@@ -3313,6 +3314,8 @@ fn more_filters_from_the_menu() {
         (Command::Sharpen, "Sharpen"),
         (Command::SharpenMore, "Sharpen More"),
         (Command::FindEdges, "Find Edges"),
+        (Command::Despeckle, "Despeckle"),
+        (Command::SharpenEdges, "Sharpen Edges"),
     ] {
         run_command(&mut h, command);
         assert_eq!(last_history(&h), name);
@@ -3347,6 +3350,13 @@ fn more_filters_from_the_menu() {
             Filter::DustAndScratches {
                 radius: 1,
                 threshold: 0,
+            },
+        ),
+        (
+            Command::TraceContour,
+            Filter::TraceContour {
+                level: 128,
+                upper: true,
             },
         ),
     ] {

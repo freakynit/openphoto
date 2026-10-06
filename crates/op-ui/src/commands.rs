@@ -99,6 +99,9 @@ pub enum Command {
     Fragment,
     /// Filter > Other > Custom...
     CustomFilter,
+    Despeckle,
+    SharpenEdges,
+    TraceContour,
     /// Layer > New > Layer... (Shift+Cmd+N): opens the New Layer dialog.
     NewLayer,
     /// Alt+Shift+Cmd+N: a new layer without the dialog.
@@ -489,7 +492,10 @@ impl Command {
             | Self::SurfaceBlur
             | Self::DustAndScratches
             | Self::Fragment
-            | Self::CustomFilter => return None,
+            | Self::CustomFilter
+            | Self::Despeckle
+            | Self::SharpenEdges
+            | Self::TraceContour => return None,
             Self::Invert => cmd(Key::I),
             Self::Levels => cmd(Key::L),
             Self::Curves => cmd(Key::M),
@@ -788,6 +794,9 @@ impl Command {
             | Self::DustAndScratches
             | Self::Fragment
             | Self::CustomFilter
+            | Self::Despeckle
+            | Self::SharpenEdges
+            | Self::TraceContour
             | Self::Twirl
             | Self::Pinch
             | Self::Spherize
@@ -1086,6 +1095,8 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
         | Command::SharpenMore
         | Command::FindEdges
         | Command::Fragment
+        | Command::Despeckle
+        | Command::SharpenEdges
         | Command::LastFilter => {
             let filter = match command {
                 Command::Average => Some(Filter::Average),
@@ -1096,6 +1107,8 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 Command::SharpenMore => Some(Filter::SharpenMore),
                 Command::FindEdges => Some(Filter::FindEdges),
                 Command::Fragment => Some(Filter::Fragment),
+                Command::Despeckle => Some(Filter::Despeckle),
+                Command::SharpenEdges => Some(Filter::SharpenEdges),
                 _ => app.last_filter,
             };
             let [r, g, b, _] = app.background.to_rgba8();
@@ -1143,7 +1156,8 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
         | Command::PolarCoordinates
         | Command::SurfaceBlur
         | Command::DustAndScratches
-        | Command::CustomFilter => {
+        | Command::CustomFilter
+        | Command::TraceContour => {
             let (kind, name) = match command {
                 Command::Threshold => (AdjustKind::Threshold, "Threshold"),
                 Command::Posterize => (AdjustKind::Posterize, "Posterize"),
@@ -1179,6 +1193,7 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 Command::SurfaceBlur => (AdjustKind::SurfaceBlur, "Surface Blur"),
                 Command::DustAndScratches => (AdjustKind::DustAndScratches, "Dust & Scratches"),
                 Command::CustomFilter => (AdjustKind::Custom, "Custom"),
+                Command::TraceContour => (AdjustKind::TraceContour, "Trace Contour"),
                 _ => (AdjustKind::Mosaic, "Mosaic"),
             };
             let rgb = |c: op_core::Color| {
