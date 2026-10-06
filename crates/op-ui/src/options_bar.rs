@@ -35,6 +35,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState) {
                 | Tool::MagneticLasso => marquee_options(ui, app),
                 Tool::Move => move_options(ui),
                 Tool::Brush | Tool::Pencil | Tool::Eraser => paint_options(ui, app),
+                Tool::PaintBucket => bucket_options(ui, app),
                 Tool::Hand | Tool::Zoom => view_options(ui, app),
                 _ => {}
             }
@@ -203,6 +204,47 @@ fn paint_options(ui: &mut Ui, app: &mut AppState) {
         ui.label("Flow:");
         widgets::percent_drag(ui, &mut opts.flow);
     }
+}
+
+/// Paint Bucket: Fill source, Mode, Opacity, Tolerance, Anti-alias,
+/// Contiguous, All Layers.
+fn bucket_options(ui: &mut Ui, app: &mut AppState) {
+    let opts = &mut app.bucket;
+    ui.label("Fill:");
+    ui.add_enabled_ui(false, |ui| {
+        egui::ComboBox::from_id_salt("bucket-fill")
+            .width(100.0)
+            .selected_text("Foreground")
+            .show_ui(ui, |_| {});
+    });
+    ui.add_space(6.0);
+    ui.label("Mode:");
+    egui::ComboBox::from_id_salt("bucket-mode")
+        .width(110.0)
+        .selected_text(opts.fill.mode.label())
+        .show_ui(ui, |ui| {
+            for (gi, group) in op_core::BlendMode::GROUPS.iter().enumerate() {
+                if gi > 0 {
+                    ui.separator();
+                }
+                for &m in *group {
+                    ui.selectable_value(&mut opts.fill.mode, m, m.label());
+                }
+            }
+        });
+    ui.add_space(6.0);
+    ui.label("Opacity:");
+    widgets::percent_drag(ui, &mut opts.fill.opacity);
+    ui.add_space(6.0);
+    ui.label("Tolerance:");
+    ui.add_sized(
+        [48.0, size::FIELD_HEIGHT],
+        egui::DragValue::new(&mut opts.tolerance).range(0..=255),
+    );
+    ui.add_space(6.0);
+    ui.checkbox(&mut opts.anti_alias, "Anti-alias");
+    ui.checkbox(&mut opts.contiguous, "Contiguous");
+    ui.checkbox(&mut opts.all_layers, "All Layers");
 }
 
 fn move_options(ui: &mut Ui) {

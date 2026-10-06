@@ -91,3 +91,86 @@ pub fn pill_button(
     painter.text(rect.center(), Align2::CENTER_CENTER, label, font, text);
     response
 }
+
+const FIELD_BORDER: Color32 = Color32::from_gray(0x77);
+const DROPDOWN_BORDER: Color32 = Color32::from_gray(0x6a);
+const FOCUS: Color32 = Color32::from_rgb(0x14, 0x73, 0xe6);
+
+/// A text input with Photoshop's dialog styling (dark fill, light border,
+/// blue focus ring). With `select_all`, it takes focus and selects its text
+/// (Photoshop does this for a dialog's first field when it opens).
+pub fn number_field(
+    ui: &mut Ui,
+    rect: Rect,
+    text: &mut String,
+    id: impl egui::AsIdSalt,
+    font: f32,
+    select_all: bool,
+) -> egui::Response {
+    use egui::text::{CCursor, CCursorRange};
+    let id = ui.id().with(id);
+    let has_focus = ui.memory(|m| m.has_focus(id));
+    ui.painter().rect(
+        rect,
+        3,
+        color::FIELD,
+        Stroke::new(1.0, FIELD_BORDER),
+        StrokeKind::Inside,
+    );
+    if has_focus {
+        ui.painter()
+            .rect_stroke(rect, 4, Stroke::new(2.0, FOCUS), StrokeKind::Outside);
+    }
+
+    let pad = rect.height() * 0.23;
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect.shrink2(vec2(pad, 0.0))));
+    let output = egui::TextEdit::singleline(text)
+        .id(id)
+        .frame(egui::Frame::NONE)
+        .font(FontId::proportional(font))
+        .vertical_align(egui::Align::Center)
+        .desired_width(rect.width() - 2.0 * pad)
+        .min_size(vec2(0.0, rect.height()))
+        .show(&mut child);
+
+    if select_all {
+        output.response.request_focus();
+        let mut state = output.state;
+        let end = CCursor::new(text.chars().count());
+        state
+            .cursor
+            .set_char_range(Some(CCursorRange::two(CCursor::new(0), end)));
+        state.store(ui.ctx(), id);
+    }
+    output.response.response
+}
+
+/// A dropdown with Photoshop's dialog styling, filling `rect`.
+pub fn dropdown(
+    ui: &mut Ui,
+    rect: Rect,
+    id: impl egui::AsIdSalt,
+    selected: &str,
+    font: f32,
+    enabled: bool,
+    menu: impl FnOnce(&mut Ui),
+) {
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(rect));
+    child.add_enabled_ui(enabled, |ui| {
+        let v = &mut ui.visuals_mut().widgets;
+        for w in [&mut v.inactive, &mut v.hovered, &mut v.active, &mut v.open] {
+            w.weak_bg_fill = color::PANEL;
+            w.bg_fill = color::PANEL;
+            w.bg_stroke = Stroke::new(1.0, DROPDOWN_BORDER);
+            w.corner_radius = CornerRadius::same(3);
+        }
+        v.hovered.weak_bg_fill = color::HOVER;
+        ui.spacing_mut().interact_size.y = rect.height();
+        ui.spacing_mut().button_padding = vec2(rect.height() * 0.35, rect.height() * 0.17);
+        egui::ComboBox::from_id_salt(id)
+            .width(rect.width())
+            .height(400.0)
+            .selected_text(egui::RichText::new(selected).font(FontId::proportional(font)))
+            .show_ui(ui, menu);
+    });
+}

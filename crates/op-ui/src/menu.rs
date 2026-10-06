@@ -24,6 +24,8 @@ const ALL_COMMANDS: &[Command] = &[
     Command::NewLayer,
     Command::DeleteLayer,
     Command::ToggleLayerVisibility,
+    Command::Fill,
+    Command::Clear,
     Command::SelectAll,
     Command::Deselect,
     Command::Reselect,
@@ -55,8 +57,8 @@ pub struct NativeMenu {
 
 impl NativeMenu {
     pub fn install(ctx: &egui::Context) -> Self {
-        let mut items = Vec::new();
-        let mut item = |label: &str, command: Command| {
+        let items = std::cell::RefCell::new(Vec::new());
+        let item = |label: &str, command: Command| {
             let accel = command
                 .shortcut()
                 .and_then(|s| accelerator(&s.accelerator()));
@@ -66,7 +68,13 @@ impl NativeMenu {
                 let plus = KeyAccelerator::from_str("CmdOrCtrl++").ok();
                 let _ = item.set_key_accelerator(plus);
             }
-            items.push((command, item.clone()));
+            items.borrow_mut().push((command, item.clone()));
+            item
+        };
+        // A command item without a key equivalent (its key is handled in egui)
+        let plain_item = |label: &str, command: Command| {
+            let item = MenuItem::with_id(id(command), label, false, None);
+            items.borrow_mut().push((command, item.clone()));
             item
         };
         // Not implemented yet: shown disabled
@@ -121,7 +129,52 @@ impl NativeMenu {
         let edit = Submenu::with_items(
             "Edit",
             true,
-            &[&item("Undo", Command::Undo), &item("Redo", Command::Redo)],
+            &[
+                &item("Undo", Command::Undo) as &dyn IsMenuItem,
+                &item("Redo", Command::Redo),
+                &item("Toggle Last State", Command::ToggleLastState),
+                &sep(),
+                &todo("Fade...", Some("CmdOrCtrl+Shift+F")),
+                &sep(),
+                // Cut/Copy/Paste are listed without key equivalents so
+                // Cmd+C/V keep working in text fields
+                &todo("Cut", None),
+                &todo("Copy", None),
+                &todo("Copy Merged", None),
+                &todo("Paste", None),
+                &todo_sub("Paste Special"),
+                &plain_item("Clear", Command::Clear),
+                &sep(),
+                &todo("Search", None),
+                &todo("Check Spelling...", None),
+                &todo("Find and Replace Text...", None),
+                &sep(),
+                &item("Fill...", Command::Fill),
+                &todo("Stroke...", None),
+                &todo("Content-Aware Fill...", None),
+                &sep(),
+                &todo("Content-Aware Scale", None),
+                &todo("Puppet Warp", None),
+                &todo("Perspective Warp", None),
+                &todo("Free Transform", Some("CmdOrCtrl+T")),
+                &todo_sub("Transform"),
+                &todo("Auto-Align Layers...", None),
+                &todo("Auto-Blend Layers...", None),
+                &sep(),
+                &todo("Define Brush Preset...", None),
+                &todo("Define Pattern...", None),
+                &todo("Define Custom Shape...", None),
+                &sep(),
+                &todo_sub("Purge"),
+                &sep(),
+                &todo("Color Settings...", Some("CmdOrCtrl+Shift+K")),
+                &todo("Assign Profile...", None),
+                &todo("Convert to Profile...", None),
+                &sep(),
+                &todo("Keyboard Shortcuts...", Some("CmdOrCtrl+Shift+Alt+K")),
+                &todo("Menus...", Some("CmdOrCtrl+Shift+Alt+M")),
+                &todo("Toolbar...", None),
+            ],
         );
 
         let image = Submenu::with_items(
@@ -246,6 +299,7 @@ impl NativeMenu {
             }
         }));
 
+        let items = items.into_inner();
         let applied = vec![(false, None); items.len()];
         Self {
             _menu: menu,

@@ -126,6 +126,34 @@ impl OpenPhotoApp {
         }
     }
 
+    fn fill_dialog(&mut self, ctx: &egui::Context) {
+        let Some(mut dialog) = self.state.fill_dialog.take() else {
+            return;
+        };
+        let (fg, bg) = (self.state.foreground, self.state.background);
+        let active = self.state.color_picker.is_none();
+        let outcome = dialog.show(ctx, fg, bg, active);
+        if let Some(color) = dialog.take_color_picker_request() {
+            self.state.color_picker = Some(state::PickerSession {
+                picker: dialogs::ColorPicker::new("Color Picker (Fill Color)", color),
+                target: state::PickerTarget::FillColor,
+            });
+        }
+        match outcome {
+            dialogs::FillOutcome::Open => self.state.fill_dialog = Some(dialog),
+            dialogs::FillOutcome::Cancel => {}
+            dialogs::FillOutcome::Apply { color, options } => {
+                let [r, g, b, _] = color.to_rgba8();
+                if let Some(state) = self.state.active() {
+                    match op_core::fill::fill(&mut state.doc, [r, g, b], options) {
+                        Ok(()) => state.record("Fill"),
+                        Err(e) => self.state.alert = Some(e.message("Fill")),
+                    }
+                }
+            }
+        }
+    }
+
     /// The Color Picker, drawn after (on top of) Canvas Size.
     fn color_picker(&mut self, ctx: &egui::Context) {
         let Some(mut session) = self.state.color_picker.take() else {
@@ -144,6 +172,11 @@ impl OpenPhotoApp {
                 state::PickerTarget::CanvasExtension => {
                     if let Some(dialog) = &mut self.state.canvas_size_dialog {
                         dialog.set_other_color(color);
+                    }
+                }
+                state::PickerTarget::FillColor => {
+                    if let Some(dialog) = &mut self.state.fill_dialog {
+                        dialog.set_color(color);
                     }
                 }
             },
@@ -266,6 +299,7 @@ impl eframe::App for OpenPhotoApp {
         }
 
         self.canvas_size_dialog(&ctx);
+        self.fill_dialog(&ctx);
         self.color_picker(&ctx);
 
         #[cfg(target_os = "macos")]

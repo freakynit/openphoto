@@ -78,6 +78,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
     let tool = app.tool;
     let paint = app.paint_options(tool).copied();
     let (foreground, background) = (app.foreground, app.background);
+    let bucket = app.bucket;
     let mut paint_error = None;
     let Some(state) = app.docs.get_mut(&id) else {
         return;
@@ -162,6 +163,25 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
                     }
                 }
             }
+            Tool::PaintBucket if response.clicked() => {
+                if let Some(p) = response.interact_pointer_pos() {
+                    let d = to_doc(state, p, ppp);
+                    if d.x >= 0.0 && d.y >= 0.0 {
+                        let [r, g, b, _] = foreground.to_rgba8();
+                        match op_core::fill::bucket(
+                            &mut state.doc,
+                            d.x as u32,
+                            d.y as u32,
+                            [r, g, b],
+                            bucket,
+                        ) {
+                            Ok(true) => state.record("Paint Bucket"),
+                            Ok(false) => {}
+                            Err(e) => paint_error = Some(e.message("Paint Bucket")),
+                        }
+                    }
+                }
+            }
             Tool::Brush | Tool::Pencil | Tool::Eraser => {
                 if let Some(opts) = paint {
                     paint_error = paint_input(
@@ -213,6 +233,7 @@ pub fn show(ui: &mut Ui, app: &mut AppState, id: DocId) {
                     CursorIcon::None
                 }
                 Tool::Eyedropper
+                | Tool::PaintBucket
                 | Tool::Brush
                 | Tool::Pencil
                 | Tool::Eraser

@@ -318,6 +318,8 @@ pub enum PickerTarget {
     Background,
     /// The "Other..." canvas extension color in the Canvas Size dialog.
     CanvasExtension,
+    /// "Color..." in the Fill dialog.
+    FillColor,
 }
 
 pub struct PickerSession {
@@ -398,6 +400,10 @@ pub struct AppState {
     pub history_panel: crate::panels::history::PanelState,
     /// Image > Canvas Size, while open.
     pub canvas_size_dialog: Option<crate::dialogs::CanvasSizeDialog>,
+    /// Edit > Fill, while open.
+    pub fill_dialog: Option<crate::dialogs::FillDialog>,
+    /// Paint Bucket options.
+    pub bucket: op_core::fill::BucketOptions,
     /// The Color Picker, while open. It can sit on top of Canvas Size.
     pub color_picker: Option<PickerSession>,
     /// Swatches panel contents; "Add to Swatches" appends here.
@@ -426,6 +432,8 @@ impl Default for AppState {
             history_open: false,
             history_panel: Default::default(),
             canvas_size_dialog: None,
+            fill_dialog: None,
+            bucket: Default::default(),
             color_picker: None,
             swatches: crate::panels::DEFAULT_SWATCHES
                 .iter()
@@ -479,7 +487,10 @@ impl AppState {
 
     /// Whether a modal dialog is open; menus and shortcuts are disabled meanwhile.
     pub fn modal_open(&self) -> bool {
-        self.canvas_size_dialog.is_some() || self.color_picker.is_some() || self.alert.is_some()
+        self.canvas_size_dialog.is_some()
+            || self.fill_dialog.is_some()
+            || self.color_picker.is_some()
+            || self.alert.is_some()
     }
 
     /// Opens the Color Picker for the foreground or background color, titled
@@ -489,6 +500,7 @@ impl AppState {
             PickerTarget::Foreground => ("Color Picker (Foreground Color)", self.foreground),
             PickerTarget::Background => ("Color Picker (Background Color)", self.background),
             PickerTarget::CanvasExtension => ("Color Picker", self.background),
+            PickerTarget::FillColor => ("Color Picker (Fill Color)", self.foreground),
         };
         self.color_picker = Some(PickerSession {
             picker: crate::dialogs::ColorPicker::new(title, color),

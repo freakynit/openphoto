@@ -4,10 +4,8 @@
 //! (scaled by `UI_SCALE` like the rest of the UI). All positions are relative
 //! to the dialog's top-left corner.
 
-use egui::text::{CCursor, CCursorRange};
 use egui::{
-    Align, Align2, Color32, CornerRadius, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Ui,
-    UiBuilder, Vec2, pos2, vec2,
+    Align2, Color32, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Ui, Vec2, pos2, vec2,
 };
 use op_core::{Anchor, Color, Document};
 
@@ -35,9 +33,6 @@ const ANCHOR_CELL: f32 = 34.4;
 const FONT: f32 = 15.5;
 
 const RULE: Color32 = Color32::from_gray(0x73);
-const FIELD_BORDER: Color32 = Color32::from_gray(0x77);
-const DROPDOWN_BORDER: Color32 = Color32::from_gray(0x6a);
-const FOCUS: Color32 = Color32::from_rgb(0x14, 0x73, 0xe6);
 const ANCHOR_LINE: Color32 = Color32::from_gray(0x78);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -387,11 +382,12 @@ impl CanvasSizeDialog {
                 at(FIELD_X, body + y - CONTROL_H / 2.0),
                 vec2(FIELD_W, CONTROL_H),
             );
-            number_field(
+            common::number_field(
                 ui,
                 field,
                 &mut dim.text,
                 ("canvas-size-field", i),
+                FONT,
                 first_frame && i == 0,
             );
 
@@ -400,11 +396,12 @@ impl CanvasSizeDialog {
                 vec2(UNIT_W, CONTROL_H),
             );
             let mut unit = dim.unit;
-            dropdown(
+            common::dropdown(
                 ui,
                 unit_rect,
                 ("canvas-size-unit", i),
                 unit.label(),
+                FONT,
                 true,
                 |ui| {
                     for u in Unit::ALL {
@@ -466,11 +463,12 @@ impl CanvasSizeDialog {
         );
         let ext_rect = Rect::from_min_size(at(208.0, y - CONTROL_H / 2.0), vec2(237.0, CONTROL_H));
         let mut extension = self.extension;
-        dropdown(
+        common::dropdown(
             ui,
             ext_rect,
             "canvas-size-extension",
             extension.label(),
+            FONT,
             self.has_background,
             |ui| {
                 for (i, e) in Extension::ALL.into_iter().enumerate() {
@@ -648,71 +646,6 @@ fn arrow(painter: &egui::Painter, c: Pos2, dir: Vec2) {
         color::TEXT,
         Stroke::NONE,
     ));
-}
-
-fn number_field(ui: &mut Ui, rect: Rect, text: &mut String, id: impl egui::AsIdSalt, focus: bool) {
-    let id = ui.id().with(id);
-    let has_focus = ui.memory(|m| m.has_focus(id));
-    ui.painter().rect(
-        rect,
-        3,
-        color::FIELD,
-        Stroke::new(1.0, FIELD_BORDER),
-        StrokeKind::Inside,
-    );
-    if has_focus {
-        ui.painter()
-            .rect_stroke(rect, 4, Stroke::new(2.0, FOCUS), StrokeKind::Outside);
-    }
-
-    let mut child = ui.new_child(UiBuilder::new().max_rect(rect.shrink2(vec2(8.0, 0.0))));
-    let output = egui::TextEdit::singleline(text)
-        .id(id)
-        .frame(egui::Frame::NONE)
-        .font(FontId::proportional(FONT))
-        .vertical_align(Align::Center)
-        .desired_width(rect.width() - 16.0)
-        .min_size(vec2(0.0, rect.height()))
-        .show(&mut child);
-
-    // Photoshop opens the dialog with the width selected
-    if focus {
-        output.response.request_focus();
-        let mut state = output.state;
-        let end = CCursor::new(text.chars().count());
-        state
-            .cursor
-            .set_char_range(Some(CCursorRange::two(CCursor::new(0), end)));
-        state.store(ui.ctx(), id);
-    }
-}
-
-fn dropdown(
-    ui: &mut Ui,
-    rect: Rect,
-    id: impl egui::AsIdSalt,
-    selected: &str,
-    enabled: bool,
-    menu: impl FnOnce(&mut Ui),
-) {
-    let mut child = ui.new_child(UiBuilder::new().max_rect(rect));
-    child.add_enabled_ui(enabled, |ui| {
-        let v = &mut ui.visuals_mut().widgets;
-        for w in [&mut v.inactive, &mut v.hovered, &mut v.active, &mut v.open] {
-            w.weak_bg_fill = color::PANEL;
-            w.bg_fill = color::PANEL;
-            w.bg_stroke = Stroke::new(1.0, DROPDOWN_BORDER);
-            w.corner_radius = CornerRadius::same(3);
-        }
-        v.hovered.weak_bg_fill = color::HOVER;
-        ui.spacing_mut().interact_size.y = rect.height();
-        ui.spacing_mut().button_padding = vec2(12.0, 6.0);
-        egui::ComboBox::from_id_salt(id)
-            .width(rect.width())
-            .height(400.0)
-            .selected_text(egui::RichText::new(selected).font(FontId::proportional(FONT)))
-            .show_ui(ui, menu);
-    });
 }
 
 #[cfg(test)]

@@ -202,6 +202,16 @@ fn screenshot_painting() {
 
 #[test]
 #[ignore]
+fn screenshot_fill_dialog() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.key_press_modifiers(Modifiers::SHIFT, egui::Key::F5);
+    h.run_steps(4);
+    shot(&mut h, "fill_dialog");
+}
+
+#[test]
+#[ignore]
 fn screenshot_selection() {
     let mut h = harness(Vec::new());
     reference_document(&mut h);
@@ -269,6 +279,83 @@ fn painting_a_hidden_layer_shows_photoshops_alert() {
     assert_eq!(
         h.state().state.alert.as_deref(),
         Some("Could not use the brush tool because the target layer is hidden.")
+    );
+}
+
+fn select_rect(h: &mut Harness<'_, OpenPhotoApp>, x0: f32, y0: f32, x1: f32, y1: f32) {
+    let app = &mut h.state_mut().state;
+    let id = app.active_doc.unwrap();
+    let doc = &mut app.docs.get_mut(&id).unwrap().doc;
+    let (w, ht) = (doc.width, doc.height);
+    doc.set_selection(Some(op_core::Selection::rect(
+        w,
+        ht,
+        op_core::selection::Rect::new(x0, y0, x1, y1),
+    )));
+}
+
+#[test]
+fn fill_and_clear_keys() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.state_mut().state.foreground = Color::from_rgba8([255, 0, 0, 255]);
+    h.state_mut().state.background = Color::from_rgba8([0, 0, 255, 255]);
+    select_rect(&mut h, 0.0, 0.0, 100.0, 100.0);
+
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.run_steps(2);
+    assert_eq!(composite_pixel(&mut h, 50, 50), [255, 0, 0, 255]);
+    assert_eq!(composite_pixel(&mut h, 150, 150), [0x14, 0x14, 0x14, 255]);
+    assert_eq!(active(&h).history.states().last().unwrap().name, "Fill");
+
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Backspace);
+    h.run_steps(2);
+    assert_eq!(composite_pixel(&mut h, 50, 50), [0, 0, 255, 255]);
+
+    // Delete on a regular layer clears the selection to transparency
+    crate::panels::new_layer(h.state_mut().state.active().unwrap());
+    h.key_press_modifiers(Modifiers::ALT, egui::Key::Backspace);
+    h.run_steps(2);
+    h.key_press(egui::Key::Backspace);
+    h.run_steps(2);
+    assert_eq!(active(&h).history.states().last().unwrap().name, "Clear");
+    assert_eq!(composite_pixel(&mut h, 50, 50), [0, 0, 255, 255]);
+
+    // Without a selection, Delete removes the layer
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::D);
+    h.run_steps(2);
+    let layers = active(&h).doc.layers.len();
+    h.key_press(egui::Key::Backspace);
+    h.run_steps(2);
+    assert_eq!(active(&h).doc.layers.len(), layers - 1);
+}
+
+#[test]
+fn fill_dialog_applies_on_enter() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.state_mut().state.foreground = Color::from_rgba8([0, 255, 0, 255]);
+    h.key_press_modifiers(Modifiers::SHIFT, egui::Key::F5);
+    h.run_steps(3);
+    assert!(h.state().state.fill_dialog.is_some());
+    h.key_press(egui::Key::Enter);
+    h.run_steps(3);
+    assert!(h.state().state.fill_dialog.is_none());
+    assert_eq!(composite_pixel(&mut h, 10, 10), [0, 255, 0, 255]);
+}
+
+#[test]
+fn paint_bucket_fills_contiguous_area() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    h.state_mut().state.foreground = Color::from_rgba8([255, 255, 0, 255]);
+    h.state_mut().state.select_tool(op_tools::Tool::PaintBucket);
+    let p = doc_point(&h, 200.0, 200.0);
+    click(&mut h, p);
+    assert_eq!(composite_pixel(&mut h, 700, 800), [255, 255, 0, 255]);
+    assert_eq!(
+        active(&h).history.states().last().unwrap().name,
+        "Paint Bucket"
     );
 }
 

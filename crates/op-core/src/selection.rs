@@ -118,6 +118,34 @@ impl Selection {
         s
     }
 
+    /// A selection from a 0/255 mask; with `anti_alias`, pixels on the edge
+    /// of the region become half selected (smoother fills).
+    pub fn from_mask(width: u32, height: u32, mask: Vec<u8>, anti_alias: bool) -> Self {
+        assert_eq!(mask.len(), (width as usize) * (height as usize));
+        let mut s = Self {
+            width,
+            height,
+            mask,
+        };
+        if anti_alias {
+            let src = s.mask.clone();
+            let (w, h) = (width as i64, height as i64);
+            let at = |x: i64, y: i64| {
+                x >= 0 && y >= 0 && x < w && y < h && src[(y * w + x) as usize] == 255
+            };
+            for y in 0..h {
+                for x in 0..w {
+                    let i = (y * w + x) as usize;
+                    if src[i] == 0 && (at(x - 1, y) || at(x + 1, y) || at(x, y - 1) || at(x, y + 1))
+                    {
+                        s.mask[i] = 128;
+                    }
+                }
+            }
+        }
+        s
+    }
+
     pub fn width(&self) -> u32 {
         self.width
     }

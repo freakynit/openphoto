@@ -23,6 +23,14 @@ pub enum Command {
     DeleteLayer,
     /// Layer > Hide Layers / Show Layers for the active layer.
     ToggleLayerVisibility,
+    /// Edit > Fill... (opens the dialog).
+    Fill,
+    /// Option+Delete: fill with the foreground color.
+    FillForeground,
+    /// Command+Delete: fill with the background color.
+    FillBackground,
+    /// Edit > Clear (Delete).
+    Clear,
     SelectAll,
     Deselect,
     Reselect,
@@ -111,6 +119,25 @@ impl Command {
             Self::CanvasSize => alt_cmd(Key::C),
             Self::NewLayer => shift_cmd(Key::N),
             Self::ToggleLayerVisibility => cmd(Key::Comma),
+            Self::Fill => Shortcut {
+                cmd: false,
+                shift: true,
+                alt: false,
+                key: Key::F5,
+            },
+            Self::FillForeground => Shortcut {
+                cmd: false,
+                shift: false,
+                alt: true,
+                key: Key::Backspace,
+            },
+            Self::FillBackground => cmd(Key::Backspace),
+            Self::Clear => Shortcut {
+                cmd: false,
+                shift: false,
+                alt: false,
+                key: Key::Backspace,
+            },
             Self::SelectAll => cmd(Key::A),
             Self::Deselect => cmd(Key::D),
             Self::Reselect => shift_cmd(Key::D),
@@ -146,6 +173,10 @@ impl Command {
                 .and_then(|d| d.doc.active_layer.and_then(|id| d.doc.layer(id)))
                 .is_some(),
             Self::Close
+            | Self::Fill
+            | Self::FillForeground
+            | Self::FillBackground
+            | Self::Clear
             | Self::SelectAll
             | Self::CloseAll
             | Self::ExportAs
@@ -163,6 +194,9 @@ impl Command {
 /// extra Shift/Alt when matching, so Shift+Cmd+Z must be checked before Cmd+Z.
 const SHORTCUT_ORDER: &[Command] = &[
     Command::ExportAs,
+    Command::Fill,
+    Command::FillForeground,
+    Command::FillBackground,
     Command::Reselect,
     Command::SelectInverse,
     Command::Redo,
@@ -202,8 +236,13 @@ pub fn from_shortcuts_beside_menu(ctx: &egui::Context) -> Vec<Command> {
 /// these instead, so this is only used on other platforms.
 pub fn from_shortcuts(ctx: &egui::Context) -> Vec<Command> {
     let mut out = Vec::new();
+    let typing = ctx.egui_wants_keyboard_input();
     ctx.input_mut(|i| {
         for &command in SHORTCUT_ORDER {
+            // Delete-key fills would eat text editing keys
+            if typing && matches!(command, Command::FillForeground | Command::FillBackground) {
+                continue;
+            }
             let s = command.shortcut().expect("listed commands have shortcuts");
             let mut hit = i.consume_key(s.modifiers(), s.key);
             // Cmd+Shift+= arrives as Cmd+Plus on some layouts
@@ -213,6 +252,12 @@ pub fn from_shortcuts(ctx: &egui::Context) -> Vec<Command> {
             if hit {
                 out.push(command);
             }
+        }
+        if !typing
+            && (i.consume_key(Modifiers::NONE, Key::Backspace)
+                || i.consume_key(Modifiers::NONE, Key::Delete))
+        {
+            out.push(Command::Clear);
         }
     });
     out
@@ -231,6 +276,38 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
         Command::CloseOthers => actions::close_others(app),
         Command::ExportAs => actions::export_dialog(app),
         Command::ToggleHistory => app.history_open = !app.history_open,
+        Command::Fill => app.fill_dialog = Some(Default::default()),
+        Command::FillForeground | Command::FillBackground => {
+            let color = if command == Command::FillForeground {
+                app.foreground
+            } else {
+                app.background
+            };
+            let [r, g, b, _] = color.to_rgba8();
+            if let Some(state) = app.active() {
+                let result = op_core::fill::fill(&mut state.doc, [r, g, b], Default::default());
+                match result {
+                    Ok(()) => state.record("Fill"),
+                    Err(e) => app.alert = Some(e.message("Fill")),
+                }
+            }
+        }
+        Command::Clear => {
+            let [r, g, b, _] = app.background.to_rgba8();
+            if let Some(state) = app.active() {
+                if state.doc.selection().is_none() {
+                    // Without a pixel selection, Delete removes the layer
+                    if state.doc.layers.len() > 1 {
+                        crate::panels::delete_active_layer(state);
+                    }
+                } else {
+                    match op_core::fill::clear(&mut state.doc, [r, g, b]) {
+                        Ok(()) => state.record("Clear"),
+                        Err(e) => app.alert = Some(e.message("Clear")),
+                    }
+                }
+            }
+        }
         Command::CanvasSize => {
             if let Some(state) = app.active() {
                 let dialog = crate::dialogs::CanvasSizeDialog::new(&state.doc);

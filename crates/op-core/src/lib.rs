@@ -6,6 +6,7 @@
 pub mod blend;
 pub mod color;
 pub mod document;
+pub mod fill;
 pub mod history;
 pub mod layer;
 pub mod paint;
