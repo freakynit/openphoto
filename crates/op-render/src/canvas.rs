@@ -63,6 +63,7 @@ struct Uniforms {
 struct Slot {
     revision: u64,
     mip_count: u32,
+    texture: wgpu::Texture,
     uniforms: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
 }
@@ -195,8 +196,27 @@ impl CallbackTrait for CanvasCallback {
             .get(&img.key)
             .is_none_or(|s| s.revision != img.revision);
         if stale {
-            let slot = create_slot(device, queue, res, img);
-            res.slots.insert(img.key, slot);
+            let max_dim = device.limits().max_texture_dimension_2d;
+            let levels = build_mips(img, max_dim);
+            // Same size: write into the texture the slot has (creating a
+            // new one each time a layer is dragged is too slow)
+            let reuse = res.slots.get_mut(&img.key).filter(|slot| {
+                let size = slot.texture.size();
+                levels
+                    .first()
+                    .is_some_and(|l| (l.width, l.height) == (size.width, size.height))
+                    && slot.mip_count as usize == levels.len()
+            });
+            match reuse {
+                Some(slot) => {
+                    upload(queue, &slot.texture, &levels);
+                    slot.revision = img.revision;
+                }
+                None => {
+                    let slot = create_slot(device, queue, res, img.revision, levels);
+                    res.slots.insert(img.key, slot);
+                }
+            }
         }
         let slot = &res.slots[&img.key];
 
@@ -256,10 +276,9 @@ fn create_slot(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     res: &CanvasResources,
-    img: &CanvasImage,
+    revision: u64,
+    mut levels: Vec<MipLevel>,
 ) -> Slot {
-    let max_dim = device.limits().max_texture_dimension_2d;
-    let mut levels = build_mips(img, max_dim);
     if levels.is_empty() {
         levels.push(MipLevel {
             width: 1,
@@ -284,27 +303,7 @@ fn create_slot(
         view_formats: &[],
     });
 
-    for (i, level) in levels.iter().enumerate() {
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &texture,
-                mip_level: i as u32,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &level.data,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(level.width * 4),
-                rows_per_image: Some(level.height),
-            },
-            wgpu::Extent3d {
-                width: level.width,
-                height: level.height,
-                depth_or_array_layers: 1,
-            },
-        );
-    }
+    upload(queue, &texture, &levels);
 
     let uniforms = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("canvas uniforms"),
@@ -333,10 +332,36 @@ fn create_slot(
     });
 
     Slot {
-        revision: img.revision,
+        revision,
         mip_count: levels.len() as u32,
+        texture,
         uniforms,
         bind_group,
+    }
+}
+
+/// Writes every mip level into `texture`.
+fn upload(queue: &wgpu::Queue, texture: &wgpu::Texture, levels: &[MipLevel]) {
+    for (i, level) in levels.iter().enumerate() {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: i as u32,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &level.data,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(level.width * 4),
+                rows_per_image: Some(level.height),
+            },
+            wgpu::Extent3d {
+                width: level.width,
+                height: level.height,
+                depth_or_array_layers: 1,
+            },
+        );
     }
 }
 
@@ -352,17 +377,20 @@ fn build_mips(img: &CanvasImage, max_dim: u32) -> Vec<MipLevel> {
     if img.width == 0 || img.height == 0 {
         return Vec::new();
     }
-    let premul: Vec<u8> = img
-        .pixels
-        .as_chunks::<4>()
-        .0
-        .iter()
-        .flat_map(|p| {
+    let mut premul = vec![0u8; img.pixels.len()];
+    in_bands(&mut premul, img.width as usize * 4, |y0, band| {
+        let src = &img.pixels[y0 * img.width as usize * 4..][..band.len()];
+        for (d, p) in band
+            .as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .zip(src.as_chunks::<4>().0)
+        {
             let a = p[3] as u32;
             let m = |c: u8| ((c as u32 * a + 127) / 255) as u8;
-            [m(p[0]), m(p[1]), m(p[2]), p[3]]
-        })
-        .collect();
+            *d = [m(p[0]), m(p[1]), m(p[2]), p[3]];
+        }
+    });
 
     let mut levels = Vec::new();
     let mut cur = MipLevel {
@@ -383,26 +411,133 @@ fn build_mips(img: &CanvasImage, max_dim: u32) -> Vec<MipLevel> {
     levels
 }
 
+/// Runs `f(first_row, rows)` over bands of `rows` (rows of `row_len`
+/// bytes) on separate threads.
+fn in_bands(data: &mut [u8], row_len: usize, f: impl Fn(usize, &mut [u8]) + Sync) {
+    let rows = data.len() / row_len.max(1);
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let band = rows.div_ceil(threads).max(1);
+    if rows < 64 || threads == 1 {
+        f(0, data);
+        return;
+    }
+    std::thread::scope(|scope| {
+        for (i, chunk) in data.chunks_mut(band * row_len).enumerate() {
+            let f = &f;
+            scope.spawn(move || f(i * band, chunk));
+        }
+    });
+}
+
 fn downsample(src: &MipLevel) -> MipLevel {
     let (w, h) = ((src.width / 2).max(1), (src.height / 2).max(1));
     let mut data = vec![0u8; (w * h * 4) as usize];
     let sw = src.width as usize;
-    for y in 0..h as usize {
-        let y0 = (y * 2).min(src.height as usize - 1);
-        let y1 = (y * 2 + 1).min(src.height as usize - 1);
-        for x in 0..w as usize {
-            let x0 = (x * 2).min(sw - 1);
-            let x1 = (x * 2 + 1).min(sw - 1);
-            for c in 0..4 {
-                let s = |xx: usize, yy: usize| src.data[(yy * sw + xx) * 4 + c] as u32;
-                let sum = s(x0, y0) + s(x1, y0) + s(x0, y1) + s(x1, y1);
-                data[(y * w as usize + x) * 4 + c] = ((sum + 2) / 4) as u8;
+    in_bands(&mut data, w as usize * 4, |first, band| {
+        for (r, row) in band.chunks_mut(w as usize * 4).enumerate() {
+            let y = first + r;
+            let y0 = (y * 2).min(src.height as usize - 1);
+            let y1 = (y * 2 + 1).min(src.height as usize - 1);
+            for x in 0..w as usize {
+                let x0 = (x * 2).min(sw - 1);
+                let x1 = (x * 2 + 1).min(sw - 1);
+                for c in 0..4 {
+                    let s = |xx: usize, yy: usize| src.data[(yy * sw + xx) * 4 + c] as u32;
+                    let sum = s(x0, y0) + s(x1, y0) + s(x0, y1) + s(x1, y1);
+                    row[x * 4 + c] = ((sum + 2) / 4) as u8;
+                }
             }
         }
-    }
+    });
     MipLevel {
         width: w,
         height: h,
         data,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The mip chain as the spec describes it, one pixel at a time.
+    fn reference(img: &CanvasImage) -> Vec<MipLevel> {
+        let premul: Vec<u8> = img
+            .pixels
+            .chunks(4)
+            .flat_map(|p| {
+                let a = p[3] as u32;
+                let m = |c: u8| ((c as u32 * a + 127) / 255) as u8;
+                [m(p[0]), m(p[1]), m(p[2]), p[3]]
+            })
+            .collect();
+        let mut levels = vec![MipLevel {
+            width: img.width,
+            height: img.height,
+            data: premul,
+        }];
+        while levels.last().is_some_and(|l| l.width > 1 || l.height > 1) {
+            let src = levels.last().unwrap();
+            let (w, h) = ((src.width / 2).max(1), (src.height / 2).max(1));
+            let (sw, sh) = (src.width as usize, src.height as usize);
+            let mut data = Vec::new();
+            for y in 0..h as usize {
+                for x in 0..w as usize {
+                    for c in 0..4 {
+                        let s = |xx: usize, yy: usize| {
+                            src.data[(yy.min(sh - 1) * sw + xx.min(sw - 1)) * 4 + c] as u32
+                        };
+                        let sum = s(2 * x, 2 * y)
+                            + s(2 * x + 1, 2 * y)
+                            + s(2 * x, 2 * y + 1)
+                            + s(2 * x + 1, 2 * y + 1);
+                        data.push(((sum + 2) / 4) as u8);
+                    }
+                }
+            }
+            levels.push(MipLevel {
+                width: w,
+                height: h,
+                data,
+            });
+        }
+        levels
+    }
+
+    #[test]
+    fn mips_built_in_bands_match_the_reference() {
+        // Odd sizes, tall enough to split into bands across threads
+        for (w, h) in [(131u32, 197u32), (1, 300), (300, 1), (7, 5)] {
+            let pixels: Vec<u8> = (0..w * h * 4)
+                .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+                .collect();
+            let img = CanvasImage {
+                key: 1,
+                revision: 1,
+                width: w,
+                height: h,
+                pixels,
+            };
+            let got = build_mips(&img, 16384);
+            let want = reference(&img);
+            assert_eq!(got.len(), want.len(), "{w}x{h}");
+            for (g, r) in got.iter().zip(&want) {
+                assert_eq!((g.width, g.height), (r.width, r.height));
+                assert!(g.data == r.data, "{w}x{h} level {}x{}", g.width, g.height);
+            }
+        }
+    }
+
+    #[test]
+    fn levels_over_the_texture_limit_are_skipped() {
+        let img = CanvasImage {
+            key: 1,
+            revision: 1,
+            width: 64,
+            height: 32,
+            pixels: vec![255; 64 * 32 * 4],
+        };
+        let levels = build_mips(&img, 16);
+        assert_eq!((levels[0].width, levels[0].height), (16, 8));
     }
 }

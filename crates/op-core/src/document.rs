@@ -721,27 +721,51 @@ impl Document {
     /// when passing through at full opacity without a mask, else on their
     /// own first and then blended in as one. A layer whose group isn't in
     /// the list counts as top-level.
+    ///
+    /// Bands of tile rows composite on separate threads: a 3000 × 1080
+    /// document has to composite well within a frame while a layer is
+    /// dragged.
     pub fn composite_layers_rgba8(&self, layers: &[Layer]) -> Vec<u8> {
         let (w, h) = (self.width as usize, self.height as usize);
-        let mut out = vec![0f32; w * h * 4];
+        let mut bytes = vec![0u8; w * h * 4];
+        if w == 0 || h == 0 {
+            return bytes;
+        }
         let top = |l: &Layer| l.parent.is_none_or(|p| !layers.iter().any(|x| x.id == p));
-        self.composite_children(layers, &top, &mut out);
-        out.iter()
-            .map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
-            .collect()
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let tile = TILE_SIZE as usize;
+        let tile_rows = h.div_ceil(tile);
+        let band = tile_rows.div_ceil(threads).max(1) * tile;
+        std::thread::scope(|scope| {
+            for (i, chunk) in bytes.chunks_mut(band * w * 4).enumerate() {
+                let top = &top;
+                scope.spawn(move || {
+                    let y0 = i * band;
+                    let rows = chunk.len() / (w * 4);
+                    let mut out = vec![0f32; chunk.len()];
+                    self.composite_children(layers, top, &mut out, (y0, y0 + rows));
+                    for (b, v) in chunk.iter_mut().zip(&out) {
+                        *b = (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+                    }
+                });
+            }
+        });
+        bytes
     }
 
     /// Composites the layers of `layers` that `belongs` picks, in order,
-    /// onto `out` (straight RGBA, 0..=1).
+    /// onto `out` (straight RGBA, 0..=1): the document's rows `band.0`
+    /// to `band.1`, a whole number of tile rows from a tile row's top.
     fn composite_children(
         &self,
         layers: &[Layer],
         belongs: &dyn Fn(&Layer) -> bool,
         out: &mut [f32],
+        band: (usize, usize),
     ) {
         for layer in layers.iter().filter(|l| belongs(l) && l.visible) {
             match &layer.kind {
-                LayerKind::Raster(image) => self.composite_image(layer, image, out),
+                LayerKind::Raster(image) => self.composite_image(layer, image, out, band),
                 LayerKind::Group { .. } => {
                     let id = layer.id;
                     let child = move |l: &Layer| l.parent == Some(id);
@@ -749,11 +773,11 @@ impl Document {
                     let mask = layer.mask.as_ref().filter(|m| m.enabled);
                     if layer.blend_mode == BlendMode::PassThrough && alpha >= 1.0 && mask.is_none()
                     {
-                        self.composite_children(layers, &child, out);
+                        self.composite_children(layers, &child, out, band);
                     } else if alpha > 0.0 {
                         let mut own = vec![0f32; out.len()];
-                        self.composite_children(layers, &child, &mut own);
-                        self.blend_buffer(layer, &own, out);
+                        self.composite_children(layers, &child, &mut own, band);
+                        self.blend_buffer(layer, &own, out, band.0);
                     }
                 }
             }
@@ -762,7 +786,7 @@ impl Document {
 
     /// Blends a group's own composite onto `out` with the group's mode,
     /// opacity and mask (Pass Through then acts as Normal).
-    fn blend_buffer(&self, group: &Layer, own: &[f32], out: &mut [f32]) {
+    fn blend_buffer(&self, group: &Layer, own: &[f32], out: &mut [f32], y0: usize) {
         let w = self.width as usize;
         let alpha = group.opacity * group.fill;
         let mask = group.mask.as_ref().filter(|m| m.enabled);
@@ -777,7 +801,7 @@ impl Document {
             .zip(out.as_chunks_mut::<4>().0.iter_mut())
             .enumerate()
         {
-            let (x, y) = ((i % w) as u32, (i / w) as u32);
+            let (x, y) = ((i % w) as u32, (i / w + y0) as u32);
             let m = mask.map_or(1.0, |m| m.value(x, y) as f32 / 255.0);
             let sa = s[3] * alpha * m;
             if sa <= 0.0 {
@@ -789,15 +813,23 @@ impl Document {
         }
     }
 
-    /// Composites one pixel layer onto `out`.
-    fn composite_image(&self, layer: &Layer, image: &TiledImage, out: &mut [f32]) {
-        let (w, h) = (self.width as usize, self.height as usize);
+    /// Composites one pixel layer onto `out`, the rows of `band`.
+    fn composite_image(
+        &self,
+        layer: &Layer,
+        image: &TiledImage,
+        out: &mut [f32],
+        band: (usize, usize),
+    ) {
+        let (w, h) = (self.width as usize, band.1);
         let layer_alpha = layer.opacity * layer.fill;
         if layer_alpha <= 0.0 {
             return;
         }
         let mask = layer.mask.as_ref().filter(|m| m.enabled);
-        for ty in 0..image.tiles_y() {
+        let normal = layer.blend_mode == BlendMode::Normal;
+        let tile_rows = band.0 / TILE_SIZE as usize..band.1.div_ceil(TILE_SIZE as usize);
+        for ty in tile_rows.map(|t| t as u32).filter(|&t| t < image.tiles_y()) {
             for tx in 0..image.tiles_x() {
                 let Some(tile) = image.tile(tx, ty) else {
                     continue;
@@ -815,7 +847,7 @@ impl Document {
                 let th = (TILE_SIZE as usize).min(h - y0);
                 for row in 0..th {
                     let src_row = &tile.data[row * TILE_SIZE as usize * 4..];
-                    let dst_row = &mut out[((y0 + row) * w + x0) * 4..];
+                    let dst_row = &mut out[((y0 + row - band.0) * w + x0) * 4..];
                     for col in 0..tw {
                         let s = &src_row[col * 4..col * 4 + 4];
                         let m = mask_tile.map_or(1.0, |t| {
@@ -827,6 +859,20 @@ impl Document {
                         }
                         let d = &mut dst_row[col * 4..col * 4 + 4];
                         let src = [s[0], s[1], s[2]].map(|v| v as f32 / 255.0);
+                        // Normal: plain source-over, the common case
+                        if normal {
+                            if sa >= 1.0 {
+                                d.copy_from_slice(&[src[0], src[1], src[2], 1.0]);
+                            } else {
+                                let da = d[3] * (1.0 - sa);
+                                let oa = sa + da;
+                                for c in 0..3 {
+                                    d[c] = (src[c] * sa + d[c] * da) / oa;
+                                }
+                                d[3] = oa;
+                            }
+                            continue;
+                        }
                         let (x, y) = ((x0 + col) as u32, (y0 + row) as u32);
                         let out = blend::composite(
                             layer.blend_mode,

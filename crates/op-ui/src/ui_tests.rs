@@ -2053,11 +2053,45 @@ fn layers_panel_footer_and_lock_buttons() {
     click(&mut h, at_pt(1028.0 + 88.0, 542.0 + 73.75));
     let layer = &active(&h).doc.layers[1];
     assert!(layer.lock_all && layer.pixels_locked() && layer.lock_position);
+    // As in Photoshop, only Lock all's button shows set: the other four
+    // show unset (their own flags stay underneath)
+    let image = h.render().expect("render frame");
+    let corner = |x: f32| {
+        image
+            .get_pixel(
+                ((1028.0 + x - 8.0) * 2.0) as u32,
+                ((542.0 + 73.75 - 8.0) * 2.0) as u32,
+            )
+            .0
+    };
+    let (all_bg, position_bg, panel) = (corner(129.0), corner(88.0), corner(150.0));
+    assert_ne!(all_bg, panel, "Lock all shows set");
+    assert_eq!(position_bg, panel, "Lock position shows unset");
+    assert_eq!(corner(43.5), panel, "Lock transparent pixels shows unset");
+    // and the opacity and fill can't be dragged
+    for y in [36.5 + 9.5, 64.5 + 9.0] {
+        drag(
+            &mut h,
+            at_pt(1028.0 + 195.0, 542.0 + y),
+            at_pt(1028.0 + 150.0, 542.0 + y),
+            Modifiers::NONE,
+        );
+    }
+    let layer = &active(&h).doc.layers[1];
+    assert_eq!((layer.opacity, layer.fill), (1.0, 1.0));
     // Turning it off brings back the locks underneath
     click(&mut h, at_pt(1028.0 + 129.0, 542.0 + 73.75));
     let layer = &active(&h).doc.layers[1];
     assert!(!layer.lock_all && layer.lock_transparency && layer.lock_position);
     assert!(!layer.pixels_locked());
+    // Unlocked, dragging the opacity field changes it
+    drag(
+        &mut h,
+        at_pt(1028.0 + 195.0, 542.0 + 46.0),
+        at_pt(1028.0 + 150.0, 542.0 + 46.0),
+        Modifiers::NONE,
+    );
+    assert!(active(&h).doc.layers[1].opacity < 1.0);
     // Prevent auto-nesting has its own flag
     click(&mut h, at_pt(1028.0 + 110.5, 542.0 + 73.75));
     assert!(active(&h).doc.layers[1].lock_nesting);
@@ -3490,4 +3524,62 @@ fn custom_filter_types_a_kernel_and_remembers_it() {
     // Opened again, it starts from the kernel just applied
     run_command(&mut h, Command::CustomFilter);
     assert_eq!(kernel(&h)[0], 2);
+}
+
+/// Dragging with the Move tool, Brush and Eraser on a 3000 × 1080
+/// document keeps up: each frame composites the document again, so this
+/// catches compositing, layer-bounds scans or thumbnails going slow again
+/// (moving took 56 ms a frame before compositing went parallel and bounds
+/// scans stopped reading every pixel).
+#[test]
+fn dragging_on_a_large_document_keeps_up() {
+    for key in [egui::Key::V, egui::Key::B, egui::Key::E] {
+        let mut h = harness(Vec::new());
+        {
+            let app = &mut h.state_mut().state;
+            crate::actions::close_all(app);
+            let mut doc = op_core::Document::new_with_background("big", 3000, 1080, Color::WHITE);
+            let mut img = op_core::TiledImage::new(3000, 1080);
+            for y in 100..900 {
+                for x in 500..2500 {
+                    img.set_pixel(x, y, [200, 30, 30, 255]);
+                }
+            }
+            let id = doc.new_layer_id();
+            doc.insert_above_active(op_core::Layer::raster(id, "L", img));
+            app.add_document(doc, "Open");
+        }
+        h.run_steps(6);
+        h.key_press(key);
+        h.run_steps(2);
+        let from = at_pt(700.0, 450.0);
+        h.hover_at(from);
+        h.event(egui::Event::PointerButton {
+            pos: from,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Modifiers::NONE,
+        });
+        h.step();
+        let before = active(&h).doc.revision();
+        let frames = 20;
+        let t = std::time::Instant::now();
+        for i in 1..=frames {
+            h.event(egui::Event::PointerMoved(
+                from + egui::vec2(i as f32 * 3.0, (i % 7) as f32),
+            ));
+            h.step();
+        }
+        let per_frame = t.elapsed() / frames;
+        assert_ne!(
+            active(&h).doc.revision(),
+            before,
+            "{key:?} changed the document"
+        );
+        // Generous: about 10 ms here, with room for a loaded machine
+        assert!(
+            per_frame < std::time::Duration::from_millis(40),
+            "{key:?}: {per_frame:?} a frame"
+        );
+    }
 }

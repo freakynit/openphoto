@@ -298,6 +298,16 @@ fn active_editable(state: &DocState) -> bool {
     })
 }
 
+/// Whether the active layer has Lock all on: its blend mode, opacity and
+/// fill can't change.
+fn active_locks_all(state: &DocState) -> bool {
+    state
+        .doc
+        .active_layer
+        .and_then(|id| state.doc.layer(id))
+        .is_some_and(|l| l.lock_all)
+}
+
 fn active_layer(state: &mut DocState) -> Option<&mut Layer> {
     let id = state.doc.active_layer?;
     state.doc.layer_mut(id)
@@ -375,8 +385,8 @@ fn blend_row(ui: &mut Ui, state: &mut DocState, full: Rect) {
     let at = |x: f32, y: f32| full.min + Vec2::new(pt(x), pt(y));
     let mut edits = Edits::default();
     // Not the background's blend mode and opacity, nor a locked group's
-    // layers'
-    let editable = active_editable(state);
+    // layers', nor a layer under Lock all
+    let editable = active_editable(state) && !active_locks_all(state);
     let Some(layer) = active_layer(state) else {
         return;
     };
@@ -441,7 +451,8 @@ fn lock_row(ui: &mut Ui, state: &mut DocState, full: Rect) {
         text_color(editable),
     );
     let all = layer.lock_all;
-    // Under Lock all the other buttons show as set and can't be changed
+    // Under Lock all only its own button shows set; the other four show
+    // unset and dimmed and can't be changed, as in Photoshop
     let flags: [(f32, Icon, &str, &mut bool); 5] = [
         (
             43.5,
@@ -475,13 +486,13 @@ fn lock_row(ui: &mut Ui, state: &mut DocState, full: Rect) {
         let is_all = i == Icon::LockAll;
         let active = editable && (is_all || !all);
         let response = ui.interact(rect, ui.id().with(tip), Sense::click());
-        let on = editable && (*flag || all);
+        let on = editable && *flag && (is_all || !all);
         if on {
             ui.painter().rect_filled(rect, pt(2.0), color::TOOL_ACTIVE);
         } else if active && response.hovered() {
             ui.painter().rect_filled(rect, pt(2.0), color::HOVER);
         }
-        icon(ui.painter(), center, i, editable, color::PANEL);
+        icon(ui.painter(), center, i, active, color::PANEL);
         let response = response.on_hover_text(tip);
         // Photoshop records every lock button as "Lock Layer"
         if active && response.clicked() {
@@ -494,9 +505,9 @@ fn lock_row(ui: &mut Ui, state: &mut DocState, full: Rect) {
         Align2::RIGHT_CENTER,
         "Fill:",
         theme::body(),
-        text_color(editable),
+        text_color(editable && !all),
     );
-    let r = percent_field(ui, full, 64.5, &mut layer.fill, editable);
+    let r = percent_field(ui, full, 64.5, &mut layer.fill, editable && !all);
     edits.track(&r, "Fill Opacity Change");
     edits.apply(state);
 }

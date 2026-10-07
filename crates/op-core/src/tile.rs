@@ -200,22 +200,35 @@ impl TiledImage {
     /// not, as (x0, y0, x1, y1); `None` when there are none.
     pub fn content_bounds(&self) -> Option<(i64, i64, i64, i64)> {
         let ts = TILE_SIZE as i64;
+        // Tiles on the edge of the tile grid first: once they set the
+        // bounds, tiles wholly inside them are skipped, so a large layer
+        // costs its border tiles, not every pixel (this runs every frame
+        // for the Move tool's controls and the align buttons)
+        let (mut tx0, mut ty0, mut tx1, mut ty1) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+        for &(tx, ty) in self.tiles.keys() {
+            (tx0, ty0, tx1, ty1) = (tx0.min(tx), ty0.min(ty), tx1.max(tx), ty1.max(ty));
+        }
+        let mut order: Vec<_> = self.tiles.iter().collect();
+        order.sort_by_key(|(k, _)| !(k.0 == tx0 || k.0 == tx1 || k.1 == ty0 || k.1 == ty1));
         let mut b: Option<(i64, i64, i64, i64)> = None;
-        for (&(tx, ty), tile) in &self.tiles {
-            for row in 0..ts {
-                for col in 0..ts {
-                    if tile.data[((row * ts + col) * 4 + 3) as usize] == 0 {
-                        continue;
-                    }
-                    let (x, y) = (tx as i64 * ts + col, ty as i64 * ts + row);
-                    b = Some(match b {
-                        None => (x, y, x + 1, y + 1),
-                        Some((x0, y0, x1, y1)) => {
-                            (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1))
-                        }
-                    });
-                }
+        for (&(tx, ty), tile) in order {
+            let (ox, oy) = (tx as i64 * ts, ty as i64 * ts);
+            if let Some((x0, y0, x1, y1)) = b
+                && ox >= x0
+                && oy >= y0
+                && ox + ts <= x1
+                && oy + ts <= y1
+            {
+                continue;
             }
+            let Some((cx0, cy0, cx1, cy1)) = tile_bounds(&tile.data) else {
+                continue;
+            };
+            let (x0, y0, x1, y1) = (ox + cx0, oy + cy0, ox + cx1, oy + cy1);
+            b = Some(match b {
+                None => (x0, y0, x1, y1),
+                Some(c) => (c.0.min(x0), c.1.min(y0), c.2.max(x1), c.3.max(y1)),
+            });
         }
         b
     }
@@ -440,6 +453,21 @@ impl TiledImage {
     }
 }
 
+/// The box around a tile's pixels with any alpha (tile coordinates, end
+/// exclusive): rows scanned in from the top and bottom, then columns in
+/// from the sides between them, each stopping at the first pixel found.
+fn tile_bounds(data: &[u8]) -> Option<(i64, i64, i64, i64)> {
+    let ts = TILE_SIZE as usize;
+    let alpha = |x: usize, y: usize| data[(y * ts + x) * 4 + 3] != 0;
+    let row_has = |y: usize| (0..ts).any(|x| alpha(x, y));
+    let top = (0..ts).find(|&y| row_has(y))?;
+    let bottom = (top..ts).rev().find(|&y| row_has(y))?;
+    let col_has = |x: usize| (top..=bottom).any(|y| alpha(x, y));
+    let left = (0..ts).find(|&x| col_has(x))?;
+    let right = (left..ts).rev().find(|&x| col_has(x))?;
+    Some((left as i64, top as i64, right as i64 + 1, bottom as i64 + 1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -559,5 +587,52 @@ mod tests {
         let back = TiledImage::from_region(4, 4, -1, -1, 302, 4, &px);
         assert_eq!(back.content_bounds(), img.content_bounds());
         assert_eq!(back.pixel_at(300, 2), [2, 2, 2, 255]);
+    }
+
+    #[test]
+    fn content_bounds_match_a_full_scan() {
+        // Sparse dots, some past the canvas on every side, in many tiles
+        for seed in 0u64..40 {
+            let mut img = TiledImage::new(700, 500);
+            let mut v = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+            let mut dots = Vec::new();
+            for _ in 0..(seed % 7) {
+                v ^= v << 13;
+                v ^= v >> 7;
+                v ^= v << 17;
+                let x = (v % 1100) as i64 - 200;
+                let y = ((v >> 20) % 900) as i64 - 200;
+                img.set_pixel_at(x, y, [1, 2, 3, (v >> 40) as u8 | 1]);
+                dots.push((x, y));
+            }
+            let want = dots
+                .iter()
+                .fold(None, |b: Option<(i64, i64, i64, i64)>, &(x, y)| {
+                    Some(match b {
+                        None => (x, y, x + 1, y + 1),
+                        Some(c) => (c.0.min(x), c.1.min(y), c.2.max(x + 1), c.3.max(y + 1)),
+                    })
+                });
+            assert_eq!(img.content_bounds(), want, "seed {seed}");
+        }
+        // A large filled block: interior tiles are skipped, edges exact
+        let mut img = TiledImage::new(3000, 1080);
+        for y in 101..899 {
+            for x in 503..2497 {
+                img.set_pixel(x, y, [9, 9, 9, 255]);
+            }
+        }
+        assert_eq!(img.content_bounds(), Some((503, 101, 2497, 899)));
+        // and it is quick: it runs several times a frame (the old full
+        // scan took tens of milliseconds)
+        let t = std::time::Instant::now();
+        for _ in 0..10 {
+            std::hint::black_box(img.content_bounds());
+        }
+        assert!(
+            t.elapsed() < std::time::Duration::from_millis(20),
+            "{:?}",
+            t.elapsed()
+        );
     }
 }

@@ -362,7 +362,13 @@ impl DocState {
         {
             return Some(tex.clone());
         }
-        let image = composite_thumbnail(&self.doc, max_px);
+        // The canvas's composite, unless Quick Mask tints it
+        let image = if self.doc.quick_mask.is_none() {
+            let canvas = self.canvas_image();
+            scaled_thumbnail(&canvas.pixels, canvas.width, canvas.height, max_px)
+        } else {
+            composite_thumbnail(&self.doc, max_px)
+        };
         let tex = ctx.load_texture(
             format!("navigator-{}", self.doc.id.0),
             image,
@@ -449,16 +455,21 @@ const SNAPSHOT_THUMB_PX: u32 = 96;
 
 /// Downscaled composite of the whole document (nearest-neighbor).
 fn composite_thumbnail(doc: &Document, max_px: u32) -> egui::ColorImage {
-    let pixels = doc.composite_rgba8();
-    let scale = (max_px as f32 / doc.width.max(doc.height) as f32).min(1.0);
-    let tw = ((doc.width as f32 * scale).round() as u32).max(1);
-    let th = ((doc.height as f32 * scale).round() as u32).max(1);
+    scaled_thumbnail(&doc.composite_rgba8(), doc.width, doc.height, max_px)
+}
+
+/// `pixels` (`width` × `height` straight RGBA8) at most `max_px` on a side,
+/// nearest-neighbor.
+fn scaled_thumbnail(pixels: &[u8], width: u32, height: u32, max_px: u32) -> egui::ColorImage {
+    let scale = (max_px as f32 / width.max(height) as f32).min(1.0);
+    let tw = ((width as f32 * scale).round() as u32).max(1);
+    let th = ((height as f32 * scale).round() as u32).max(1);
     let mut out = Vec::with_capacity((tw * th) as usize);
     for y in 0..th {
         for x in 0..tw {
-            let sx = (((x as f32 + 0.5) / scale) as u32).min(doc.width - 1);
-            let sy = (((y as f32 + 0.5) / scale) as u32).min(doc.height - 1);
-            let i = ((sy * doc.width + sx) * 4) as usize;
+            let sx = (((x as f32 + 0.5) / scale) as u32).min(width - 1);
+            let sy = (((y as f32 + 0.5) / scale) as u32).min(height - 1);
+            let i = ((sy * width + sx) * 4) as usize;
             out.push(egui::Color32::from_rgba_unmultiplied(
                 pixels[i],
                 pixels[i + 1],
