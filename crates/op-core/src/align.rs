@@ -149,7 +149,17 @@ fn shift(doc: &mut Document, id: LayerId, dx: i64, dy: i64) {
 /// Whether `align` can run: a pixel selection with a layer to move, or two
 /// or more layers to line up.
 pub fn can_align(doc: &Document) -> bool {
-    let n = movable(doc).len();
+    can_align_count(doc, movable_count(doc))
+}
+
+/// How many selected layers align and distribute would move (each needs a
+/// scan for its pixels' bounds, so callers asking every frame cache it).
+pub fn movable_count(doc: &Document) -> usize {
+    movable(doc).len()
+}
+
+/// [`can_align`] for `n` movable layers.
+pub fn can_align_count(doc: &Document, n: usize) -> bool {
     if doc.selection().is_some() {
         n >= 1
     } else {
@@ -195,7 +205,7 @@ pub fn align(doc: &mut Document, how: Align) -> bool {
 
 /// Whether `distribute` can run: three or more layers to spread.
 pub fn can_distribute(doc: &Document) -> bool {
-    movable(doc).len() >= 3
+    movable_count(doc) >= 3
 }
 
 /// Spreads the selected layers evenly: the chosen edges or centers at equal

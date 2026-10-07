@@ -326,54 +326,116 @@ fn tool_tip(tool: Tool) -> String {
 
 /// Photoshop's tool flyout: right-clicking a slot lists the tools of its
 /// group to the right of the button, with the shown tool marked.
+/// The flyout's measurements on Photoshop 2026 (points): 19 pt rows in a
+/// 1 pt `#3e3e3e` frame, the current tool's 4 pt square at x 7, the icon
+/// centered at 28.5, the name from 41, the shortcut ending 7 pt from the
+/// right and at least 11 pt after the longest name; as wide as that needs
+/// (Move Tool / Artboard Tool: 130 × 40), its top-left 1.5 pt right of the
+/// button, level with its top (the Move tool's: 36, 92 in the window).
+pub mod flyout_metrics {
+    pub const ROW: f32 = 19.0;
+    pub const FRAME: f32 = 1.0;
+    pub const MARK_X: f32 = 7.0;
+    pub const ICON_X: f32 = 28.5;
+    pub const NAME_X: f32 = 41.0;
+    pub const GAP: f32 = 11.0;
+    pub const RIGHT: f32 = 7.0;
+    pub const OFFSET: (f32, f32) = (1.5, 0.0);
+    /// Text size: Photoshop's "Move Tool" is 47.5 pt wide and "Artboard
+    /// Tool" 65 in Adobe Clean; Source Sans 3 at 11.5 pt gives 48.7 and
+    /// 65.7.
+    pub const TEXT: f32 = 11.5;
+    pub const ICON: f32 = 16.3;
+}
+
+/// The flyout's text font (the panels' font).
+fn flyout_font() -> egui::FontId {
+    egui::FontId::proportional(crate::theme::pt(flyout_metrics::TEXT))
+}
+
+fn flyout_galley(painter: &egui::Painter, text: &str) -> std::sync::Arc<egui::Galley> {
+    painter.layout_no_wrap(text.to_owned(), flyout_font(), color::TEXT)
+}
+
+/// The flyout's size for `group`, in points.
+pub fn flyout_size(painter: &egui::Painter, group: &[Tool]) -> Vec2 {
+    use flyout_metrics::*;
+    let width = |t: &str| flyout_galley(painter, t).size().x;
+    let pt = crate::theme::pt;
+    let name = group.iter().map(|t| width(t.name())).fold(0.0, f32::max);
+    let key = group
+        .iter()
+        .filter_map(|t| t.shortcut())
+        .map(|k| width(&k.to_string()))
+        .fold(0.0, f32::max);
+    Vec2::new(
+        pt(NAME_X + GAP + RIGHT) + name + key,
+        pt(ROW * group.len() as f32 + 2.0 * FRAME),
+    )
+}
+
 fn flyout(button: &egui::Response, group: &[Tool], shown: Tool, app: &mut AppState) {
+    use crate::theme::pt;
+    use flyout_metrics::*;
     let open = button
         .secondary_clicked()
         .then_some(egui::SetOpenCommand::Bool(true));
+    let size = flyout_size(&button.ctx.layer_painter(button.layer_id), group);
+    let corner = button.rect.right_top() + Vec2::new(pt(OFFSET.0), pt(OFFSET.1));
     egui::Popup::from_response(button)
-        .open_memory(open)
+        .anchor(corner)
         .align(egui::RectAlign::RIGHT_START)
-        .gap(crate::theme::pt(2.0))
+        .gap(0.0)
+        .open_memory(open)
         .close_behavior(egui::PopupCloseBehavior::CloseOnClick)
+        .frame(
+            egui::Frame::new()
+                .fill(color::PANEL)
+                .stroke(Stroke::new(pt(FRAME), Color32::from_gray(0x3e)))
+                .shadow(egui::Shadow {
+                    offset: [0, 4],
+                    blur: 12,
+                    spread: 0,
+                    color: Color32::from_black_alpha(90),
+                }),
+        )
         .show(|ui| {
-            ui.set_min_width(crate::theme::pt(200.0));
+            ui.spacing_mut().item_spacing = Vec2::ZERO;
+            let inner = size.x - pt(2.0 * FRAME);
+            ui.set_width(inner);
             for &tool in group {
-                let row_h = crate::theme::pt(22.0);
                 let (rect, response) =
-                    ui.allocate_exact_size(Vec2::new(ui.available_width(), row_h), Sense::click());
+                    ui.allocate_exact_size(Vec2::new(inner, pt(ROW)), Sense::click());
+                // x measured from the frame's outer edge
+                let x = |v: f32| rect.left() - pt(FRAME) + pt(v);
                 let painter = ui.painter();
                 if response.hovered() {
-                    painter.rect_filled(rect, 2, color::ACCENT);
+                    painter.rect_filled(rect, 0, color::ACCENT);
                 }
                 if tool == shown {
-                    let mark = Rect::from_center_size(
-                        rect.left_center() + Vec2::new(crate::theme::pt(7.0), 0.0),
-                        Vec2::splat(crate::theme::pt(4.0)),
+                    let mark = Rect::from_min_size(
+                        Pos2::new(x(MARK_X), rect.center().y - pt(2.0)),
+                        Vec2::splat(pt(4.0)),
                     );
                     painter.rect_filled(mark, 0, color::TEXT);
                 }
                 painter.text(
-                    rect.left_center() + Vec2::new(crate::theme::pt(22.0), 0.0),
+                    Pos2::new(x(ICON_X), rect.center().y),
                     Align2::CENTER_CENTER,
                     icons::tool(tool),
-                    theme::icon(crate::theme::pt(14.0)),
+                    theme::tool_icon(pt(ICON)),
                     color::ICON,
                 );
-                painter.text(
-                    rect.left_center() + Vec2::new(crate::theme::pt(36.0), 0.0),
-                    Align2::LEFT_CENTER,
-                    tool.name(),
-                    theme::body(),
-                    color::TEXT,
-                );
+                let galley = flyout_galley(painter, tool.name());
+                let name_pos = Pos2::new(x(NAME_X), rect.center().y - galley.size().y / 2.0);
+                painter.galley(name_pos, galley, color::TEXT);
                 if let Some(k) = tool.shortcut() {
-                    painter.text(
-                        rect.right_center() - Vec2::new(crate::theme::pt(8.0), 0.0),
-                        Align2::RIGHT_CENTER,
-                        k,
-                        theme::body(),
-                        color::TEXT,
+                    let galley = flyout_galley(painter, &k.to_string());
+                    let pos = Pos2::new(
+                        rect.right() + pt(FRAME) - pt(RIGHT) - galley.size().x,
+                        rect.center().y - galley.size().y / 2.0,
                     );
+                    painter.galley(pos, galley, color::TEXT);
                 }
                 if response.clicked() {
                     app.select_tool(tool);

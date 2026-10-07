@@ -642,7 +642,9 @@ impl Command {
             Self::SelectLinkedLayers => {
                 doc.is_some_and(|d| op_core::link::can_select_linked(&d.doc))
             }
-            Self::Align(_) => doc.is_some_and(|d| op_core::align::can_align(&d.doc)),
+            Self::Align(_) => {
+                doc.is_some_and(|d| op_core::align::can_align_count(&d.doc, d.movable_layers()))
+            }
             Self::GroupLayers | Self::NewGroupFromLayers => {
                 doc.is_some_and(|d| layer_ops::can_group(&d.doc))
             }
@@ -653,7 +655,7 @@ impl Command {
                     .is_some_and(|l| l.is_group())
             }),
             Self::NewGroup => doc.is_some(),
-            Self::Distribute(_) => doc.is_some_and(|d| op_core::align::can_distribute(&d.doc)),
+            Self::Distribute(_) => doc.is_some_and(|d| d.movable_layers() >= 3),
             Self::CloseOthers => app.docs.len() > 1,
             Self::Deselect
             | Self::SelectInverse

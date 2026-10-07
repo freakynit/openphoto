@@ -526,6 +526,12 @@ impl eframe::App for OpenPhotoApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        // OPENPHOTO_FRAME_LOG=1: each frame's interval (update and render)
+        // on stderr, to check that dragging keeps up in the real app
+        static FRAME_LOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *FRAME_LOG.get_or_init(|| std::env::var_os("OPENPHOTO_FRAME_LOG").is_some()) {
+            eprintln!("frame {:.1} ms", ctx.input(|i| i.unstable_dt) * 1000.0);
+        }
 
         // Closing the window with unsaved changes asks about each document
         // first, like quitting

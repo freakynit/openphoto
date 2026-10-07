@@ -38,6 +38,8 @@ type ControlsKey = (u64, Option<LayerId>, u64);
 /// A box in document pixels: (x0, y0, x1, y1).
 type Bounds = (f32, f32, f32, f32);
 
+type MovableKey = (u64, u64, Vec<op_core::LayerId>);
+
 pub struct DocState {
     pub doc: Document,
     /// The file the document was opened from or last saved to.
@@ -95,6 +97,9 @@ pub struct DocState {
     /// (revision, active layer, selection revision); `None` inside when the
     /// layer can't be transformed.
     controls_bounds: Option<(ControlsKey, Option<Bounds>)>,
+    /// How many selected layers Align/Distribute would move, for the
+    /// buttons' and menu items' enabled state (asked many times a frame).
+    movable: std::cell::RefCell<Option<(MovableKey, usize)>>,
     /// Marching-ants outline of the selection, cached per selection revision.
     outline: Option<(u64, Arc<Vec<[u32; 4]>>)>,
     canvas: Option<Arc<CanvasImage>>,
@@ -125,6 +130,24 @@ impl DocState {
         }
     }
 
+    /// Layers Align and Distribute would move, cached per document
+    /// revision, selection and selected layers.
+    pub fn movable_layers(&self) -> usize {
+        let key = (
+            self.doc.revision(),
+            self.doc.selection_revision(),
+            self.doc.selected_layers(),
+        );
+        if let Some((k, n)) = &*self.movable.borrow()
+            && *k == key
+        {
+            return *n;
+        }
+        let n = op_core::align::movable_count(&self.doc);
+        *self.movable.borrow_mut() = Some((key, n));
+        n
+    }
+
     /// `initial` names the first history state, e.g. "Open" or "New".
     pub fn new(doc: Document, initial: &str) -> Self {
         let snapshot_thumb = Some(composite_thumbnail(&doc, SNAPSHOT_THUMB_PX));
@@ -142,6 +165,7 @@ impl DocState {
             marquee_drag: None,
             move_drag: None,
             controls_bounds: None,
+            movable: Default::default(),
             stroke: None,
             last_paint_point: None,
             renaming: None,

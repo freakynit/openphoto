@@ -2566,6 +2566,11 @@ fn align_buttons_line_up_selected_layers() {
     assert!(lefts.iter().all(|&x| x == lefts[0]), "{lefts:?}");
     run_command(&mut h, Command::Distribute(Distribute::VerticalCenter));
     assert_eq!(last_history(&h), "Distribute Vertical Centers");
+    // Locked layers can't move: the (cached) enabled state follows
+    h.key_press_modifiers(Modifiers::COMMAND, egui::Key::Slash);
+    h.run_steps(2);
+    assert!(!Command::Align(op_core::align::Align::Left).enabled(&h.state().state));
+    assert!(!Command::Distribute(Distribute::Left).enabled(&h.state().state));
 }
 
 #[test]
@@ -3582,4 +3587,67 @@ fn dragging_on_a_large_document_keeps_up() {
             "{key:?}: {per_frame:?} a frame"
         );
     }
+}
+
+fn right_click(h: &mut Harness<'_, OpenPhotoApp>, pos: Pos2) {
+    h.hover_at(pos);
+    for pressed in [true, false] {
+        h.event(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Secondary,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        h.step();
+    }
+    h.run_steps(3);
+}
+
+#[test]
+#[ignore]
+fn screenshot_tool_flyout() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    right_click(&mut h, at_pt(19.5, 105.5));
+    shot(&mut h, "tool_flyout");
+}
+
+/// The frame color's columns and rows along a line through the flyout.
+fn flyout_frame(image: &image::RgbaImage) -> (Vec<u32>, Vec<u32>) {
+    let frame = |x: u32, y: u32| image.get_pixel(x, y).0[..3] == [0x3e, 0x3e, 0x3e];
+    let xs = (60..400).filter(|&x| frame(x, 230)).collect();
+    let ys = (150..300).filter(|&y| frame(300, y)).collect();
+    (xs, ys)
+}
+
+#[test]
+fn tool_flyout_matches_photoshop_and_switches_tools() {
+    let mut h = harness(Vec::new());
+    reference_document(&mut h);
+    // Right-click the Move tool: Photoshop 2026's flyout is 130 x 40 pt
+    // with its frame from (36, 92) to (166, 132)
+    right_click(&mut h, at_pt(19.5, 105.5));
+    let image = h.render().expect("render frame");
+    let (xs, ys) = flyout_frame(&image);
+    let (left, right) = (xs[0] as f32 / 2.0, *xs.last().unwrap() as f32 / 2.0 + 0.5);
+    let (top, bottom) = (ys[0] as f32 / 2.0, *ys.last().unwrap() as f32 / 2.0 + 0.5);
+    assert!(
+        (left - 36.0).abs() <= 1.0 && (top - 92.0).abs() <= 1.0,
+        "{left}, {top}"
+    );
+    assert!(
+        (right - left - 130.0).abs() <= 1.5,
+        "width {}",
+        right - left
+    );
+    assert!(
+        (bottom - top - 40.0).abs() <= 0.5,
+        "height {}",
+        bottom - top
+    );
+    // The second row (19 pt rows inside a 1 pt frame) picks the Artboard tool
+    click(&mut h, at_pt(80.0, 92.0 + 1.0 + 19.0 + 9.5));
+    assert_eq!(h.state().state.tool, op_tools::Tool::Artboard);
+    let image = h.render().expect("render frame");
+    assert!(flyout_frame(&image).0.is_empty(), "the flyout closes");
 }
