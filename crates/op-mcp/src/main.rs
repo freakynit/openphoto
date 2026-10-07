@@ -153,6 +153,31 @@ fn get_i32(args: &Value, key: &str, default: i32) -> Result<i32, String> {
     }
 }
 
+/// The largest width or height a document may have, as in the app
+/// (`op-ui` dialogs' `MAX_DIMENSION`).
+const MAX_DIMENSION: u32 = 30_000;
+
+/// Fails unless `v` is within `lo..=hi` (the range the app's dialog for
+/// that parameter allows).
+fn check_range<T: PartialOrd + std::fmt::Display>(
+    key: &str,
+    v: T,
+    lo: T,
+    hi: T,
+) -> Result<T, String> {
+    if v < lo || v > hi {
+        return Err(format!("{key} must be {lo}-{hi}"));
+    }
+    Ok(v)
+}
+
+fn check_size(width: u32, height: u32) -> Result<(), String> {
+    if !(1..=MAX_DIMENSION).contains(&width) || !(1..=MAX_DIMENSION).contains(&height) {
+        return Err(format!("width and height must be 1-{MAX_DIMENSION}"));
+    }
+    Ok(())
+}
+
 fn get_u8(args: &Value, key: &str, default: u8) -> Result<u8, String> {
     let n = get_u32(args, key, default as u32)?;
     u8::try_from(n).map_err(|_| format!("parameter '{key}' must be 0-255"))
@@ -603,9 +628,7 @@ fn h_new_document(s: &mut AppState, a: &Value) -> Result<Value, String> {
     let title = opt_str(a, "title").unwrap_or_else(|| "Untitled".to_string());
     let width = get_u32(a, "width", 800)?;
     let height = get_u32(a, "height", 600)?;
-    if !(1..=16000).contains(&width) || !(1..=16000).contains(&height) {
-        return Err("width and height must be 1-16000".to_string());
-    }
+    check_size(width, height)?;
     let fill = opt_rgb(a, "fill")?.unwrap_or([255, 255, 255]);
     let color = Color::from_rgba8([fill[0], fill[1], fill[2], 255]);
     let doc = Document::new_with_background(title, width, height, color);
@@ -1101,22 +1124,19 @@ fn apply_filter(s: &mut AppState, a: &Value, f: Filter, name: &str) -> Result<Va
 }
 
 fn h_filter_gaussian_blur(s: &mut AppState, a: &Value) -> Result<Value, String> {
-    let radius = get_f32(a, "radius", 1.0)?;
-    if !(0.0..=250.0).contains(&radius) {
-        return Err("radius must be 0-250".to_string());
-    }
+    let radius = check_range("radius", get_f32(a, "radius", 1.0)?, 0.1, 1000.0)?;
     apply_filter(s, a, Filter::GaussianBlur { radius }, "Gaussian Blur")
 }
 fn h_filter_box_blur(s: &mut AppState, a: &Value) -> Result<Value, String> {
-    let radius = get_u32(a, "radius", 1)?;
+    let radius = check_range("radius", get_u32(a, "radius", 1)?, 1, 2000)?;
     apply_filter(s, a, Filter::BoxBlur { radius }, "Box Blur")
 }
 fn h_filter_average(s: &mut AppState, a: &Value) -> Result<Value, String> {
     apply_filter(s, a, Filter::Average, "Average")
 }
 fn h_filter_unsharp_mask(s: &mut AppState, a: &Value) -> Result<Value, String> {
-    let amount = get_f32(a, "amount", 100.0)?;
-    let radius = get_f32(a, "radius", 1.0)?;
+    let amount = check_range("amount", get_f32(a, "amount", 100.0)?, 1.0, 500.0)?;
+    let radius = check_range("radius", get_f32(a, "radius", 1.0)?, 0.1, 1000.0)?;
     let threshold = get_u8(a, "threshold", 0)?;
     apply_filter(
         s,
@@ -1130,7 +1150,7 @@ fn h_filter_unsharp_mask(s: &mut AppState, a: &Value) -> Result<Value, String> {
     )
 }
 fn h_filter_add_noise(s: &mut AppState, a: &Value) -> Result<Value, String> {
-    let amount = get_f32(a, "amount", 10.0)?;
+    let amount = check_range("amount", get_f32(a, "amount", 10.0)?, 0.1, 400.0)?;
     let gaussian = get_bool(a, "gaussian", false)?;
     let monochromatic = get_bool(a, "monochromatic", false)?;
     apply_filter(
@@ -1145,16 +1165,16 @@ fn h_filter_add_noise(s: &mut AppState, a: &Value) -> Result<Value, String> {
     )
 }
 fn h_filter_median(s: &mut AppState, a: &Value) -> Result<Value, String> {
-    let radius = get_u32(a, "radius", 1)?;
+    let radius = check_range("radius", get_u32(a, "radius", 1)?, 1, 500)?;
     apply_filter(s, a, Filter::Median { radius }, "Median")
 }
 fn h_filter_minimum(s: &mut AppState, a: &Value) -> Result<Value, String> {
-    let radius = get_f32(a, "radius", 1.0)?;
+    let radius = check_range("radius", get_f32(a, "radius", 1.0)?, 0.2, 500.0)?;
     let round = get_bool(a, "round", false)?;
     apply_filter(s, a, Filter::Minimum { radius, round }, "Minimum")
 }
 fn h_filter_maximum(s: &mut AppState, a: &Value) -> Result<Value, String> {
-    let radius = get_f32(a, "radius", 1.0)?;
+    let radius = check_range("radius", get_f32(a, "radius", 1.0)?, 0.2, 500.0)?;
     let round = get_bool(a, "round", false)?;
     apply_filter(s, a, Filter::Maximum { radius, round }, "Maximum")
 }
@@ -1180,8 +1200,8 @@ fn h_filter_find_edges(s: &mut AppState, a: &Value) -> Result<Value, String> {
     apply_filter(s, a, Filter::FindEdges, "Find Edges")
 }
 fn h_filter_motion_blur(s: &mut AppState, a: &Value) -> Result<Value, String> {
-    let angle = get_i32(a, "angle", 0)?;
-    let distance = get_u32(a, "distance", 10)?;
+    let angle = check_range("angle", get_i32(a, "angle", 0)?, -360, 360)?;
+    let distance = check_range("distance", get_u32(a, "distance", 10)?, 1, 2000)?;
     apply_filter(s, a, Filter::MotionBlur { angle, distance }, "Motion Blur")
 }
 fn h_filter_emboss(s: &mut AppState, a: &Value) -> Result<Value, String> {
@@ -1289,20 +1309,17 @@ fn h_filter_polar(s: &mut AppState, a: &Value) -> Result<Value, String> {
     )
 }
 fn h_filter_high_pass(s: &mut AppState, a: &Value) -> Result<Value, String> {
-    let radius = get_f32(a, "radius", 10.0)?;
-    if radius <= 0.0 {
-        return Err("radius must be positive".to_string());
-    }
+    let radius = check_range("radius", get_f32(a, "radius", 10.0)?, 0.1, 1000.0)?;
     apply_filter(s, a, Filter::HighPass { radius }, "High Pass")
 }
 fn h_filter_offset(s: &mut AppState, a: &Value) -> Result<Value, String> {
-    let dx = get_i32(a, "dx", 0)?;
-    let dy = get_i32(a, "dy", 0)?;
+    let dx = check_range("dx", get_i32(a, "dx", 0)?, -30_000, 30_000)?;
+    let dy = check_range("dy", get_i32(a, "dy", 0)?, -30_000, 30_000)?;
     let fill = parse_offset_fill(opt_str(a, "fill").as_deref().unwrap_or("background"))?;
     apply_filter(s, a, Filter::Offset { dx, dy, fill }, "Offset")
 }
 fn h_filter_mosaic(s: &mut AppState, a: &Value) -> Result<Value, String> {
-    let cell = get_u32(a, "cell", 8)?.max(1);
+    let cell = check_range("cell", get_u32(a, "cell", 8)?, 2, 200)?;
     apply_filter(s, a, Filter::Mosaic { cell }, "Mosaic")
 }
 fn h_filter_solarize(s: &mut AppState, a: &Value) -> Result<Value, String> {
@@ -1554,19 +1571,25 @@ fn h_layer_via_cut(s: &mut AppState, a: &Value) -> Result<Value, String> {
 }
 
 // ---------------------------------------------------------------------------
-// Selection handlers (not recorded in history, like Photoshop)
+// Selection handlers: each change is a history state, named as the app
+// names it (Photoshop's History panel lists selections too)
 // ---------------------------------------------------------------------------
 
 fn h_select_all(s: &mut AppState, a: &Value) -> Result<Value, String> {
     let (id, m) = s.get_mut(a)?;
     let (w, h) = (m.doc.width, m.doc.height);
     m.doc.set_selection(Some(Selection::all(w, h)));
+    m.history.record(&m.doc, "Select All");
     Ok(json!({"doc": id, "selection": "all"}))
 }
 
 fn h_clear_selection(s: &mut AppState, a: &Value) -> Result<Value, String> {
     let (id, m) = s.get_mut(a)?;
+    if m.doc.selection().is_none() {
+        return Ok(json!({"doc": id, "selection": "none"}));
+    }
     m.doc.set_selection(None);
+    m.history.record(&m.doc, "Deselect");
     Ok(json!({"doc": id, "selection": "none"}))
 }
 
@@ -1575,6 +1598,7 @@ fn h_reselect(s: &mut AppState, a: &Value) -> Result<Value, String> {
     if !m.doc.reselect() {
         return Err("nothing to reselect".to_string());
     }
+    m.history.record(&m.doc, "Reselect");
     Ok(json!({"doc": id, "reselected": true}))
 }
 
@@ -1587,6 +1611,7 @@ fn h_select_rect(s: &mut AppState, a: &Value) -> Result<Value, String> {
     let (w, h) = (m.doc.width, m.doc.height);
     let rect = op_core::selection::Rect::new(x0 as f32, y0 as f32, x1 as f32, y1 as f32);
     m.doc.set_selection(Some(Selection::rect(w, h, rect)));
+    m.history.record(&m.doc, "Rectangular Marquee");
     Ok(json!({"doc": id, "selection": "rect"}))
 }
 
@@ -1601,11 +1626,12 @@ fn h_select_ellipse(s: &mut AppState, a: &Value) -> Result<Value, String> {
     let rect = op_core::selection::Rect::new(x0 as f32, y0 as f32, x1 as f32, y1 as f32);
     m.doc
         .set_selection(Some(Selection::ellipse(w, h, rect, aa)));
+    m.history.record(&m.doc, "Elliptical Marquee");
     Ok(json!({"doc": id, "selection": "ellipse"}))
 }
 
 fn h_feather_selection(s: &mut AppState, a: &Value) -> Result<Value, String> {
-    let radius = get_f32(a, "radius", 1.0)?;
+    let radius = check_range("radius", get_f32(a, "radius", 1.0)?, 0.1, 1000.0)?;
     let (id, m) = s.get_mut(a)?;
     let cur = m
         .doc
@@ -1613,6 +1639,7 @@ fn h_feather_selection(s: &mut AppState, a: &Value) -> Result<Value, String> {
         .cloned()
         .ok_or("no selection".to_string())?;
     m.doc.set_selection(Some(cur.feather(radius)));
+    m.history.record(&m.doc, "Feather");
     Ok(json!({"doc": id, "feathered": radius}))
 }
 
@@ -1643,9 +1670,7 @@ fn h_rotate_arbitrary(s: &mut AppState, a: &Value) -> Result<Value, String> {
 fn h_resize_canvas(s: &mut AppState, a: &Value) -> Result<Value, String> {
     let width = req_u32(a, "width")?;
     let height = req_u32(a, "height")?;
-    if width == 0 || height == 0 {
-        return Err("width and height must be positive".to_string());
-    }
+    check_size(width, height)?;
     let ax = get_u32(a, "anchor_x", 1)?;
     let ay = get_u32(a, "anchor_y", 1)?;
     if ax > 2 || ay > 2 {
@@ -1692,9 +1717,7 @@ fn h_crop_to_selection(s: &mut AppState, a: &Value) -> Result<Value, String> {
 fn h_resize_image(s: &mut AppState, a: &Value) -> Result<Value, String> {
     let width = req_u32(a, "width")?;
     let height = req_u32(a, "height")?;
-    if width == 0 || height == 0 {
-        return Err("width and height must be positive".to_string());
-    }
+    check_size(width, height)?;
     let method = parse_resample(opt_str(a, "method").as_deref().unwrap_or("automatic"))?;
     let (id, m) = s.get_mut(a)?;
     op_core::image_ops::resize(&mut m.doc, width, height, method);
@@ -1793,7 +1816,13 @@ fn h_gradient_fill(s: &mut AppState, a: &Value) -> Result<Value, String> {
     let from = req_rgb_key(a, "from")?;
     let to = req_rgb_key(a, "to")?;
     let kind = parse_gradient_kind(opt_str(a, "kind").as_deref().unwrap_or("linear"))?;
-    let method = parse_gradient_method(opt_str(a, "method").as_deref().unwrap_or("smooth"))?;
+    // The gradient tool has no interpolation method (only Gradient Map
+    // does), so asking for one is an error rather than silently ignored
+    if a.get("method").is_some() {
+        return Err(
+            "gradient_fill has no 'method'; it is an option of adjust_gradient_map".to_string(),
+        );
+    }
     let opacity = get_f64(a, "opacity", 1.0)?;
     if !(0.0..=1.0).contains(&opacity) {
         return Err("opacity must be 0-1".to_string());
@@ -1805,7 +1834,6 @@ fn h_gradient_fill(s: &mut AppState, a: &Value) -> Result<Value, String> {
         opacity: opacity as f32,
         reverse,
     };
-    let _ = method;
     let (id, m) = s.get_mut(a)?;
     op_core::gradient::gradient(&mut m.doc, (x0, y0), (x1, y1), (from, to), opts)
         .map_err(|e| e.message("Gradient"))?;
@@ -1903,7 +1931,7 @@ fn all_tools() -> Vec<ToolDef> {
                 "background",
             ],
             schema: schema(
-                json!({"title": {"type": "string"}, "width": {"type": "integer", "minimum": 1, "maximum": 16000}, "height": {"type": "integer", "minimum": 1, "maximum": 16000}, "fill": {"type": "array", "items": {"type": "integer"}, "minItems": 3, "maxItems": 3}, "doc": doc_param()}),
+                json!({"title": {"type": "string"}, "width": {"type": "integer", "minimum": 1, "maximum": 30000}, "height": {"type": "integer", "minimum": 1, "maximum": 30000}, "fill": {"type": "array", "items": {"type": "integer"}, "minItems": 3, "maxItems": 3}, "doc": doc_param()}),
                 &["width", "height"],
             ),
             run: h_new_document,
@@ -2860,8 +2888,8 @@ fn all_tools() -> Vec<ToolDef> {
             description: "Edit > Fill with a solid color, blend mode and opacity.",
             keywords: &["fill", "paint", "color", "bucket", "background", "edit"],
             schema: schema(
-                json!({"doc": doc_param(), "color": {"type": "array"}, "opacity": {"type": "number"}, "mode": {"type": "string"}}),
-                &[],
+                json!({"doc": doc_param(), "color": {"type": "array", "items": {"type": "integer"}, "minItems": 3, "maxItems": 3}, "opacity": {"type": "number"}, "mode": {"type": "string"}, "preserve_transparency": {"type": "boolean"}}),
+                &["color"],
             ),
             run: h_fill_solid,
         },
@@ -2877,8 +2905,8 @@ fn all_tools() -> Vec<ToolDef> {
             description: "Paint Bucket fill from a clicked point with tolerance.",
             keywords: &["bucket", "paint", "fill", "tolerance", "flood", "tool"],
             schema: schema(
-                json!({"doc": doc_param(), "x": {"type": "integer"}, "y": {"type": "integer"}, "color": {"type": "array"}, "tolerance": {"type": "integer"}}),
-                &["x", "y"],
+                json!({"doc": doc_param(), "x": {"type": "integer"}, "y": {"type": "integer"}, "color": {"type": "array", "items": {"type": "integer"}, "minItems": 3, "maxItems": 3}, "tolerance": {"type": "integer"}, "anti_alias": {"type": "boolean"}, "contiguous": {"type": "boolean"}, "all_layers": {"type": "boolean"}}),
+                &["x", "y", "color"],
             ),
             run: h_paint_bucket,
         },
@@ -2887,7 +2915,7 @@ fn all_tools() -> Vec<ToolDef> {
             description: "Gradient tool drag between two points and colors.",
             keywords: &["gradient", "blend", "fade", "linear", "radial", "tool"],
             schema: schema(
-                json!({"doc": doc_param(), "x0": {"type": "number"}, "y0": {"type": "number"}, "x1": {"type": "number"}, "y1": {"type": "number"}, "from": {"type": "array"}, "to": {"type": "array"}}),
+                json!({"doc": doc_param(), "x0": {"type": "number"}, "y0": {"type": "number"}, "x1": {"type": "number"}, "y1": {"type": "number"}, "from": {"type": "array"}, "to": {"type": "array"}, "kind": {"type": "string", "description": "linear, radial, angle, reflected, diamond"}, "opacity": {"type": "number"}, "reverse": {"type": "boolean"}}),
                 &["from", "to"],
             ),
             run: h_gradient_fill,
@@ -3366,5 +3394,99 @@ mod tests {
             ]),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn selections_are_history_states() {
+        let mut s = AppState::new();
+        h_new_document(
+            &mut s,
+            &args(&[("width", json!(16)), ("height", json!(16))]),
+        )
+        .unwrap();
+        let d = args(&[]);
+        h_filter_gaussian_blur(&mut s, &args(&[("radius", json!(1.0))])).unwrap();
+        h_select_rect(
+            &mut s,
+            &args(&[
+                ("x0", json!(2)),
+                ("y0", json!(2)),
+                ("x1", json!(8)),
+                ("y1", json!(8)),
+            ]),
+        )
+        .unwrap();
+        // Undo takes back the selection only; the blur stays
+        h_undo(&mut s, &d).unwrap();
+        let h = h_list_history(&mut s, &d).unwrap();
+        let states = h.get("states").and_then(|v| v.as_array()).unwrap();
+        let names: Vec<&str> = states
+            .iter()
+            .map(|st| st.get("name").and_then(|n| n.as_str()).unwrap())
+            .collect();
+        assert_eq!(names, ["New", "Gaussian Blur", "Rectangular Marquee"]);
+        let current = states
+            .iter()
+            .position(|st| st.get("current").and_then(|c| c.as_bool()) == Some(true));
+        assert_eq!(current, Some(1));
+        let info = h_get_document_info(&mut s, &d).unwrap();
+        assert_eq!(
+            info.get("has_selection").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        // Deselecting nothing adds no state
+        h_clear_selection(&mut s, &d).unwrap();
+        h_select_all(&mut s, &d).unwrap();
+        h_clear_selection(&mut s, &d).unwrap();
+        let h = h_list_history(&mut s, &d).unwrap();
+        let last = h
+            .get("states")
+            .and_then(|v| v.as_array())
+            .unwrap()
+            .last()
+            .cloned()
+            .unwrap();
+        assert_eq!(last.get("name").and_then(|n| n.as_str()), Some("Deselect"));
+    }
+
+    #[test]
+    fn sizes_and_filter_parameters_are_limited() {
+        let mut s = AppState::new();
+        h_new_document(&mut s, &args(&[("width", json!(8)), ("height", json!(8))])).unwrap();
+        let big = args(&[("width", json!(200_000)), ("height", json!(200_000))]);
+        assert!(h_resize_image(&mut s, &big).is_err());
+        assert!(h_resize_canvas(&mut s, &big).is_err());
+        assert!(h_new_document(&mut s, &big).is_err());
+        assert!(h_filter_median(&mut s, &args(&[("radius", json!(100_000))])).is_err());
+        assert!(h_filter_box_blur(&mut s, &args(&[("radius", json!(5000))])).is_err());
+        assert!(h_filter_motion_blur(&mut s, &args(&[("distance", json!(5000))])).is_err());
+        assert!(h_filter_maximum(&mut s, &args(&[("radius", json!(600.0))])).is_err());
+        assert!(h_filter_mosaic(&mut s, &args(&[("cell", json!(1))])).is_err());
+        // In range still works; nothing failed above was recorded
+        h_filter_median(&mut s, &args(&[("radius", json!(1))])).unwrap();
+        let h = h_list_history(&mut s, &args(&[])).unwrap();
+        assert_eq!(h.get("states").and_then(|v| v.as_array()).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn schemas_list_what_handlers_require() {
+        // Every parameter a handler needs is in its schema's "required"
+        for (name, needed) in [("fill_solid", "color"), ("paint_bucket", "color")] {
+            let tools = all_tools();
+            let t = tools.iter().find(|t| t.name == name).unwrap();
+            let required = t.schema.get("required").and_then(|r| r.as_array()).unwrap();
+            assert!(
+                required.iter().any(|r| r.as_str() == Some(needed)),
+                "{name}"
+            );
+        }
+        let mut s = AppState::new();
+        h_new_document(&mut s, &args(&[("width", json!(8)), ("height", json!(8))])).unwrap();
+        // The gradient tool rejects a method instead of ignoring it
+        let a = args(&[("from", json!([0, 0, 0])), ("to", json!([255, 255, 255]))]);
+        h_gradient_fill(&mut s, &a).unwrap();
+        let mut b = a.clone();
+        b["method"] = json!("linear");
+        assert!(h_gradient_fill(&mut s, &b).is_err());
     }
 }
