@@ -36,8 +36,9 @@ pub enum Control {
         field_x: f32,
         track_x1: f32,
     },
-    /// Polar Coordinates' two radio buttons in a group box.
-    Radios,
+    /// Radio buttons in group boxes, one group per setting (Polar
+    /// Coordinates, Wind).
+    Radios(&'static [RadioGroup]),
 }
 
 pub struct Layout {
@@ -90,7 +91,12 @@ pub const SPHERIZE: Layout = Layout {
 pub const POLAR: Layout = Layout {
     size: (405.0, 375.0),
     buttons_x: 298.5,
-    control: Control::Radios,
+    control: Control::Radios(&[RadioGroup {
+        title: None,
+        rect: [8.0, 317.0, 281.0, 366.0],
+        x: 21.0,
+        ys: &[330.0, 354.0],
+    }]),
     mode: None,
     diagram: None,
 };
@@ -104,10 +110,36 @@ pub const UNIT_GAP: f32 = 8.5;
 pub const TRACK_X0: f32 = 18.5;
 pub const TRACK_Y: f32 = 345.0;
 pub const THUMB_INSET: f32 = 4.5;
-/// Polar Coordinates' group box and its radio buttons' centers.
-pub const GROUP: [f32; 4] = [8.0, 317.0, 281.0, 366.0];
-pub const RADIO_X: f32 = 21.0;
-pub const RADIO_YS: [f32; 2] = [330.0, 354.0];
+/// A group box of radio buttons, with an optional title (text, cap
+/// center y) inside its top-left corner at x 27.
+pub struct RadioGroup {
+    pub title: Option<(&'static str, f32)>,
+    pub rect: [f32; 4],
+    /// The buttons' centers.
+    pub x: f32,
+    pub ys: &'static [f32],
+}
+
+pub const WIND: Layout = Layout {
+    size: (405.0, 461.0),
+    buttons_x: 298.5,
+    control: Control::Radios(&[
+        RadioGroup {
+            title: Some(("Method", 334.0)),
+            rect: [8.0, 332.0, 281.0, 396.0],
+            x: 20.0,
+            ys: &[349.0, 365.0, 381.0],
+        },
+        RadioGroup {
+            title: Some(("Direction", 405.75)),
+            rect: [8.0, 404.0, 281.0, 452.0],
+            x: 20.0,
+            ys: &[421.0, 437.0],
+        },
+    ]),
+    mode: None,
+    diagram: None,
+};
 
 /// The preview's frame, view fill and gutters.
 pub fn frame(ui: &Ui, at: impl Fn(f32, f32) -> Pos2) {
@@ -238,14 +270,18 @@ pub fn label(ui: &Ui, pos: Pos2, align: egui::Align2, text: &str) {
     ui.painter().galley(rect.min, galley, appkit::TEXT);
 }
 
-/// Polar Coordinates' group box.
-pub fn group(ui: &Ui, at: impl Fn(f32, f32) -> Pos2) {
+/// A radio group's box and title.
+pub fn group(ui: &Ui, at: impl Fn(f32, f32) -> Pos2, group: &RadioGroup) {
+    let r = group.rect;
     ui.painter().rect_stroke(
-        Rect::from_min_max(at(GROUP[0], GROUP[1]), at(GROUP[2], GROUP[3])),
+        Rect::from_min_max(at(r[0], r[1]), at(r[2], r[3])),
         pt(3.0),
         Stroke::new(pt(1.0), GROUP_LINE),
         StrokeKind::Inside,
     );
+    if let Some((title, y)) = group.title {
+        label(ui, at(27.0, y), egui::Align2::LEFT_CENTER, title);
+    }
 }
 
 /// A radio button: chosen, light with a dark dot; otherwise a gray ring.

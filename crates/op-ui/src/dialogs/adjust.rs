@@ -11,7 +11,7 @@
 
 use egui::{Align2, Color32, Key, Pos2, Rect, Sense, Stroke, Ui, vec2};
 use op_core::adjust::Adjustment;
-use op_core::filter::{Filter, OffsetFill, SpherizeMode};
+use op_core::filter::{Filter, OffsetFill, SpherizeMode, WindMethod};
 
 use super::{
     appkit, black_white, brightness_contrast, channel_mixer, color_balance, common, curves,
@@ -158,6 +158,10 @@ const TRACE_CONTOUR: &[Param] = &[
     param("Level:", 0.0, 255.0, 128.0, 0),
     choice("Edge", &["Lower", "Upper"], 1),
 ];
+const WIND: &[Param] = &[
+    choice("Method", &["Wind", "Blast", "Stagger"], 0),
+    choice("Direction", &["From the Right", "From the Left"], 0),
+];
 const DUST_AND_SCRATCHES: &[Param] = &[
     param("Radius (pixels):", 1.0, 500.0, 1.0, 0),
     param("Threshold (levels):", 0.0, 255.0, 0.0, 0),
@@ -200,6 +204,7 @@ pub enum Kind {
     /// Filter > Other > Custom...
     Custom,
     TraceContour,
+    Wind,
 }
 
 impl Kind {
@@ -239,6 +244,7 @@ impl Kind {
             Self::DustAndScratches => "Dust & Scratches",
             Self::Custom => "Custom",
             Self::TraceContour => "Trace Contour",
+            Self::Wind => "Wind",
         }
     }
 
@@ -278,6 +284,7 @@ impl Kind {
             Self::SurfaceBlur => SURFACE_BLUR,
             Self::DustAndScratches => DUST_AND_SCRATCHES,
             Self::TraceContour => TRACE_CONTOUR,
+            Self::Wind => WIND,
         }
     }
 
@@ -311,6 +318,7 @@ impl Kind {
             Self::Pinch => &distort::PINCH,
             Self::Spherize => &distort::SPHERIZE,
             Self::PolarCoordinates => &distort::POLAR,
+            Self::Wind => &distort::WIND,
             _ => return None,
         })
     }
@@ -646,6 +654,10 @@ impl AdjustDialog {
                 level: v[0] as u8,
                 upper: v[1] == 1.0,
             },
+            Kind::Wind => Filter::Wind {
+                method: [WindMethod::Wind, WindMethod::Blast, WindMethod::Stagger][v[0] as usize],
+                from_left: v[1] == 1.0,
+            },
             // Every adjustment has its own dialog
             _ => return None,
         };
@@ -961,13 +973,15 @@ impl AdjustDialog {
                 let v = self.value(0).unwrap_or(p.default);
                 distort::slider(ui, at, track_x1, (v - p.min) / (p.max - p.min));
             }
-            distort::Control::Radios => {
-                distort::group(ui, at);
-                if let ParamKind::Choice(options) = params[0].kind {
-                    let chosen = self.value(0).unwrap_or(0.0) as usize;
-                    for (k, (&y, option)) in distort::RADIO_YS.iter().zip(options).enumerate() {
-                        if distort::radio(ui, at(distort::RADIO_X, y), option, chosen == k) {
-                            self.values[0] = k.to_string();
+            distort::Control::Radios(groups) => {
+                for (i, group) in groups.iter().enumerate() {
+                    distort::group(ui, at, group);
+                    if let ParamKind::Choice(options) = params[i].kind {
+                        let chosen = self.value(i).unwrap_or(0.0) as usize;
+                        for (k, (&y, option)) in group.ys.iter().zip(options).enumerate() {
+                            if distort::radio(ui, at(group.x, y), option, chosen == k) {
+                                self.values[i] = k.to_string();
+                            }
                         }
                     }
                 }
@@ -1228,6 +1242,7 @@ mod tests {
             Kind::SurfaceBlur,
             Kind::DustAndScratches,
             Kind::TraceContour,
+            Kind::Wind,
         ] {
             assert!(
                 matches!(dialog(kind).effect(), Some(Effect::Filter(_))),

@@ -102,6 +102,7 @@ pub enum Command {
     Despeckle,
     SharpenEdges,
     TraceContour,
+    Wind,
     /// Layer > New > Layer... (Shift+Cmd+N): opens the New Layer dialog.
     NewLayer,
     /// Alt+Shift+Cmd+N: a new layer without the dialog.
@@ -495,7 +496,8 @@ impl Command {
             | Self::CustomFilter
             | Self::Despeckle
             | Self::SharpenEdges
-            | Self::TraceContour => return None,
+            | Self::TraceContour
+            | Self::Wind => return None,
             Self::Invert => cmd(Key::I),
             Self::Levels => cmd(Key::L),
             Self::Curves => cmd(Key::M),
@@ -797,6 +799,7 @@ impl Command {
             | Self::Despeckle
             | Self::SharpenEdges
             | Self::TraceContour
+            | Self::Wind
             | Self::Twirl
             | Self::Pinch
             | Self::Spherize
@@ -1157,7 +1160,8 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
         | Command::SurfaceBlur
         | Command::DustAndScratches
         | Command::CustomFilter
-        | Command::TraceContour => {
+        | Command::TraceContour
+        | Command::Wind => {
             let (kind, name) = match command {
                 Command::Threshold => (AdjustKind::Threshold, "Threshold"),
                 Command::Posterize => (AdjustKind::Posterize, "Posterize"),
@@ -1194,6 +1198,7 @@ pub fn run(command: Command, ctx: &egui::Context, app: &mut AppState) {
                 Command::DustAndScratches => (AdjustKind::DustAndScratches, "Dust & Scratches"),
                 Command::CustomFilter => (AdjustKind::Custom, "Custom"),
                 Command::TraceContour => (AdjustKind::TraceContour, "Trace Contour"),
+                Command::Wind => (AdjustKind::Wind, "Wind"),
                 _ => (AdjustKind::Mosaic, "Mosaic"),
             };
             let rgb = |c: op_core::Color| {

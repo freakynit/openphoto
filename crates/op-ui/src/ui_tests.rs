@@ -898,6 +898,7 @@ fn screenshot_filter_dialogs() {
         (Command::Pinch, "pinch_dialog", "-40"),
         (Command::Spherize, "spherize_dialog", "70"),
         (Command::PolarCoordinates, "polar_coordinates_dialog", ""),
+        (Command::Wind, "wind_dialog", ""),
     ] {
         let mut h = harness(Vec::new());
         color_document(&mut h, [120, 160, 200]);
@@ -3357,6 +3358,13 @@ fn more_filters_from_the_menu() {
             Filter::TraceContour {
                 level: 128,
                 upper: true,
+            },
+        ),
+        (
+            Command::Wind,
+            Filter::Wind {
+                method: op_core::filter::WindMethod::Wind,
+                from_left: false,
             },
         ),
     ] {

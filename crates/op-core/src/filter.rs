@@ -29,6 +29,14 @@ pub enum SpherizeMode {
     VerticalOnly,
 }
 
+/// Wind's Method.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindMethod {
+    Wind,
+    Blast,
+    Stagger,
+}
+
 /// Pinch's radial shift at 100% for distances 0, 0.05, … 1 of the
 /// radius, measured from Photoshop 2026 (it scales with the amount).
 const PINCH_SHIFT: [f32; 21] = [
@@ -106,6 +114,9 @@ pub enum Filter {
     /// where values cross `level`, on its lower side (`upper`) or its
     /// upper side.
     TraceContour { level: u8, upper: bool },
+    /// Stylize > Wind: streaks blown from the left (`from_left`) or the
+    /// right. Random, like Photoshop's, but repeatable.
+    Wind { method: WindMethod, from_left: bool },
     /// Distort > Twirl: degrees (−999–999) at the center, fading out.
     Twirl { angle: i32 },
     /// Distort > Pinch: −100–100 percent (positive pinches in).
@@ -156,6 +167,7 @@ impl Filter {
             Self::Despeckle => "Despeckle",
             Self::SharpenEdges => "Sharpen Edges",
             Self::TraceContour { .. } => "Trace Contour",
+            Self::Wind { .. } => "Wind",
             Self::Pinch { .. } => "Pinch",
             Self::Spherize { .. } => "Spherize",
             Self::PolarCoordinates { .. } => "Polar Coordinates",
@@ -777,6 +789,67 @@ fn filtered(
                 })
                 .collect()
         }
+        Filter::Wind { method, from_left } => {
+            let mut out: Vec<[u8; 4]> = src.px.iter().map(|&p| Buffer::straight(p)).collect();
+            for y in 0..h {
+                // The row in the wind's direction
+                let index = |k: usize| y * w + if from_left { k } else { w - 1 - k };
+                let row: Vec<[u8; 4]> = (0..w).map(|k| out[index(k)]).collect();
+                let lum = |p: [u8; 4]| p[0] as i32 * 3 + p[1] as i32 * 6 + p[2] as i32;
+                let mut streak: Option<([f32; 3], f32, usize)> = None;
+                for k in 1..w {
+                    let (prev, here) = (row[k - 1], row[k]);
+                    let r = noise(k, y, 7);
+                    // A streak starts, half the time, where it gets darker
+                    if streak.is_none() && lum(prev) - lum(here) > 40 && r < 0.5 {
+                        let len = 8 + (noise(k, y, 8) * 24.0) as usize;
+                        let color = [0, 1, 2].map(|c| prev[c] as f32);
+                        streak = Some(match method {
+                            WindMethod::Wind => (
+                                [0, 1, 2].map(|c| (prev[c] as f32 + here[c] as f32) / 2.0),
+                                0.08 + noise(k, y, 9) * 0.2,
+                                len,
+                            ),
+                            WindMethod::Blast => (color, 0.0, len),
+                            // Stagger carries the pixel on and drops it
+                            WindMethod::Stagger => (color, 0.0, len * 3),
+                        });
+                        if method == WindMethod::Stagger {
+                            out[index(k - 1)] = here;
+                        }
+                    }
+                    let Some((color, decay, left)) = streak.as_mut() else {
+                        continue;
+                    };
+                    let i = index(k);
+                    match method {
+                        WindMethod::Stagger => {
+                            if *left == 0 {
+                                for c in 0..3 {
+                                    out[i][c] = color[c] as u8;
+                                }
+                                streak = None;
+                                continue;
+                            }
+                        }
+                        _ => {
+                            for c in 0..3 {
+                                let v = color[c].round() as u8;
+                                out[i][c] = out[i][c].max(v);
+                                // Wind's streak fades into what it crosses
+                                color[c] += (here[c] as f32 - color[c]) * *decay;
+                            }
+                            if *left == 0 {
+                                streak = None;
+                                continue;
+                            }
+                        }
+                    }
+                    *left -= 1;
+                }
+            }
+            out
+        }
         Filter::FindEdges => {
             // 255 less the Sobel gradient's length, per channel
             let gx = src.kernel3([[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]]);
@@ -1167,6 +1240,64 @@ mod tests {
         // Monochromatic noise keeps pixels gray
         let px = &a.composite_rgba8()[4..8];
         assert_eq!((px[0], px[0]), (px[1], px[2]));
+    }
+
+    #[test]
+    fn wind_streaks_downwind() {
+        // Bright dots on a dark ground, one per row
+        let make = || {
+            let mut d =
+                Document::new_with_background("t", 64, 32, Color::from_rgba8([40, 40, 40, 255]));
+            let id = d.active_layer.unwrap();
+            let image = d.layer_mut(id).unwrap().image_mut().unwrap();
+            for y in 0..32 {
+                image.set_pixel(32, y, [220, 220, 220, 255]);
+            }
+            d
+        };
+        let row = |d: &Document, y: usize| -> Vec<u8> {
+            d.composite_rgba8()[y * 64 * 4..(y + 1) * 64 * 4]
+                .chunks(4)
+                .map(|p| p[0])
+                .collect()
+        };
+        for method in [WindMethod::Wind, WindMethod::Blast] {
+            for from_left in [true, false] {
+                let filter = Filter::Wind { method, from_left };
+                let mut a = make();
+                apply(&mut a, filter, [255; 3]).unwrap();
+                let mut b = make();
+                apply(&mut b, filter, [255; 3]).unwrap();
+                assert_eq!(a.composite_rgba8(), b.composite_rgba8(), "repeatable");
+                let (mut streaks, mut upwind) = (0, 0);
+                for y in 0..32 {
+                    let r = row(&a, y);
+                    assert_eq!(r[32], 220, "the dot stays");
+                    // Streaks only brighten, and only downwind
+                    assert!(r.iter().all(|&v| v >= 40));
+                    let (down, up) = if from_left { (33, 31) } else { (31, 33) };
+                    streaks += (r[down] > 40) as usize;
+                    upwind += (r[up] > 40) as usize;
+                }
+                assert!(streaks > 4 && streaks < 28, "{method:?}: {streaks} streaks");
+                assert_eq!(upwind, 0);
+            }
+        }
+        // A flat image has nothing to blow
+        let mut flat = Document::new_with_background("t", 16, 4, Color::WHITE);
+        let before = flat.composite_rgba8();
+        for method in [WindMethod::Wind, WindMethod::Blast, WindMethod::Stagger] {
+            apply(
+                &mut flat,
+                Filter::Wind {
+                    method,
+                    from_left: true,
+                },
+                [255; 3],
+            )
+            .unwrap();
+        }
+        assert_eq!(flat.composite_rgba8(), before);
     }
 
     #[test]
