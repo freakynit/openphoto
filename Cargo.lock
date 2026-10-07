@@ -2341,7 +2341,6 @@ version = "0.1.0"
 dependencies = [
  "op-core",
  "op-io",
- "serde",
  "serde_json",
 ]
 
